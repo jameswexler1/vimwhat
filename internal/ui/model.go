@@ -55,6 +55,7 @@ type Model struct {
 	messagesByChat   map[string][]store.Message
 	draftsByChat     map[string]string
 	activeChat       int
+	chatScrollTop    int
 	messageCursor    int
 	messageScrollTop int
 	visualAnchor     int
@@ -159,6 +160,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if (!m.infoPaneVisible || m.compactLayout) && m.focus == FocusPreview {
 			m.focus = FocusMessages
 		}
+		m.keepActiveChatVisible()
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -257,6 +259,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageScrollTop = 0
 		} else {
 			m.activeChat = 0
+			m.chatScrollTop = 0
 			if err := m.ensureCurrentMessagesLoaded(); err != nil {
 				m.status = fmt.Sprintf("load messages failed: %v", err)
 				return m, nil
@@ -281,6 +284,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					target = count - 1
 				}
 				m.activeChat = clamp(target, 0, chatCount-1)
+				m.keepActiveChatVisible()
 				if err := m.ensureCurrentMessagesLoaded(); err != nil {
 					m.status = fmt.Sprintf("load messages failed: %v", err)
 					return m, nil
@@ -536,6 +540,7 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		m.activeChat = clamp(m.activeChat+delta, 0, len(m.chats)-1)
+		m.keepActiveChatVisible()
 		if err := m.ensureCurrentMessagesLoaded(); err != nil {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return
@@ -746,6 +751,7 @@ func (m *Model) advanceSearch(delta int) {
 	target := m.searchMatches[m.searchIndex]
 	if m.lastSearchFocus == FocusChats {
 		m.activeChat = target
+		m.keepActiveChatVisible()
 		if err := m.ensureCurrentMessagesLoaded(); err != nil {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return
@@ -934,6 +940,7 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 
 	if len(m.chats) == 0 {
 		m.activeChat = 0
+		m.chatScrollTop = 0
 		m.messageCursor = 0
 		m.messageScrollTop = 0
 		return nil
@@ -943,9 +950,26 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 	if m.activeChat == -1 {
 		m.activeChat = 0
 	}
+	m.keepActiveChatVisible()
 	m.messageCursor = 0
 	m.messageScrollTop = 0
 	return m.ensureCurrentMessagesLoaded()
+}
+
+func (m *Model) keepActiveChatVisible() {
+	m.chatScrollTop = adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visibleChatCellCount(m.chatPaneContentHeight()))
+}
+
+func (m Model) chatPaneContentHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	inputHeight := m.inputHeight()
+	bodyHeight := m.height - 1 - inputHeight
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	return panelContentHeight(m.panelStyle(FocusChats), bodyHeight)
 }
 
 func (m *Model) keepMessageCursorNearViewport(previous int) {

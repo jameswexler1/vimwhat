@@ -518,11 +518,135 @@ func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 		},
 	})
 
-	view := stripANSI(model.renderChats(40))
+	view := stripANSI(model.renderChats(40, 12))
 	for _, want := range []string{"Project", "[PMDG] 3", "draft: draft reply"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("chat list missing %q\n%s", want, view)
 		}
+	}
+	if !strings.Contains(view, "┌") || !strings.Contains(view, "└") {
+		t.Fatalf("chat list did not render bordered cells\n%s", view)
+	}
+}
+
+func TestChatCellsScrollWithActiveChat(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:        numberedChats(8),
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-0",
+		},
+	})
+	model.width = 120
+	model.height = 14
+	model.focus = FocusChats
+
+	for i := 0; i < 7; i++ {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		model = updated.(Model)
+	}
+	if model.activeChat != 7 {
+		t.Fatalf("activeChat = %d, want 7", model.activeChat)
+	}
+	if model.chatScrollTop == 0 {
+		t.Fatal("chatScrollTop did not advance while moving through chat cells")
+	}
+	view := stripANSI(model.renderChats(30, 11))
+	if !strings.Contains(view, "Chat 07") {
+		t.Fatalf("active chat cell is not visible after scrolling\n%s", view)
+	}
+	if strings.Contains(view, "Chat 00") {
+		t.Fatalf("chat viewport did not move away from oldest cells\n%s", view)
+	}
+}
+
+func TestChatTopAndBottomCommandsKeepActiveCellVisible(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:        numberedChats(8),
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-0",
+		},
+	})
+	model.width = 120
+	model.height = 14
+	model.focus = FocusChats
+
+	bottom, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	model = bottom.(Model)
+	if model.activeChat != 7 || model.chatScrollTop == 0 {
+		t.Fatalf("G activeChat=%d chatScrollTop=%d, want bottom visible", model.activeChat, model.chatScrollTop)
+	}
+	bottomView := stripANSI(model.renderChats(30, 11))
+	if !strings.Contains(bottomView, "Chat 07") || strings.Contains(bottomView, "Chat 00") {
+		t.Fatalf("G did not show bottom chat cell\n%s", bottomView)
+	}
+
+	top, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model = top.(Model)
+	if model.activeChat != 0 || model.chatScrollTop != 0 {
+		t.Fatalf("g activeChat=%d chatScrollTop=%d, want top visible", model.activeChat, model.chatScrollTop)
+	}
+	topView := stripANSI(model.renderChats(30, 11))
+	if !strings.Contains(topView, "Chat 00") || strings.Contains(topView, "Chat 07") {
+		t.Fatalf("g did not show top chat cell\n%s", topView)
+	}
+}
+
+func TestChatSearchKeepsMatchedCellVisible(t *testing.T) {
+	chats := numberedChats(8)
+	chats[6].Title = "Needle Team"
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:        chats,
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-0",
+		},
+	})
+	model.width = 120
+	model.height = 14
+	model.focus = FocusChats
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	got := searched.(Model)
+	if got.activeChat != 6 {
+		t.Fatalf("activeChat = %d, want matched chat 6", got.activeChat)
+	}
+	if got.chatScrollTop == 0 {
+		t.Fatal("chatScrollTop did not advance to reveal search match")
+	}
+	view := stripANSI(got.renderChats(30, 11))
+	if !strings.Contains(view, "Needle Team") {
+		t.Fatalf("matched chat cell is not visible\n%s", view)
+	}
+}
+
+func TestChatFilterClampsCellViewport(t *testing.T) {
+	chats := numberedChats(8)
+	chats[7].Unread = 2
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:        chats,
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-7",
+		},
+	})
+	model.width = 120
+	model.height = 14
+	model.focus = FocusChats
+	model.activeChat = 7
+	model.chatScrollTop = 6
+
+	filtered, _ := model.executeCommand("filter unread")
+	got := filtered.(Model)
+	if len(got.chats) != 1 || got.activeChat != 0 || got.chatScrollTop != 0 {
+		t.Fatalf("filtered chats=%d activeChat=%d chatScrollTop=%d, want one visible chat", len(got.chats), got.activeChat, got.chatScrollTop)
+	}
+	view := stripANSI(got.renderChats(30, 11))
+	if !strings.Contains(view, "Chat 07") {
+		t.Fatalf("filtered unread chat cell is not visible\n%s", view)
 	}
 }
 
@@ -555,6 +679,37 @@ func TestCompactViewShowsFocusedPaneOnly(t *testing.T) {
 		if width := lipgloss.Width(line); width > model.width {
 			t.Fatalf("line %d width = %d, want <= %d", i+1, width, model.width)
 		}
+	}
+}
+
+func TestCompactChatFocusUsesFullTerminalWidth(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", LastPreview: "wide compact chat cell"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "message pane should be hidden"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 70
+	model.height = 18
+	model.compactLayout = true
+	model.focus = FocusChats
+
+	view := stripANSI(model.View())
+	lines := strings.Split(view, "\n")
+	if width := lipgloss.Width(lines[0]); width != model.width {
+		t.Fatalf("compact chat pane width = %d, want %d\n%s", width, model.width, view)
+	}
+	if !strings.Contains(view, "wide compact chat cell") {
+		t.Fatalf("compact chat focus did not render chat cell content\n%s", view)
+	}
+	if strings.Contains(view, "message pane should be hidden") {
+		t.Fatalf("compact chat focus rendered message pane too\n%s", view)
 	}
 }
 
@@ -1352,4 +1507,16 @@ func numberedMessages(count int) []store.Message {
 		})
 	}
 	return messages
+}
+
+func numberedChats(count int) []store.Chat {
+	chats := make([]store.Chat, 0, count)
+	for i := 0; i < count; i++ {
+		chats = append(chats, store.Chat{
+			ID:          fmt.Sprintf("chat-%d", i),
+			Title:       fmt.Sprintf("Chat %02d", i),
+			LastPreview: fmt.Sprintf("preview %02d", i),
+		})
+	}
+	return chats
 }

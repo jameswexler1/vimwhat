@@ -23,6 +23,11 @@ var (
 	selectedLine = uiTheme.SelectedLine
 )
 
+const (
+	chatHeaderHeight = 1
+	chatCellHeight   = 4
+)
+
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading..."
@@ -57,12 +62,11 @@ func (m Model) renderBody(height int) string {
 	previewWidth := max(26, m.width/4)
 	messageWidth := m.width - chatWidth
 
-	chats := m.renderPanel(FocusChats, chatWidth, height, m.renderChats(panelContentWidth(m.panelStyle(FocusChats), chatWidth)))
-
 	if m.compactLayout {
 		switch m.focus {
 		case FocusChats:
-			return chats
+			style := m.panelStyle(FocusChats)
+			return m.renderPanel(FocusChats, m.width, height, m.renderChats(panelContentWidth(style, m.width), panelContentHeight(style, height)))
 		case FocusPreview:
 			return m.renderPanel(FocusPreview, m.width, height, m.renderInfo(panelContentWidth(m.panelStyle(FocusPreview), m.width)))
 		default:
@@ -74,6 +78,8 @@ func (m Model) renderBody(height int) string {
 	if m.infoPaneVisible {
 		messageWidth -= previewWidth
 	}
+	chatStyle := m.panelStyle(FocusChats)
+	chats := m.renderPanel(FocusChats, chatWidth, height, m.renderChats(panelContentWidth(chatStyle, chatWidth), panelContentHeight(chatStyle, height)))
 	messageStyle := m.panelStyle(FocusMessages)
 	messages := m.renderPanel(FocusMessages, messageWidth, height, m.renderMessages(panelContentWidth(messageStyle, messageWidth), panelContentHeight(messageStyle, height)))
 	if !m.infoPaneVisible {
@@ -372,7 +378,7 @@ func truncateDisplay(value string, width int) string {
 	return head + "~"
 }
 
-func (m Model) renderChats(width int) string {
+func (m Model) renderChats(width, height int) string {
 	var lines []string
 	headerText := "Chats"
 	if m.unreadOnly {
@@ -393,64 +399,129 @@ func (m Model) renderChats(width int) string {
 		return strings.Join(lines, "\n")
 	}
 
-	for i, chat := range m.chats {
-		cursor := " "
-		if i == m.activeChat {
-			cursor = ">"
-		}
-
-		flags := make([]string, 0, 4)
-		if chat.Pinned {
-			flags = append(flags, "P")
-		}
-		if chat.Muted {
-			flags = append(flags, "M")
-		}
-		if chat.HasDraft {
-			flags = append(flags, "D")
-		}
-		if chat.Kind == "group" {
-			flags = append(flags, "G")
-		}
-
-		left := fmt.Sprintf("%s %s", cursor, truncateDisplay(chat.Title, max(1, width-8)))
-		suffix := ""
-		if len(flags) > 0 {
-			suffix = "[" + strings.Join(flags, "") + "]"
-		}
-		if chat.Unread > 0 {
-			suffix += fmt.Sprintf(" %d", chat.Unread)
-		}
-		if suffix != "" {
-			left = truncateDisplay(left, max(1, width-lipgloss.Width(suffix)-1)) + " " + suffix
-		}
-
-		line := padDisplay(left, width)
-		if i == m.activeChat {
-			line = lipgloss.NewStyle().Foreground(primaryFG).Bold(true).Render(line)
-		} else {
-			line = lipgloss.NewStyle().Foreground(softFG).Render(line)
-		}
-		lines = append(lines, lipgloss.NewStyle().Width(width).Render(line))
-
-		preview := strings.TrimSpace(chat.LastPreview)
-		if chat.HasDraft {
-			if draft := strings.TrimSpace(m.draftsByChat[chat.ID]); draft != "" {
-				preview = "draft: " + firstLine(draft)
-			}
-		}
-		if preview == "" {
-			preview = "no local messages"
-		}
-		previewLine := "  " + truncateDisplay(firstLine(preview), max(1, width-2))
-		previewStyle := lipgloss.NewStyle().Foreground(softFG)
-		if i == m.activeChat {
-			previewStyle = previewStyle.Foreground(accentFG)
-		}
-		lines = append(lines, previewStyle.Width(width).Render(previewLine))
+	visibleCells := visibleChatCellCount(height)
+	if visibleCells == 0 {
+		return strings.Join(lines, "\n")
+	}
+	start := adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visibleCells)
+	for i := start; i < len(m.chats) && i < start+visibleCells; i++ {
+		lines = append(lines, m.renderChatCell(m.chats[i], i == m.activeChat, width))
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
+	border := borderColor
+	titleFG := softFG
+	previewFG := softFG
+	if active {
+		border = activeBorder
+		titleFG = primaryFG
+		previewFG = accentFG
+	}
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(border).
+		Padding(0, 1)
+	contentWidth := panelContentWidth(style, width)
+
+	title := chat.Title
+	if title == "" {
+		title = "unknown"
+	}
+	titleLine := chatTitleLine(title, chatSuffix(chat), contentWidth)
+	previewLine := truncateDisplay(m.chatPreview(chat), contentWidth)
+
+	titleStyle := lipgloss.NewStyle().Foreground(titleFG).Bold(active)
+	previewStyle := lipgloss.NewStyle().Foreground(previewFG)
+	content := strings.Join([]string{
+		titleStyle.Render(titleLine),
+		previewStyle.Render(previewLine),
+	}, "\n")
+
+	return style.Width(panelBoxWidth(style, width)).Render(content)
+}
+
+func (m Model) chatPreview(chat store.Chat) string {
+	preview := strings.TrimSpace(chat.LastPreview)
+	if chat.HasDraft {
+		if draft := strings.TrimSpace(m.draftsByChat[chat.ID]); draft != "" {
+			preview = "draft: " + firstLine(draft)
+		}
+	}
+	if preview == "" {
+		return "no local messages"
+	}
+	return firstLine(preview)
+}
+
+func chatSuffix(chat store.Chat) string {
+	flags := make([]string, 0, 4)
+	if chat.Pinned {
+		flags = append(flags, "P")
+	}
+	if chat.Muted {
+		flags = append(flags, "M")
+	}
+	if chat.HasDraft {
+		flags = append(flags, "D")
+	}
+	if chat.Kind == "group" {
+		flags = append(flags, "G")
+	}
+
+	suffix := ""
+	if len(flags) > 0 {
+		suffix = "[" + strings.Join(flags, "") + "]"
+	}
+	if chat.Unread > 0 {
+		if suffix != "" {
+			suffix += " "
+		}
+		suffix += fmt.Sprintf("%d", chat.Unread)
+	}
+	return suffix
+}
+
+func chatTitleLine(title, suffix string, width int) string {
+	width = max(1, width)
+	if suffix == "" {
+		return truncateDisplay(title, width)
+	}
+	suffixWidth := lipgloss.Width(suffix)
+	if suffixWidth >= width {
+		return truncateDisplay(suffix, width)
+	}
+
+	title = truncateDisplay(title, max(1, width-suffixWidth-1))
+	gap := max(1, width-lipgloss.Width(title)-suffixWidth)
+	return truncateDisplay(title+strings.Repeat(" ", gap)+suffix, width)
+}
+
+func visibleChatCellCount(height int) int {
+	bodyHeight := height - chatHeaderHeight
+	if bodyHeight <= 0 {
+		return 0
+	}
+	return max(1, bodyHeight/chatCellHeight)
+}
+
+func adjustedChatScrollTop(scrollTop, active, total, visible int) int {
+	if total <= 0 || visible <= 0 {
+		return 0
+	}
+	active = clamp(active, 0, total-1)
+	maxTop := max(0, total-visible)
+	scrollTop = clamp(scrollTop, 0, maxTop)
+	if active < scrollTop {
+		return active
+	}
+	if active >= scrollTop+visible {
+		return clamp(active-visible+1, 0, maxTop)
+	}
+	return scrollTop
 }
 
 func (m Model) renderMessages(width, height int) string {
