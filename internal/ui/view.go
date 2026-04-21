@@ -649,62 +649,60 @@ func renderDaySeparator(date string, width int) string {
 }
 
 func (m Model) renderMessageBubble(message store.Message, availableWidth int, active, selected bool) string {
-	lineColor := incomingLine
+	border := incomingLine
 	fg := primaryFG
 	metaFG := softFG
 	if message.IsOutgoing {
-		lineColor = outgoingLine
+		border = outgoingLine
 		fg = outgoingFG
 	}
 	if selected {
-		lineColor = selectedLine
+		border = selectedLine
 		fg = primaryFG
 		metaFG = warnFG
 	}
 	if active {
-		lineColor = activeBorder
+		border = activeBorder
 		metaFG = primaryFG
 	}
-
-	sender := message.Sender
-	if message.IsOutgoing {
-		sender = "me"
-	}
-	if sender == "" {
-		sender = "unknown"
-	}
-
-	metaParts := []string{sender}
-	if !message.Timestamp.IsZero() {
-		metaParts = append(metaParts, message.Timestamp.Format("15:04"))
-	}
-	if message.IsOutgoing && message.Status != "" {
-		metaParts = append(metaParts, message.Status)
-	}
-	meta := strings.Join(metaParts, " ")
 
 	body := strings.TrimSpace(message.Body)
 	if body == "" {
 		body = "(empty)"
 	}
+	meta := messageBubbleMeta(message)
+	sender := ""
+	if shouldShowMessageSender(m.currentChat(), message) {
+		sender = message.Sender
+		if sender == "" {
+			sender = "unknown"
+		}
+	}
 
-	maxBubbleWidth := bubbleWidth(availableWidth)
-	contentWidth := clamp(max(bubbleTextWidth(meta, body), 16), 8, maxBubbleWidth-2)
-
-	contourStyle := lipgloss.NewStyle().Foreground(lineColor)
-	metaStyle := lipgloss.NewStyle().Foreground(metaFG)
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 1)
+	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
+	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
 	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
 		bodyStyle = bodyStyle.Foreground(warnFG)
 	}
 
-	meta = truncateDisplay(meta, contentWidth)
-	lines := []string{bubbleMessageLine(contourStyle, metaStyle, meta, contentWidth, message.IsOutgoing)}
+	var lines []string
+	if sender != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
+	}
 	for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
-		lines = append(lines, bubbleMessageLine(contourStyle, bodyStyle, line, contentWidth, message.IsOutgoing))
+		lines = append(lines, bodyStyle.Render(truncateDisplay(line, contentWidth)))
+	}
+	if meta != "" {
+		meta = truncateDisplay(meta, contentWidth)
+		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(alignDisplay(meta, contentWidth, true)))
 	}
 
-	return strings.Join(lines, "\n")
+	return boxStyle.Width(panelBoxWidth(boxStyle, maxBubbleWidth)).Render(strings.Join(lines, "\n"))
 }
 
 func bubbleWidth(available int) int {
@@ -714,8 +712,9 @@ func bubbleWidth(available int) int {
 	return min(max(22, available*46/100), available-2)
 }
 
-func bubbleTextWidth(meta, body string) int {
-	widest := lipgloss.Width(meta)
+func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string) int {
+	maxContentWidth := max(1, panelContentWidth(style, maxBubbleWidth))
+	widest := max(lipgloss.Width(meta), lipgloss.Width(sender))
 	for _, line := range strings.Split(body, "\n") {
 		lineWidth := 0
 		for _, word := range strings.Fields(line) {
@@ -729,7 +728,42 @@ func bubbleTextWidth(meta, body string) int {
 			widest = max(widest, lineWidth)
 		}
 	}
-	return widest
+	return clamp(max(widest, 16), min(8, maxContentWidth), maxContentWidth)
+}
+
+func shouldShowMessageSender(chat store.Chat, message store.Message) bool {
+	if message.IsOutgoing {
+		return false
+	}
+	return chat.Kind == "group" || strings.HasSuffix(chat.JID, "@g.us") || strings.HasSuffix(message.ChatJID, "@g.us")
+}
+
+func messageBubbleMeta(message store.Message) string {
+	var parts []string
+	if !message.Timestamp.IsZero() {
+		parts = append(parts, message.Timestamp.Format("15:04"))
+	}
+	if message.IsOutgoing {
+		if ticks := messageStatusTicks(message.Status); ticks != "" {
+			parts = append(parts, ticks)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func messageStatusTicks(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "":
+		return ""
+	case "pending", "queued", "sending":
+		return "…"
+	case "sent", "server_ack", "server ack", "ack":
+		return "✓"
+	case "delivered", "read":
+		return "✓✓"
+	default:
+		return "✓"
+	}
 }
 
 func alignMessageBubble(bubble string, width int, outgoing bool) string {
@@ -743,14 +777,6 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 		lines[i] = truncateDisplay(strings.Repeat(" ", indent)+line, width)
 	}
 	return strings.Join(lines, "\n")
-}
-
-func bubbleMessageLine(contourStyle, textStyle lipgloss.Style, text string, width int, outgoing bool) string {
-	text = truncateDisplay(text, width)
-	if outgoing {
-		return textStyle.Render(text) + " " + contourStyle.Render("│")
-	}
-	return contourStyle.Render("│") + " " + textStyle.Render(text)
 }
 
 func (m Model) renderInfo(width int) string {

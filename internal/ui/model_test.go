@@ -739,13 +739,14 @@ func TestPreviewCommandTogglesInfoPane(t *testing.T) {
 }
 
 func TestMessagesRenderIncomingLeftAndOutgoingRight(t *testing.T) {
+	now := time.Date(2026, 4, 21, 20, 59, 0, 0, time.UTC)
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
 			MessagesByChat: map[string][]store.Message{
 				"chat-1": []store.Message{
-					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "incoming text"},
-					{ID: "m-2", ChatID: "chat-1", Sender: "me", Body: "outgoing text that wraps across more than one line in the terminal viewport", IsOutgoing: true},
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "incoming text", Timestamp: now.Add(-time.Minute)},
+					{ID: "m-2", ChatID: "chat-1", Sender: "me", Body: "outgoing text that wraps across more than one line in the terminal viewport", Timestamp: now, IsOutgoing: true, Status: "sent"},
 				},
 			},
 			DraftsByChat: map[string]string{},
@@ -765,8 +766,81 @@ func TestMessagesRenderIncomingLeftAndOutgoingRight(t *testing.T) {
 	if leadingSpaces(outgoingLine) < 20 {
 		t.Fatalf("outgoing message was not right aligned: %q", outgoingLine)
 	}
-	if !strings.Contains(stripANSI(view), "me") {
-		t.Fatalf("outgoing metadata missing sender label\n%s", view)
+	plain := stripANSI(view)
+	for _, want := range []string{"╭", "╰", "20:58", "20:59 ✓"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("message bubbles missing %q\n%s", want, plain)
+		}
+	}
+	for _, unwanted := range []string{"me 20:59", "sent", "pending"} {
+		if strings.Contains(plain, unwanted) {
+			t.Fatalf("message bubble retained old metadata %q\n%s", unwanted, plain)
+		}
+	}
+}
+
+func TestMessageBubblesShowGroupSenderOnlyForIncomingGroups(t *testing.T) {
+	now := time.Date(2026, 4, 21, 20, 59, 0, 0, time.UTC)
+	groupModel := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "family@g.us", Title: "Family", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	groupBubble := stripANSI(groupModel.renderMessageBubble(store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "family@g.us",
+		Sender:    "Dad",
+		Body:      "Dinner on Sunday?",
+		Timestamp: now,
+	}, 80, false, false))
+	if !strings.Contains(groupBubble, "Dad") || !strings.Contains(groupBubble, "20:59") {
+		t.Fatalf("group incoming bubble missing sender/time\n%s", groupBubble)
+	}
+
+	directModel := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "alice@s.whatsapp.net", Title: "Alice", Kind: "direct"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	directBubble := stripANSI(directModel.renderMessageBubble(store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "alice@s.whatsapp.net",
+		Sender:    "Alice",
+		Body:      "Dinner on Sunday?",
+		Timestamp: now,
+	}, 80, false, false))
+	if strings.Contains(directBubble, "Alice") {
+		t.Fatalf("direct incoming bubble should not repeat sender name\n%s", directBubble)
+	}
+	if !strings.Contains(directBubble, "20:59") {
+		t.Fatalf("direct incoming bubble missing time\n%s", directBubble)
+	}
+}
+
+func TestMessageStatusTicks(t *testing.T) {
+	tests := map[string]string{
+		"":           "",
+		"pending":    "…",
+		"queued":     "…",
+		"sending":    "…",
+		"sent":       "✓",
+		"server_ack": "✓",
+		"delivered":  "✓✓",
+		"read":       "✓✓",
+		"custom":     "✓",
+	}
+	for status, want := range tests {
+		if got := messageStatusTicks(status); got != want {
+			t.Fatalf("messageStatusTicks(%q) = %q, want %q", status, got, want)
+		}
 	}
 }
 
@@ -794,7 +868,7 @@ func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 	view := model.renderMessages(width, 12)
 	for i, line := range strings.Split(view, "\n") {
 		plain := stripANSI(line)
-		if !strings.Contains(plain, "me") && !strings.Contains(plain, "outgoing") && !strings.Contains(plain, "visual") && !strings.Contains(plain, "narrow") {
+		if !strings.Contains(plain, "outgoing") && !strings.Contains(plain, "visual") && !strings.Contains(plain, "narrow") && !strings.Contains(plain, "╭") && !strings.Contains(plain, "╰") {
 			continue
 		}
 		if got := lipgloss.Width(line); got >= width {
@@ -807,7 +881,7 @@ func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 		if messageStarted && isFooterLine(line) {
 			break
 		}
-		if strings.Contains(line, "me") {
+		if strings.Contains(line, "outgoing text") {
 			messageStarted = true
 		}
 		if messageStarted && strings.TrimSpace(line) == "" {
@@ -851,7 +925,7 @@ func TestFullViewOutgoingWrappedMessagesDoNotRenderBlankRows(t *testing.T) {
 		if messageStarted && isFooterLine(line) {
 			break
 		}
-		if strings.Contains(line, "me") {
+		if strings.Contains(line, "long outgoing message") {
 			messageStarted = true
 		}
 		if messageStarted && strings.TrimSpace(line) == "" {
@@ -1517,8 +1591,9 @@ func assertLineBeforeComposerContains(t *testing.T, view, want string) {
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, ">") && strings.Contains(line, "▌") {
-			target := i - 2
-			if target < 0 || !strings.Contains(lines[target], want) {
+			start := max(0, i-4)
+			window := strings.Join(lines[start:i], "\n")
+			if !strings.Contains(window, want) {
 				t.Fatalf("line before composer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
 			}
 			return
@@ -1532,8 +1607,12 @@ func assertLineBeforeFooterContains(t *testing.T, view, want string) {
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "? help") {
-			target := i - 1
-			if target < 0 || !strings.Contains(lines[target], want) {
+			if i == 0 || strings.TrimSpace(lines[i-1]) == "" {
+				t.Fatalf("blank space before footer; want message bubble touching footer\n%s", view)
+			}
+			start := max(0, i-4)
+			window := strings.Join(lines[start:i], "\n")
+			if !strings.Contains(window, want) {
 				t.Fatalf("line before footer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
 			}
 			return
