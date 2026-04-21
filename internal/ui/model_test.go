@@ -2,6 +2,8 @@ package ui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -256,8 +258,14 @@ func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
 	model.height = 12
 
 	model.composer = "first\nsecond"
-	if !strings.Contains(model.renderInput(), `first\nsecond`) {
-		t.Fatalf("renderInput did not expose multiline composer preview: %q", model.renderInput())
+	input := stripANSI(model.renderInput())
+	for _, want := range []string{"INSERT to Alice", "> first", "> second"} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("renderInput missing %q:\n%s", want, input)
+		}
+	}
+	if !strings.Contains(input, "▌") {
+		t.Fatalf("renderInput missing composer cursor:\n%s", input)
 	}
 }
 
@@ -457,7 +465,7 @@ func TestPreviewCommandTogglesInfoPane(t *testing.T) {
 	}
 }
 
-func TestMessagesRenderAsCompactBlocks(t *testing.T) {
+func TestMessagesRenderIncomingLeftAndOutgoingRight(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -472,30 +480,104 @@ func TestMessagesRenderAsCompactBlocks(t *testing.T) {
 		},
 	})
 
-	view := model.renderMessages(50, 24)
+	view := model.renderMessages(80, 24)
 	incomingLine := plainLineContaining(view, "incoming text")
 	outgoingLine := plainLineContaining(view, "outgoing text")
 	if incomingLine == "" || outgoingLine == "" {
 		t.Fatalf("rendered messages missing expected bodies\n%s", view)
 	}
-	if !strings.Contains(stripANSI(view), "| Alice") {
-		t.Fatalf("incoming metadata missing from compact block\n%s", view)
+	if leadingSpaces(incomingLine) > 4 {
+		t.Fatalf("incoming message was not left aligned: %q", incomingLine)
 	}
-	if !strings.Contains(stripANSI(view), "| me") {
-		t.Fatalf("outgoing bubble did not include sender label\n%s", view)
+	if leadingSpaces(outgoingLine) < 20 {
+		t.Fatalf("outgoing message was not right aligned: %q", outgoingLine)
+	}
+	if !strings.Contains(stripANSI(view), "me") {
+		t.Fatalf("outgoing metadata missing sender label\n%s", view)
+	}
+}
+
+func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.mode = ModeCommand
+	model.focus = FocusMessages
+	model.commandLine = "help"
+
+	status := stripANSI(model.renderStatus())
+	if !strings.Contains(status, "COMMAND MESSAGES") {
+		t.Fatalf("status missing mode/focus: %q", status)
+	}
+	prompt := stripANSI(model.renderInput())
+	if !strings.Contains(prompt, "COMMAND") || !strings.Contains(prompt, ":help") || !strings.Contains(prompt, "enter run") {
+		t.Fatalf("command prompt missing workflow: %q", prompt)
 	}
 
-	outgoingIndentedLines := 0
-	for _, line := range strings.Split(stripANSI(view), "\n") {
-		if strings.Contains(line, "outgoing text") || strings.Contains(line, "more than one line") || strings.Contains(line, "viewport") {
-			outgoingIndentedLines++
-			if !strings.Contains(line, "|") {
-				t.Fatalf("wrapped outgoing message line lost compact gutter: %q", line)
-			}
-		}
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+	prompt = stripANSI(model.renderInput())
+	if !strings.Contains(prompt, "SEARCH") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
+		t.Fatalf("search prompt missing workflow: %q", prompt)
 	}
-	if outgoingIndentedLines < 2 {
-		t.Fatalf("expected wrapped outgoing message lines, got %d\n%s", outgoingIndentedLines, view)
+}
+
+func TestDefaultRenderingAvoidsBackgroundFills(t *testing.T) {
+	t.Setenv("MAYBEWHATS_TRANSPARENT_BARS", "1")
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "transparent"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+
+	view := model.View()
+	if strings.Contains(view, "\x1b[48;") {
+		t.Fatalf("view contains ANSI background fill despite transparent bars:\n%q", view)
+	}
+}
+
+func TestLoadThemeReadsPywalColors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	walDir := filepath.Join(home, ".cache", "wal")
+	if err := os.MkdirAll(walDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	data := `{
+		"special": {"background": "#000001", "foreground": "#eeeeee"},
+		"colors": {
+			"color0": "#000001",
+			"color2": "#222222",
+			"color3": "#333333",
+			"color4": "#444444",
+			"color8": "#888888",
+			"color10": "#aaaaaa"
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(walDir, "colors.json"), []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	theme := loadTheme()
+	if theme.PrimaryFG != lipgloss.Color("#eeeeee") {
+		t.Fatalf("PrimaryFG = %q, want #eeeeee", theme.PrimaryFG)
+	}
+	if theme.AccentFG != lipgloss.Color("#444444") {
+		t.Fatalf("AccentFG = %q, want #444444", theme.AccentFG)
 	}
 }
 

@@ -11,18 +11,16 @@ import (
 )
 
 var (
-	appBG        = lipgloss.Color("#101418")
-	panelBG      = lipgloss.Color("#101418")
-	softFG       = lipgloss.Color("#9AA5B1")
-	primaryFG    = lipgloss.Color("#F5F7FA")
-	accentFG     = lipgloss.Color("#7ED7C1")
-	warnFG       = lipgloss.Color("#F4D35E")
-	borderColor  = lipgloss.Color("#2B3A42")
-	activeBorder = lipgloss.Color("#7ED7C1")
-	outgoingFG   = lipgloss.Color("#C7F9CC")
-	incomingLine = lipgloss.Color("#4B6472")
-	outgoingLine = lipgloss.Color("#2EA56F")
-	selectedLine = lipgloss.Color("#F4D35E")
+	softFG       = uiTheme.SoftFG
+	primaryFG    = uiTheme.PrimaryFG
+	accentFG     = uiTheme.AccentFG
+	warnFG       = uiTheme.WarnFG
+	borderColor  = uiTheme.Border
+	activeBorder = uiTheme.ActiveBorder
+	outgoingFG   = uiTheme.OutgoingFG
+	incomingLine = uiTheme.IncomingLine
+	outgoingLine = uiTheme.OutgoingLine
+	selectedLine = uiTheme.SelectedLine
 )
 
 func (m Model) View() string {
@@ -30,13 +28,13 @@ func (m Model) View() string {
 		return "loading..."
 	}
 
-	bodyHeight := max(3, m.height-2)
+	inputHeight := m.inputHeight()
+	bodyHeight := max(3, m.height-1-inputHeight)
 	body := m.renderBody(bodyHeight)
 	status := m.renderStatus()
 	input := m.renderInput()
 
 	rendered := lipgloss.NewStyle().
-		Background(appBG).
 		Foreground(primaryFG).
 		Width(m.width).
 		Render(lipgloss.JoinVertical(lipgloss.Left, body, status, input))
@@ -93,7 +91,6 @@ func (m Model) renderPanel(focus Focus, width, height int, content string) strin
 		lipgloss.Left,
 		lipgloss.Top,
 		content,
-		lipgloss.WithWhitespaceBackground(panelBG),
 		lipgloss.WithWhitespaceChars(" "),
 	)
 
@@ -390,17 +387,19 @@ func (m Model) renderMessages(width, height int) string {
 		}, height), "\n")
 	}
 
-	blocks := make([]string, 0, len(messages)*2)
+	blocks := make([]string, 0, len(messages))
 	var lastDate string
 	for i, message := range messages {
 		date := messageDate(message)
-		if date != "" && date != lastDate {
-			blocks = append(blocks, renderDaySeparator(date, width))
-			lastDate = date
-		}
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
 		active := i == m.messageCursor
-		blocks = append(blocks, m.renderMessageBlock(message, width, active, selected))
+		bubble := m.renderMessageBubble(message, width, active, selected)
+		block := alignMessageBubble(bubble, width, message.IsOutgoing)
+		if date != "" && date != lastDate {
+			block = renderDaySeparator(date, width) + "\n" + block
+			lastDate = date
+		}
+		blocks = append(blocks, block)
 	}
 
 	bodyHeight := max(1, height-1)
@@ -429,70 +428,6 @@ func (m Model) renderMessageHeader(title string, width int) string {
 		Render(truncateDisplay(strings.Join(parts, "  "), width))
 }
 
-func (m Model) renderMessageBlock(message store.Message, width int, active, selected bool) string {
-	lineColor := incomingLine
-	metaFG := softFG
-	bodyFG := primaryFG
-	if message.IsOutgoing {
-		lineColor = outgoingLine
-		bodyFG = outgoingFG
-	}
-	if selected {
-		lineColor = selectedLine
-		bodyFG = primaryFG
-		metaFG = warnFG
-	}
-	if active {
-		lineColor = activeBorder
-		metaFG = primaryFG
-	}
-
-	name := message.Sender
-	if message.IsOutgoing {
-		name = "me"
-	}
-	if name == "" {
-		name = "unknown"
-	}
-
-	metaParts := []string{name}
-	if !message.Timestamp.IsZero() {
-		metaParts = append(metaParts, message.Timestamp.Format("15:04"))
-	}
-	if message.IsOutgoing && message.Status != "" {
-		metaParts = append(metaParts, message.Status)
-	}
-	meta := strings.Join(metaParts, " ")
-
-	prefix := "  "
-	if active {
-		prefix = "> "
-	}
-	if selected {
-		prefix = "* "
-	}
-	gutter := lipgloss.NewStyle().Foreground(lineColor).Render("|")
-	metaLine := lipgloss.NewStyle().Foreground(metaFG).Render(truncateDisplay(prefix+gutter+" "+meta, width))
-
-	body := strings.TrimSpace(message.Body)
-	if body == "" {
-		body = "(empty)"
-	}
-	bodyStyle := lipgloss.NewStyle().Foreground(bodyFG)
-	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
-		bodyStyle = bodyStyle.Foreground(warnFG)
-	}
-
-	contentWidth := max(1, width-4)
-	var lines []string
-	lines = append(lines, metaLine)
-	for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
-		lines = append(lines, bodyStyle.Render(truncateDisplay("  "+gutter+" "+line, width)))
-	}
-
-	return strings.Join(lines, "\n")
-}
-
 func messageDate(message store.Message) string {
 	if message.Timestamp.IsZero() {
 		return ""
@@ -513,6 +448,7 @@ func renderDaySeparator(date string, width int) string {
 func (m Model) renderMessageBubble(message store.Message, availableWidth int, active, selected bool) string {
 	lineColor := incomingLine
 	fg := primaryFG
+	metaFG := softFG
 	if message.IsOutgoing {
 		lineColor = outgoingLine
 		fg = outgoingFG
@@ -520,9 +456,11 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	if selected {
 		lineColor = selectedLine
 		fg = primaryFG
+		metaFG = warnFG
 	}
 	if active {
 		lineColor = activeBorder
+		metaFG = primaryFG
 	}
 
 	sender := message.Sender
@@ -533,10 +471,14 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		sender = "unknown"
 	}
 
-	meta := sender
+	metaParts := []string{sender}
 	if !message.Timestamp.IsZero() {
-		meta = fmt.Sprintf("%s  %s", meta, message.Timestamp.Format("15:04"))
+		metaParts = append(metaParts, message.Timestamp.Format("15:04"))
 	}
+	if message.IsOutgoing && message.Status != "" {
+		metaParts = append(metaParts, message.Status)
+	}
+	meta := strings.Join(metaParts, " ")
 
 	body := strings.TrimSpace(message.Body)
 	if body == "" {
@@ -547,8 +489,11 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	contentWidth := clamp(max(bubbleTextWidth(meta, body), 16), 8, maxBubbleWidth-2)
 
 	contourStyle := lipgloss.NewStyle().Foreground(lineColor)
-	metaStyle := lipgloss.NewStyle().Foreground(softFG)
+	metaStyle := lipgloss.NewStyle().Foreground(metaFG)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
+	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
+		bodyStyle = bodyStyle.Foreground(warnFG)
+	}
 
 	meta = truncateDisplay(meta, contentWidth)
 	metaText := alignDisplay(meta, contentWidth, message.IsOutgoing)
@@ -661,9 +606,10 @@ func (m Model) renderStatus() string {
 		right = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
 	}
 
-	style := lipgloss.NewStyle().
-		Foreground(primaryFG).
-		Background(lipgloss.Color("#1C252B"))
+	style := lipgloss.NewStyle().Foreground(primaryFG)
+	if !barsTransparent() {
+		style = style.Background(uiTheme.BarBG)
+	}
 
 	leftWidth := max(0, m.width-lipgloss.Width(right))
 	left = truncateDisplay(left, leftWidth)
@@ -674,28 +620,64 @@ func (m Model) renderStatus() string {
 }
 
 func (m Model) renderInput() string {
-	content := ""
 	switch m.mode {
 	case ModeInsert:
-		chat := m.currentChat().Title
-		if chat == "" {
-			chat = "no chat"
-		}
-		content = fmt.Sprintf("to %s > %s", chat, renderComposerPreview(m.composer, max(1, m.width-lipgloss.Width(chat)-8)))
+		return m.renderComposer()
 	case ModeCommand:
-		content = ":" + m.commandLine
+		return m.renderPrompt("COMMAND", ":"+m.commandLine, "enter run  esc cancel")
 	case ModeSearch:
-		content = "/" + m.searchLine
+		return m.renderPrompt("SEARCH", "/"+m.searchLine, "enter search  esc cancel  empty clears")
 	default:
-		content = "normal  j/k move  5j counts  enter open  i insert  / search  ? help"
+		return m.renderPrompt("NORMAL", "j/k move  5j counts  enter open  i insert  : command  / search  ? help", "")
+	}
+}
+
+func (m Model) renderPrompt(label, content, hint string) string {
+	if hint != "" {
+		content = content + "  " + hint
+	}
+	content = truncateDisplay(content, max(1, m.width-2))
+	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
+	if !barsTransparent() {
+		style = style.Background(uiTheme.BarBG)
+	}
+	prefix := lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render(" " + label + " ")
+	return style.Render(truncateDisplay(prefix+content, m.width))
+}
+
+func (m Model) renderComposer() string {
+	chat := m.currentChat().Title
+	if chat == "" {
+		chat = "no chat"
 	}
 
-	content = truncateDisplay(content, max(1, m.width-2))
-	return lipgloss.NewStyle().
-		Foreground(softFG).
-		Background(lipgloss.Color("#161E24")).
-		Width(m.width).
-		Render(" " + content)
+	header := fmt.Sprintf(" INSERT to %s  enter send  ctrl+j newline  esc save draft", chat)
+	lines := []string{truncateDisplay(header, m.width)}
+
+	bodyLines := composerLines(m.composer)
+	maxBodyLines := max(1, m.inputHeight()-1)
+	if len(bodyLines) > maxBodyLines {
+		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
+	}
+	for i, line := range bodyLines {
+		if i == len(bodyLines)-1 {
+			line += "▌"
+		}
+		lines = append(lines, truncateDisplay("> "+line, m.width))
+	}
+
+	style := lipgloss.NewStyle().Foreground(primaryFG).Width(m.width)
+	if !barsTransparent() {
+		style = style.Background(uiTheme.BarBG)
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) inputHeight() int {
+	if m.mode != ModeInsert {
+		return 1
+	}
+	return min(4, max(2, len(composerLines(m.composer))+1))
 }
 
 func (m Model) renderHelp(width int) string {
@@ -725,14 +707,6 @@ func (m Model) renderHelp(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderComposerPreview(value string, width int) string {
-	value = strings.ReplaceAll(value, "\n", "\\n")
-	if value == "" {
-		return ""
-	}
-	return truncateDisplay(value, width)
-}
-
 func boolLabel(value bool, yes, no string) string {
 	if value {
 		return yes
@@ -754,6 +728,12 @@ func (m Model) panelStyle(focus Focus) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(border).
-		Background(panelBG).
 		Padding(0, 1)
+}
+
+func composerLines(value string) []string {
+	if value == "" {
+		return []string{""}
+	}
+	return strings.Split(value, "\n")
 }
