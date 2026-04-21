@@ -472,6 +472,31 @@ func TestViewRendersPaneContentWithinTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestPanelSizingDoesNotWrapExactWidthContent(t *testing.T) {
+	model := NewModel(Options{})
+	model.focus = FocusMessages
+
+	const panelWidth = 40
+	const panelHeight = 6
+	style := model.panelStyle(FocusMessages)
+	contentWidth := panelContentWidth(style, panelWidth)
+	content := strings.Repeat("x", contentWidth)
+
+	view := stripANSI(model.renderPanel(FocusMessages, panelWidth, panelHeight, content))
+	lines := strings.Split(view, "\n")
+	if got := len(lines); got != panelHeight {
+		t.Fatalf("rendered panel height = %d, want %d\n%s", got, panelHeight, view)
+	}
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width > panelWidth {
+			t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, width, panelWidth, view)
+		}
+	}
+	if !strings.Contains(view, content) {
+		t.Fatalf("exact-width content wrapped or was clipped\n%s", view)
+	}
+}
+
 func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -859,6 +884,54 @@ func TestFullViewShowsComposerForEmptyChatInNormalMode(t *testing.T) {
 	for _, want := range []string{"No messages in current chat.", "[NORMAL] to Alice", ">"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("full view missing %q for empty normal chat\n%s", want, view)
+		}
+	}
+}
+
+func TestCompactInsertComposerVisibleAt80ColumnsWithDatedMessages(t *testing.T) {
+	now := time.Date(2026, 4, 21, 20, 0, 0, 0, time.UTC)
+	messages := []store.Message{
+		{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "Are you finally building the terminal client?", Timestamp: now.Add(-25 * time.Hour)},
+		{ID: "m-2", ChatID: "chat-1", Sender: "me", Body: "Yes. The shell is real now and backed by SQLite.", Timestamp: now.Add(-23 * time.Hour), IsOutgoing: true, Status: "sent"},
+		{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "Good. Make the motions feel strict, not chatty.", Timestamp: now.Add(-10 * time.Minute)},
+		{ID: "m-4", ChatID: "chat-1", Sender: "me", Body: "I'm tightening the TUI before touching live sync.", Timestamp: now, IsOutgoing: true, Status: "pending"},
+	}
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 80
+	model.height = 24
+	model.compactLayout = true
+	model.focus = FocusMessages
+	model.mode = ModeInsert
+	model.messageCursor = len(messages) - 1
+	model.messageScrollTop = len(messages) - 1
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"[INSERT] to Alice", "> ▌"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("compact 80-column insert view missing %q\n%s", want, view)
+		}
+	}
+	for _, line := range strings.Split(view, "\n") {
+		inner := strings.TrimSpace(line)
+		inner = strings.TrimPrefix(inner, "│")
+		inner = strings.TrimSuffix(inner, "│")
+		if strings.TrimSpace(inner) == "--" {
+			t.Fatalf("panel content wrapped and produced a stray separator continuation row\n%s", view)
+		}
+	}
+	if got := len(strings.Split(view, "\n")); got > model.height {
+		t.Fatalf("View() produced %d lines, want <= %d\n%s", got, model.height, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, width, model.width, view)
 		}
 	}
 }

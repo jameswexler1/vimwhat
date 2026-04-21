@@ -86,14 +86,13 @@ func (m Model) renderBody(height int) string {
 
 func (m Model) renderPanel(focus Focus, width, height int, content string) string {
 	style := m.panelStyle(focus)
-	frameWidth, frameHeight := style.GetFrameSize()
-	innerWidth := max(1, width-frameWidth)
-	innerHeight := max(1, height-frameHeight)
-	content = clipLines(content, innerHeight)
+	contentWidth := panelContentWidth(style, width)
+	contentHeight := panelContentHeight(style, height)
+	content = clipLines(content, contentHeight)
 
 	filled := lipgloss.Place(
-		innerWidth,
-		innerHeight,
+		contentWidth,
+		contentHeight,
 		lipgloss.Left,
 		lipgloss.Top,
 		content,
@@ -101,19 +100,25 @@ func (m Model) renderPanel(focus Focus, width, height int, content string) strin
 	)
 
 	return style.
-		Width(innerWidth).
-		Height(innerHeight).
+		Width(panelBoxWidth(style, width)).
+		Height(panelBoxHeight(style, height)).
 		Render(filled)
 }
 
 func panelContentWidth(style lipgloss.Style, totalWidth int) int {
-	frameWidth, _ := style.GetFrameSize()
-	return max(1, totalWidth-frameWidth)
+	return max(1, panelBoxWidth(style, totalWidth)-style.GetHorizontalPadding())
 }
 
 func panelContentHeight(style lipgloss.Style, totalHeight int) int {
-	_, frameHeight := style.GetFrameSize()
-	return max(1, totalHeight-frameHeight)
+	return max(1, panelBoxHeight(style, totalHeight)-style.GetVerticalPadding())
+}
+
+func panelBoxWidth(style lipgloss.Style, totalWidth int) int {
+	return max(1, totalWidth-style.GetHorizontalMargins()-style.GetHorizontalBorderSize())
+}
+
+func panelBoxHeight(style lipgloss.Style, totalHeight int) int {
+	return max(1, totalHeight-style.GetVerticalMargins()-style.GetVerticalBorderSize())
 }
 
 func wrapPlainText(text string, width int) string {
