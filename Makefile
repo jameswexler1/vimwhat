@@ -6,7 +6,7 @@ run:
 	GOCACHE=$(GOCACHE) go run ./cmd/maybewhats
 
 build:
-	GOCACHE=$(GOCACHE) go build ./cmd/maybewhats
+	GOCACHE=$(GOCACHE) go build -o ./maybewhats ./cmd/maybewhats
 
 test:
 	GOCACHE=$(GOCACHE) go test ./...
