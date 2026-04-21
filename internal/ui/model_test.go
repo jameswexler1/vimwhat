@@ -791,6 +791,78 @@ func TestComposerOverlaysBottomOfShortMessagePane(t *testing.T) {
 	}
 }
 
+func TestFullViewShowsComposerForShortChatInInsertMode(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "short chat"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 18
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "visible composer"
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "[INSERT] to Alice") || !strings.Contains(view, "> visible composer▌") {
+		t.Fatalf("full view did not show composer for short chat\n%s", view)
+	}
+	composerLine := plainLineContaining(view, "[INSERT] to Alice")
+	if strings.Index(composerLine, "[INSERT] to Alice") < 24 {
+		t.Fatalf("composer did not render inside message pane\n%s", view)
+	}
+}
+
+func TestFullViewShowsComposerForEmptyChatInInsertMode(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 18
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = ""
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"No messages in current chat.", "[INSERT] to Alice", "> ▌"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("full view missing %q for empty insert chat\n%s", want, view)
+		}
+	}
+}
+
+func TestFullViewShowsComposerForEmptyChatInNormalMode(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 18
+	model.mode = ModeNormal
+	model.focus = FocusMessages
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"No messages in current chat.", "[NORMAL] to Alice", ">"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("full view missing %q for empty normal chat\n%s", want, view)
+		}
+	}
+}
+
 func TestComposerRemainsVisibleOverFullMessagePane(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

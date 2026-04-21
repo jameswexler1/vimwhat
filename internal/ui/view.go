@@ -466,13 +466,6 @@ func (m Model) renderMessages(width, height int) string {
 	}
 
 	messages := m.currentMessages()
-	if len(messages) == 0 && m.mode != ModeInsert {
-		return strings.Join(clipLinesSlice([]string{
-			header,
-			lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."),
-		}, height), "\n")
-	}
-
 	blocks := make([]messageBlock, 0, len(messages))
 	var lastDate string
 	for i, message := range messages {
@@ -858,22 +851,36 @@ func (m Model) renderMessageFooter(width int) string {
 	}
 
 	label := "NORMAL"
-	hint := "j/k move | i insert | : command | / search | ? help"
+	hint := "i insert | : command | / search | ? help"
 	if m.mode == ModeVisual {
 		label = "VISUAL"
 		hint = "j/k extend | y yank | esc normal"
 	}
 	separator := lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("-", max(1, width)))
+	draft := strings.TrimSuffix(m.draftsByChat[m.currentChat().ID], "\n")
+	if draft == "" {
+		draft = m.composer
+	}
+	draft = firstLine(draft)
+	input := "> " + draft
 	lines := []string{
 		separator,
-		truncateDisplay(" ["+label+"] "+hint, width),
-		"",
+		truncateDisplay(" ["+label+"] to "+m.footerChatTitle()+" | "+hint, width),
+		truncateDisplay(input, width),
 	}
 	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) footerChatTitle() string {
+	chat := m.currentChat().Title
+	if chat == "" {
+		return "no chat"
+	}
+	return chat
 }
 
 func (m Model) inputHeight() int {
