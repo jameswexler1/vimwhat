@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,21 +102,24 @@ func TestInsertSendClearsDraft(t *testing.T) {
 	}
 }
 
-func TestSearchMessagesUsesCallbackResults(t *testing.T) {
+func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
+	searchCalled := false
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
 			MessagesByChat: map[string][]store.Message{
-				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "old"}},
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "old"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle result"},
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "later"},
+				},
 			},
 			DraftsByChat: map[string]string{},
 			ActiveChatID: "chat-1",
 		},
 		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
-			if chatID != "chat-1" || query != "needle" {
-				return nil, errors.New("unexpected search")
-			}
-			return []store.Message{{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle result"}}, nil
+			searchCalled = true
+			return nil, nil
 		},
 	})
 	model.focus = FocusMessages
@@ -127,11 +129,17 @@ func TestSearchMessagesUsesCallbackResults(t *testing.T) {
 	updated, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 	messages := got.messagesByChat["chat-1"]
-	if len(messages) != 1 || messages[0].ID != "m-2" {
-		t.Fatalf("messages = %+v, want callback result", messages)
+	if searchCalled {
+		t.Fatal("/ search called SearchMessages; it should not filter through the store")
 	}
-	if got.messageCursor != 0 {
-		t.Fatalf("messageCursor = %d, want 0", got.messageCursor)
+	if len(messages) != 3 {
+		t.Fatalf("message count = %d, want unfiltered 3", len(messages))
+	}
+	if got.messageCursor != 1 {
+		t.Fatalf("messageCursor = %d, want first match at 1", got.messageCursor)
+	}
+	if got.activeSearch != "needle" || len(got.searchMatches) != 1 {
+		t.Fatalf("search state = active %q matches %v, want needle and one match", got.activeSearch, got.searchMatches)
 	}
 }
 
@@ -270,20 +278,22 @@ func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
 	}
 }
 
-func TestClearSearchRestoresMessagesFromStore(t *testing.T) {
+func TestClearSearchOnlyClearsSearchState(t *testing.T) {
+	loadCalled := false
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
 			MessagesByChat: map[string][]store.Message{
-				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "normal"}},
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "normal"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle result"},
+				},
 			},
 			DraftsByChat: map[string]string{},
 			ActiveChatID: "chat-1",
 		},
-		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
-			return []store.Message{{ID: "m-2", ChatID: chatID, Sender: "Alice", Body: "needle result"}}, nil
-		},
 		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
+			loadCalled = true
 			return []store.Message{{ID: "m-1", ChatID: chatID, Sender: "Alice", Body: "normal"}}, nil
 		},
 	})
@@ -293,17 +303,96 @@ func TestClearSearchRestoresMessagesFromStore(t *testing.T) {
 
 	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
 	searchModel := searched.(Model)
-	if searchModel.messagesByChat["chat-1"][0].ID != "m-2" {
-		t.Fatalf("search messages = %+v", searchModel.messagesByChat["chat-1"])
+	if len(searchModel.messagesByChat["chat-1"]) != 2 {
+		t.Fatalf("search filtered messages unexpectedly: %+v", searchModel.messagesByChat["chat-1"])
 	}
 
 	cleared, _ := searchModel.executeCommand("clear-search")
 	got := cleared.(Model)
-	if got.messagesByChat["chat-1"][0].ID != "m-1" {
-		t.Fatalf("cleared messages = %+v, want normal store messages", got.messagesByChat["chat-1"])
+	if loadCalled {
+		t.Fatal("clear-search reloaded messages; it should only clear search state")
+	}
+	if len(got.messagesByChat["chat-1"]) != 2 {
+		t.Fatalf("cleared search changed messages: %+v", got.messagesByChat["chat-1"])
 	}
 	if got.lastSearch != "" || len(got.searchMatches) != 0 {
 		t.Fatalf("search state was not cleared: last=%q matches=%v", got.lastSearch, got.searchMatches)
+	}
+}
+
+func TestSearchNextAndPreviousNavigateMatchesWithoutFiltering(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "needle first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "plain"},
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "needle second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	got := searched.(Model)
+	if got.messageCursor != 0 {
+		t.Fatalf("first search cursor = %d, want 0", got.messageCursor)
+	}
+
+	next, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	got = next.(Model)
+	if got.messageCursor != 2 {
+		t.Fatalf("n cursor = %d, want 2", got.messageCursor)
+	}
+
+	prev, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
+	got = prev.(Model)
+	if got.messageCursor != 0 {
+		t.Fatalf("N cursor = %d, want 0", got.messageCursor)
+	}
+	if len(got.messagesByChat["chat-1"]) != 3 {
+		t.Fatalf("search navigation filtered messages: %+v", got.messagesByChat["chat-1"])
+	}
+}
+
+func TestFilterMessagesCommandFiltersAndClearsCurrentChat(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "normal"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle result"},
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "another normal"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	filtered, _ := model.executeCommand("filter messages needle")
+	got := filtered.(Model)
+	if got.messageFilter != "needle" {
+		t.Fatalf("messageFilter = %q, want needle", got.messageFilter)
+	}
+	if messages := got.messagesByChat["chat-1"]; len(messages) != 1 || messages[0].ID != "m-2" {
+		t.Fatalf("filtered messages = %+v, want only m-2", messages)
+	}
+
+	cleared, _ := got.executeCommand("filter clear")
+	got = cleared.(Model)
+	if got.messageFilter != "" {
+		t.Fatalf("messageFilter = %q, want cleared", got.messageFilter)
+	}
+	if messages := got.messagesByChat["chat-1"]; len(messages) != 3 {
+		t.Fatalf("cleared filtered messages = %+v, want all three", messages)
 	}
 }
 
@@ -641,6 +730,60 @@ func TestFullViewShowsStatusAndComposerInInsertMode(t *testing.T) {
 	}
 	if got := len(strings.Split(view, "\n")); got > model.height {
 		t.Fatalf("View() produced %d lines, want <= %d\n%s", got, model.height, view)
+	}
+}
+
+func TestComposerOverlaysBottomOfShortMessagePane(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "short"
+
+	view := stripANSI(model.renderMessages(70, 10))
+	lines := strings.Split(view, "\n")
+	composerLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "[INSERT] to Alice") {
+			composerLine = i
+			break
+		}
+	}
+	if composerLine < len(lines)-3 {
+		t.Fatalf("composer was not fixed to bottom: line %d of %d\n%s", composerLine+1, len(lines), view)
+	}
+	if !strings.Contains(view, "No messages in current chat.") {
+		t.Fatalf("short chat lost message area while showing composer\n%s", view)
+	}
+}
+
+func TestComposerRemainsVisibleOverFullMessagePane(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(24)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "visible"
+	model.messageCursor = 23
+	model.messageScrollTop = 23
+
+	view := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(view, "[INSERT] to Alice") || !strings.Contains(view, "> visible▌") {
+		t.Fatalf("composer was not visible over full message pane\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got > 8 {
+		t.Fatalf("renderMessages produced %d lines, want <= 8\n%s", got, view)
 	}
 }
 

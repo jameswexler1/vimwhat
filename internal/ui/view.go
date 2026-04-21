@@ -438,20 +438,32 @@ func (m Model) renderMessages(width, height int) string {
 	if m.mode == ModeInsert {
 		composerHeight = min(m.composerHeight(), bodyHeight)
 	}
-	messageHeight := bodyHeight - composerHeight
 
 	body := make([]string, 0, bodyHeight)
 	if len(blocks) == 0 {
-		if messageHeight > 0 {
-			body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
-		}
-	} else if messageHeight > 0 {
-		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)...)
+		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
+	} else {
+		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), bodyHeight)...)
 	}
 	if composerHeight > 0 {
-		body = append(body, strings.Split(clipLines(m.renderComposer(max(1, width-2)), composerHeight), "\n")...)
+		body = padLines(body, bodyHeight)
+		composer := padLines(strings.Split(clipLines(m.renderComposer(max(1, width-2)), composerHeight), "\n"), composerHeight)
+		start := max(0, bodyHeight-composerHeight)
+		copy(body[start:], composer)
 	}
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+}
+
+func padLines(lines []string, height int) []string {
+	height = max(1, height)
+	if len(lines) >= height {
+		return lines[:height]
+	}
+	out := append([]string{}, lines...)
+	for len(out) < height {
+		out = append(out, "")
+	}
+	return out
 }
 
 func (m Model) renderMessageHeader(title string, width int) string {
@@ -461,6 +473,9 @@ func (m Model) renderMessageHeader(title string, width int) string {
 	}
 	if m.activeSearch != "" {
 		parts = append(parts, "/"+m.activeSearch)
+	}
+	if m.messageFilter != "" {
+		parts = append(parts, "filter:"+m.messageFilter)
 	}
 	if count := len(m.currentMessages()); count > 0 {
 		parts = append(parts, fmt.Sprintf("%d msgs", count))
@@ -578,16 +593,12 @@ func bubbleTextWidth(meta, body string) int {
 
 func alignMessageBubble(bubble string, width int, outgoing bool) string {
 	lines := strings.Split(bubble, "\n")
-	blockWidth := 0
-	for _, line := range lines {
-		blockWidth = max(blockWidth, lipgloss.Width(line))
-	}
 	if !outgoing {
 		return strings.Join(lines, "\n")
 	}
 
-	indent := max(0, width-blockWidth-1)
 	for i, line := range lines {
+		indent := max(0, width-lipgloss.Width(line)-3)
 		lines[i] = truncateDisplay(strings.Repeat(" ", indent)+line, width)
 	}
 	return strings.Join(lines, "\n")
@@ -595,11 +606,10 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 
 func bubbleMessageLine(contourStyle, textStyle lipgloss.Style, text string, width int, outgoing bool) string {
 	text = truncateDisplay(text, width)
-	padding := strings.Repeat(" ", max(0, width-lipgloss.Width(text)))
 	if outgoing {
-		return padding + textStyle.Render(text) + " " + contourStyle.Render("│")
+		return textStyle.Render(text) + " " + contourStyle.Render("│")
 	}
-	return contourStyle.Render("│") + " " + textStyle.Render(text) + padding
+	return contourStyle.Render("│") + " " + textStyle.Render(text)
 }
 
 func (m Model) renderInfo(width int) string {
@@ -635,9 +645,9 @@ func (m Model) renderInfo(width int) string {
 }
 
 func (m Model) renderStatus() string {
-	filter := "all"
+	chatFilter := "all"
 	if m.unreadOnly {
-		filter = "unread"
+		chatFilter = "unread"
 	}
 	sortMode := "recent"
 	if m.pinnedFirst {
@@ -660,8 +670,12 @@ func (m Model) renderStatus() string {
 	if m.activeSearch != "" {
 		search = " /" + truncateDisplay(m.activeSearch, 16)
 	}
+	messageFilter := ""
+	if m.messageFilter != "" {
+		messageFilter = " filter:" + truncateDisplay(m.messageFilter, 16)
+	}
 	center := " " + truncateDisplay(m.status, max(8, m.width/3)) + " "
-	rightText := fmt.Sprintf(" %s/%s%s ", filter, sortMode, search)
+	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
 		rightCount = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
@@ -786,7 +800,8 @@ func (m Model) renderHelp(width int) string {
 		"         u unread    p sort      n/N next search   ? help      q quit",
 		"insert:  enter send  ctrl+j newline  esc save draft",
 		"visual:  j/k extend  y yank          esc normal",
-		"command: clear-search  filter unread/all  sort pinned/recent  preview",
+		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
+		"         sort pinned/recent  preview",
 		"",
 		"state:",
 		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",

@@ -71,6 +71,8 @@ type Model struct {
 	searchChatSource []store.Chat
 	searchMatches    []int
 	searchIndex      int
+	messageFilter    string
+	unfilteredByChat map[string][]store.Message
 	pendingCount     int
 	yankRegister     string
 	compactLayout    bool
@@ -107,23 +109,24 @@ func NewModel(opts Options) Model {
 	}
 
 	return Model{
-		mode:           ModeNormal,
-		focus:          FocusChats,
-		allChats:       slices.Clone(chats),
-		chats:          chats,
-		messagesByChat: cloneMessages(opts.Snapshot.MessagesByChat),
-		draftsByChat:   cloneDrafts(opts.Snapshot.DraftsByChat),
-		activeChat:     activeChat,
-		previewReport:  opts.PreviewReport,
-		paths:          opts.Paths,
-		config:         opts.Config,
-		status:         "ready",
-		pinnedFirst:    true,
-		persistMessage: opts.PersistMessage,
-		loadMessages:   opts.LoadMessages,
-		saveDraft:      opts.SaveDraft,
-		searchChats:    opts.SearchChats,
-		searchMessages: opts.SearchMessages,
+		mode:             ModeNormal,
+		focus:            FocusChats,
+		allChats:         slices.Clone(chats),
+		chats:            chats,
+		messagesByChat:   cloneMessages(opts.Snapshot.MessagesByChat),
+		draftsByChat:     cloneDrafts(opts.Snapshot.DraftsByChat),
+		activeChat:       activeChat,
+		previewReport:    opts.PreviewReport,
+		paths:            opts.Paths,
+		config:           opts.Config,
+		status:           "ready",
+		pinnedFirst:      true,
+		persistMessage:   opts.PersistMessage,
+		loadMessages:     opts.LoadMessages,
+		saveDraft:        opts.SaveDraft,
+		searchChats:      opts.SearchChats,
+		searchMessages:   opts.SearchMessages,
+		unfilteredByChat: map[string][]store.Message{},
 	}
 }
 
@@ -367,6 +370,9 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			message = persisted
 		}
 		m.messagesByChat[chatID] = append(m.messagesByChat[chatID], message)
+		if base, ok := m.unfilteredByChat[chatID]; ok {
+			m.unfilteredByChat[chatID] = append(base, message)
+		}
 		m.messageCursor = len(m.messagesByChat[chatID]) - 1
 		m.messageScrollTop = m.messageCursor
 		m.composer = ""
@@ -423,12 +429,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.lastSearch = m.searchLine
 		m.lastSearchFocus = m.focus
 		if strings.TrimSpace(m.lastSearch) == "" {
-			if err := m.clearSearch(); err != nil {
-				m.searchLine = ""
-				m.mode = ModeNormal
-				m.status = fmt.Sprintf("clear search failed: %v", err)
-				return m, nil
-			}
+			m.clearSearch()
 			m.searchLine = ""
 			m.mode = ModeNormal
 			m.status = "search cleared"
@@ -436,12 +437,6 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.activeSearch = strings.TrimSpace(m.lastSearch)
 		m.searchHistory = append(m.searchHistory, m.activeSearch)
-		if err := m.runStoreSearch(); err != nil {
-			m.searchLine = ""
-			m.mode = ModeNormal
-			m.status = fmt.Sprintf("search failed: %v", err)
-			return m, nil
-		}
 		m.rebuildSearchMatches()
 		m.advanceSearch(1)
 		m.mode = ModeNormal
@@ -558,25 +553,25 @@ func (m *Model) moveCursor(delta int) {
 }
 
 func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
-	switch cmd {
-	case "":
+	switch {
+	case cmd == "":
 		m.status = "command cancelled"
-	case "q", "quit":
+	case cmd == "q" || cmd == "quit":
 		return m, tea.Quit
-	case "help":
+	case cmd == "help":
 		m.helpVisible = true
 		m.status = "help"
-	case "focus chats":
+	case cmd == "focus chats":
 		m.focus = FocusChats
 		m.status = "focus: chats"
-	case "focus messages":
+	case cmd == "focus messages":
 		m.focus = FocusMessages
 		if err := m.ensureCurrentMessagesLoaded(); err != nil {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return m, nil
 		}
 		m.status = "focus: messages"
-	case "focus preview":
+	case cmd == "focus preview":
 		if m.compactLayout {
 			m.status = "info pane hidden in compact layout"
 		} else {
@@ -584,7 +579,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			m.focus = FocusPreview
 			m.status = "focus: info"
 		}
-	case "preview", "preview toggle", "info", "info toggle":
+	case cmd == "preview" || cmd == "preview toggle" || cmd == "info" || cmd == "info toggle":
 		if m.compactLayout {
 			m.status = "info pane hidden in compact layout"
 			break
@@ -594,44 +589,58 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			m.focus = FocusMessages
 		}
 		m.status = fmt.Sprintf("info pane: %s", onOff(m.infoPaneVisible))
-	case "preview show", "info show":
+	case cmd == "preview show" || cmd == "info show":
 		if m.compactLayout {
 			m.status = "info pane hidden in compact layout"
 			break
 		}
 		m.infoPaneVisible = true
 		m.status = "info pane: on"
-	case "preview hide", "info hide":
+	case cmd == "preview hide" || cmd == "info hide":
 		m.infoPaneVisible = false
 		if m.focus == FocusPreview {
 			m.focus = FocusMessages
 		}
 		m.status = "info pane: off"
-	case "preview-backend auto":
+	case cmd == "preview-backend auto":
 		m.previewReport = media.Detect("auto")
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
-	case "clear-search", "search clear":
-		if err := m.clearSearch(); err != nil {
-			m.status = fmt.Sprintf("clear search failed: %v", err)
-			break
-		}
+	case cmd == "clear-search" || cmd == "search clear":
+		m.clearSearch()
 		m.status = "search cleared"
-	case "filter unread":
+	case cmd == "filter unread":
 		if err := m.setUnreadOnly(true); err != nil {
 			m.status = fmt.Sprintf("filter failed: %v", err)
 			break
 		}
-	case "filter all":
+	case cmd == "filter all":
 		if err := m.setUnreadOnly(false); err != nil {
 			m.status = fmt.Sprintf("filter failed: %v", err)
 			break
 		}
-	case "sort pinned":
+	case cmd == "filter clear" || cmd == "filter messages clear":
+		if err := m.clearMessageFilter(); err != nil {
+			m.status = fmt.Sprintf("filter failed: %v", err)
+			break
+		}
+	case strings.HasPrefix(cmd, "filter messages "):
+		query := strings.TrimSpace(strings.TrimPrefix(cmd, "filter messages "))
+		if query == "" || query == "clear" {
+			if err := m.clearMessageFilter(); err != nil {
+				m.status = fmt.Sprintf("filter failed: %v", err)
+			}
+			break
+		}
+		if err := m.applyMessageFilter(query); err != nil {
+			m.status = fmt.Sprintf("filter failed: %v", err)
+			break
+		}
+	case cmd == "sort pinned":
 		if err := m.setPinnedFirst(true); err != nil {
 			m.status = fmt.Sprintf("sort failed: %v", err)
 			break
 		}
-	case "sort recent":
+	case cmd == "sort recent":
 		if err := m.setPinnedFirst(false); err != nil {
 			m.status = fmt.Sprintf("sort failed: %v", err)
 			break
@@ -788,18 +797,77 @@ func (m *Model) reloadCurrentMessages() error {
 	return nil
 }
 
-func (m *Model) clearSearch() error {
+func (m *Model) clearSearch() {
 	m.lastSearch = ""
 	m.searchLine = ""
 	m.activeSearch = ""
-	m.searchChatSource = nil
 	m.searchMatches = nil
 	m.searchIndex = -1
 	m.lastSearchFocus = ""
-	if err := m.applyChatView(m.allChats, m.currentChat().ID); err != nil {
+	m.searchChatSource = nil
+}
+
+func (m *Model) applyMessageFilter(query string) error {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return m.clearMessageFilter()
+	}
+
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		return nil
+	}
+	source := m.filterSource(chatID)
+	m.unfilteredByChat[chatID] = slices.Clone(source)
+
+	var filtered []store.Message
+	if m.searchMessages != nil {
+		messages, err := m.searchMessages(chatID, query, messageLoadLimit)
+		if err != nil {
+			return err
+		}
+		filtered = slices.Clone(messages)
+	} else {
+		lowerQuery := strings.ToLower(query)
+		for _, message := range source {
+			if strings.Contains(strings.ToLower(message.Body), lowerQuery) {
+				filtered = append(filtered, message)
+			}
+		}
+	}
+
+	m.messagesByChat[chatID] = filtered
+	m.messageFilter = query
+	m.messageCursor = 0
+	m.messageScrollTop = 0
+	m.status = fmt.Sprintf("message filter: %s", query)
+	return nil
+}
+
+func (m *Model) clearMessageFilter() error {
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		m.messageFilter = ""
+		return nil
+	}
+	if base, ok := m.unfilteredByChat[chatID]; ok {
+		m.messagesByChat[chatID] = slices.Clone(base)
+		delete(m.unfilteredByChat, chatID)
+	} else if err := m.reloadCurrentMessages(); err != nil {
 		return err
 	}
-	return m.reloadCurrentMessages()
+	m.messageFilter = ""
+	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
+	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
+	m.status = "message filter cleared"
+	return nil
+}
+
+func (m Model) filterSource(chatID string) []store.Message {
+	if base, ok := m.unfilteredByChat[chatID]; ok {
+		return slices.Clone(base)
+	}
+	return slices.Clone(m.messagesByChat[chatID])
 }
 
 func (m *Model) captureCount(msg tea.KeyMsg) bool {
@@ -850,9 +918,6 @@ func (m *Model) setPinnedFirst(enabled bool) error {
 }
 
 func (m Model) currentChatSource() []store.Chat {
-	if strings.TrimSpace(m.activeSearch) == "" {
-		return m.allChats
-	}
 	if len(m.searchChatSource) == 0 {
 		return m.allChats
 	}
