@@ -853,7 +853,7 @@ func statusSegment(text string, fg, bg lipgloss.Color, bold bool) string {
 func modeStatusColor(mode Mode) lipgloss.Color {
 	switch mode {
 	case ModeInsert:
-		return outgoingLine
+		return uiTheme.InsertModeBG
 	case ModeVisual:
 		return selectedLine
 	case ModeCommand:
@@ -890,17 +890,10 @@ func (m Model) renderPrompt(label, content, hint string) string {
 }
 
 func (m Model) renderComposer(width int) string {
-	chat := m.currentChat().Title
-	if chat == "" {
-		chat = "no chat"
-	}
-
-	header := fmt.Sprintf(" [INSERT] to %s | enter send | ctrl+j newline | esc save draft", chat)
-	separator := lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("-", max(1, width)))
-	lines := []string{separator, truncateDisplay(header, width)}
+	lines := []string{renderFooterHelpLine(width)}
 
 	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.composerHeight()-2)
+	maxBodyLines := max(1, m.composerHeight()-1)
 	if len(bodyLines) > maxBodyLines {
 		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
 	}
@@ -926,13 +919,6 @@ func (m Model) renderMessageFooter(width int) string {
 		return m.renderComposer(width)
 	}
 
-	label := "NORMAL"
-	hint := "i insert | : command | / search | ? help"
-	if m.mode == ModeVisual {
-		label = "VISUAL"
-		hint = "j/k extend | y yank | esc normal"
-	}
-	separator := lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("-", max(1, width)))
 	draft := strings.TrimSuffix(m.draftsByChat[m.currentChat().ID], "\n")
 	if draft == "" {
 		draft = m.composer
@@ -940,8 +926,7 @@ func (m Model) renderMessageFooter(width int) string {
 	draft = firstLine(draft)
 	input := "> " + draft
 	lines := []string{
-		separator,
-		truncateDisplay(" ["+label+"] to "+m.footerChatTitle()+" | "+hint, width),
+		renderFooterHelpLine(width),
 		truncateDisplay(input, width),
 	}
 	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
@@ -949,6 +934,18 @@ func (m Model) renderMessageFooter(width int) string {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func renderFooterHelpLine(width int) string {
+	width = max(1, width)
+	hint := "? help"
+	if width <= lipgloss.Width(hint) {
+		return lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay(hint, width))
+	}
+
+	fill := strings.Repeat("-", max(0, width-lipgloss.Width(hint)-1))
+	return lipgloss.NewStyle().Foreground(borderColor).Render(fill+" ") +
+		lipgloss.NewStyle().Foreground(accentFG).Render(hint)
 }
 
 func (m Model) footerChatTitle() string {

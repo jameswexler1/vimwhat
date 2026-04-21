@@ -268,10 +268,13 @@ func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
 
 	model.composer = "first\nsecond"
 	input := stripANSI(model.renderMessages(80, 10))
-	for _, want := range []string{"[INSERT] to Alice", "> first", "> second"} {
+	for _, want := range []string{"? help", "> first", "> second"} {
 		if !strings.Contains(input, want) {
 			t.Fatalf("renderMessages missing composer content %q:\n%s", want, input)
 		}
+	}
+	if strings.Contains(input, "[INSERT]") || strings.Contains(input, "enter send") {
+		t.Fatalf("composer retained noisy insert workflow text:\n%s", input)
 	}
 	if !strings.Contains(input, "▌") {
 		t.Fatalf("composer missing cursor:\n%s", input)
@@ -906,6 +909,9 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	if commandStatus == insertStatus {
 		t.Fatal("statusbar styling did not change between command and insert modes")
 	}
+	if modeStatusColor(ModeInsert) != uiTheme.InsertModeBG {
+		t.Fatalf("insert mode status color = %q, want %q", modeStatusColor(ModeInsert), uiTheme.InsertModeBG)
+	}
 }
 
 func TestFullViewShowsStatusAndComposerInInsertMode(t *testing.T) {
@@ -926,13 +932,16 @@ func TestFullViewShowsStatusAndComposerInInsertMode(t *testing.T) {
 	model.composer = "draft reply"
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"INSERT", "MESSAGES", "[INSERT] to Alice", "> draft reply▌"} {
+	for _, want := range []string{"INSERT", "MESSAGES", "? help", "> draft reply▌"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("full insert view missing %q\n%s", want, view)
 		}
 	}
-	composerLine := plainLineContaining(view, "[INSERT] to Alice")
-	composerColumn := strings.Index(composerLine, "[INSERT] to Alice")
+	if strings.Contains(view, "[INSERT] to Alice") || strings.Contains(view, "enter send") {
+		t.Fatalf("full insert view retained noisy footer workflow text\n%s", view)
+	}
+	composerLine := plainLineContaining(view, "? help")
+	composerColumn := strings.Index(composerLine, "? help")
 	if composerColumn < 24 {
 		t.Fatalf("composer rendered outside the message pane at column %d\n%s", composerColumn, view)
 	}
@@ -958,7 +967,7 @@ func TestComposerOverlaysBottomOfShortMessagePane(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	composerLine := -1
 	for i, line := range lines {
-		if strings.Contains(line, "[INSERT] to Alice") {
+		if strings.Contains(line, "? help") {
 			composerLine = i
 			break
 		}
@@ -989,11 +998,14 @@ func TestFullViewShowsComposerForShortChatInInsertMode(t *testing.T) {
 	model.composer = "visible composer"
 
 	view := stripANSI(model.View())
-	if !strings.Contains(view, "[INSERT] to Alice") || !strings.Contains(view, "> visible composer▌") {
+	if !strings.Contains(view, "? help") || !strings.Contains(view, "> visible composer▌") {
 		t.Fatalf("full view did not show composer for short chat\n%s", view)
 	}
-	composerLine := plainLineContaining(view, "[INSERT] to Alice")
-	if strings.Index(composerLine, "[INSERT] to Alice") < 24 {
+	if strings.Contains(view, "[INSERT] to Alice") || strings.Contains(view, "ctrl+j newline") {
+		t.Fatalf("full view retained noisy insert footer text\n%s", view)
+	}
+	composerLine := plainLineContaining(view, "? help")
+	if strings.Index(composerLine, "? help") < 24 {
 		t.Fatalf("composer did not render inside message pane\n%s", view)
 	}
 }
@@ -1014,10 +1026,13 @@ func TestFullViewShowsComposerForEmptyChatInInsertMode(t *testing.T) {
 	model.composer = ""
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"No messages in current chat.", "[INSERT] to Alice", "> ▌"} {
+	for _, want := range []string{"No messages in current chat.", "? help", "> ▌"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("full view missing %q for empty insert chat\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[INSERT]") || strings.Contains(view, "esc save draft") {
+		t.Fatalf("empty insert footer retained noisy workflow text\n%s", view)
 	}
 }
 
@@ -1036,9 +1051,39 @@ func TestFullViewShowsComposerForEmptyChatInNormalMode(t *testing.T) {
 	model.focus = FocusMessages
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"No messages in current chat.", "[NORMAL] to Alice", ">"} {
+	for _, want := range []string{"No messages in current chat.", "? help", ">"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("full view missing %q for empty normal chat\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "[NORMAL]") || strings.Contains(view, "i insert") {
+		t.Fatalf("empty normal footer retained noisy workflow text\n%s", view)
+	}
+}
+
+func TestVisualFooterIsMinimal(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "selected message"}},
+			},
+			DraftsByChat: map[string]string{"chat-1": "draft reply"},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+
+	view := stripANSI(model.renderMessages(70, 10))
+	for _, want := range []string{"? help", "> draft reply"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("visual footer missing %q\n%s", want, view)
+		}
+	}
+	for _, unwanted := range []string{"[VISUAL]", "j/k extend", "y yank", "esc normal"} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("visual footer retained noisy workflow text %q\n%s", unwanted, view)
 		}
 	}
 }
@@ -1068,10 +1113,13 @@ func TestCompactInsertComposerVisibleAt80ColumnsWithDatedMessages(t *testing.T) 
 	model.messageScrollTop = len(messages) - 1
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"[INSERT] to Alice", "> ▌"} {
+	for _, want := range []string{"? help", "> ▌"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact 80-column insert view missing %q\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "[INSERT]") || strings.Contains(view, "enter send") {
+		t.Fatalf("compact 80-column insert footer retained noisy workflow text\n%s", view)
 	}
 	for _, line := range strings.Split(view, "\n") {
 		inner := strings.TrimSpace(line)
@@ -1107,8 +1155,11 @@ func TestComposerRemainsVisibleOverFullMessagePane(t *testing.T) {
 	model.messageScrollTop = 23
 
 	view := stripANSI(model.renderMessages(70, 8))
-	if !strings.Contains(view, "[INSERT] to Alice") || !strings.Contains(view, "> visible▌") {
+	if !strings.Contains(view, "? help") || !strings.Contains(view, "> visible▌") {
 		t.Fatalf("composer was not visible over full message pane\n%s", view)
+	}
+	if strings.Contains(view, "[INSERT]") || strings.Contains(view, "ctrl+j newline") {
+		t.Fatalf("full message pane retained noisy insert footer text\n%s", view)
 	}
 	if got := len(strings.Split(view, "\n")); got > 8 {
 		t.Fatalf("renderMessages produced %d lines, want <= 8\n%s", got, view)
@@ -1327,6 +1378,7 @@ func TestLoadThemeReadsPywalColors(t *testing.T) {
 			"color2": "#222222",
 			"color3": "#333333",
 			"color4": "#444444",
+			"color5": "#555555",
 			"color8": "#888888",
 			"color10": "#aaaaaa"
 		}
@@ -1341,6 +1393,9 @@ func TestLoadThemeReadsPywalColors(t *testing.T) {
 	}
 	if theme.AccentFG != lipgloss.Color("#444444") {
 		t.Fatalf("AccentFG = %q, want #444444", theme.AccentFG)
+	}
+	if theme.InsertModeBG != lipgloss.Color("#555555") {
+		t.Fatalf("InsertModeBG = %q, want #555555", theme.InsertModeBG)
 	}
 }
 
@@ -1429,9 +1484,7 @@ func leadingSpaces(value string) int {
 
 func isFooterLine(line string) bool {
 	trimmed := strings.TrimSpace(line)
-	return strings.Contains(trimmed, "[NORMAL]") ||
-		strings.Contains(trimmed, "[VISUAL]") ||
-		strings.Contains(trimmed, "[INSERT]") ||
+	return strings.Contains(trimmed, "? help") ||
 		(trimmed != "" && strings.Trim(trimmed, "-") == "")
 }
 
@@ -1463,7 +1516,7 @@ func assertLineBeforeComposerContains(t *testing.T, view, want string) {
 	t.Helper()
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
-		if strings.Contains(line, "[INSERT]") {
+		if strings.Contains(line, ">") && strings.Contains(line, "▌") {
 			target := i - 2
 			if target < 0 || !strings.Contains(lines[target], want) {
 				t.Fatalf("line before composer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
@@ -1478,8 +1531,8 @@ func assertLineBeforeFooterContains(t *testing.T, view, want string) {
 	t.Helper()
 	lines := strings.Split(view, "\n")
 	for i, line := range lines {
-		if strings.Contains(line, "[NORMAL]") || strings.Contains(line, "[VISUAL]") || strings.Contains(line, "[INSERT]") {
-			target := i - 2
+		if strings.Contains(line, "? help") {
+			target := i - 1
 			if target < 0 || !strings.Contains(lines[target], want) {
 				t.Fatalf("line before footer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
 			}
