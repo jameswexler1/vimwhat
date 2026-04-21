@@ -35,14 +35,17 @@ func (m Model) View() string {
 	}
 	body := capLines(m.renderBody(bodyHeight), bodyHeight)
 	status := m.renderStatus()
-	input := m.renderInput()
+	parts := []string{body, status}
+	if inputHeight > 0 {
+		parts = append(parts, m.renderInput())
+	}
 
 	rendered := lipgloss.NewStyle().
 		Foreground(primaryFG).
 		Width(m.width).
-		Render(lipgloss.JoinVertical(lipgloss.Left, body, status, input))
+		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 
-	return capLines(rendered, m.height)
+	return capLines(trimRightSpaces(rendered), m.height)
 }
 
 func (m Model) renderBody(height int) string {
@@ -193,6 +196,14 @@ func capLines(content string, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+func trimRightSpaces(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func clipLinesSlice(lines []string, height int) []string {
 	height = max(1, height)
 	if len(lines) <= height {
@@ -201,34 +212,31 @@ func clipLinesSlice(lines []string, height int) []string {
 	return lines[:height]
 }
 
-func messageViewport(blocks []string, cursor, height int) []string {
+type messageBlock struct {
+	lines []string
+}
+
+func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []string {
 	height = max(1, height)
 	if len(blocks) == 0 {
 		return nil
 	}
 
 	selected := clamp(cursor, 0, len(blocks)-1)
+	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
 	var out []string
 	used := 0
 
-	for i := selected; i >= 0; i-- {
-		block := blockLines(blocks[i])
-		if used+len(block) > height {
-			if len(out) == 0 {
-				return tailLines(blockLines(blocks[i]), height)
-			}
-			break
-		}
-		out = append(block, out...)
-		used += len(block)
-	}
-
-	for i := selected + 1; i < len(blocks) && used < height; i++ {
-		block := blockLines(blocks[i])
+	for i := scrollTop; i < len(blocks) && used < height; i++ {
+		block := blocks[i].lines
 		if used+len(block) > height {
 			remaining := height - used
 			if remaining > 0 {
-				out = append(out, block[:remaining]...)
+				if i == selected {
+					out = append(out, tailLines(block, remaining)...)
+				} else {
+					out = append(out, block[:remaining]...)
+				}
 			}
 			break
 		}
@@ -242,11 +250,31 @@ func messageViewport(blocks []string, cursor, height int) []string {
 	return out
 }
 
-func blockLines(block string) []string {
-	if block == "" {
-		return nil
+func adjustedMessageScrollTop(blocks []messageBlock, scrollTop, selected, height int) int {
+	scrollTop = clamp(scrollTop, 0, len(blocks)-1)
+	if selected < scrollTop {
+		return selected
 	}
-	return strings.Split(block, "\n")
+
+	for scrollTop < selected && !messageBlockFullyVisible(blocks, scrollTop, selected, height) {
+		scrollTop++
+	}
+	return scrollTop
+}
+
+func messageBlockFullyVisible(blocks []messageBlock, scrollTop, selected, height int) bool {
+	used := 0
+	for i := scrollTop; i < len(blocks); i++ {
+		blockHeight := len(blocks[i].lines)
+		if i == selected {
+			return used+blockHeight <= height || (used == 0 && blockHeight >= height)
+		}
+		if used+blockHeight >= height {
+			return false
+		}
+		used += blockHeight
+	}
+	return false
 }
 
 func tailLines(lines []string, height int) []string {
@@ -383,31 +411,47 @@ func (m Model) renderMessages(width, height int) string {
 	}
 
 	messages := m.currentMessages()
-	if len(messages) == 0 {
+	if len(messages) == 0 && m.mode != ModeInsert {
 		return strings.Join(clipLinesSlice([]string{
 			header,
 			lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."),
 		}, height), "\n")
 	}
 
-	blocks := make([]string, 0, len(messages))
+	blocks := make([]messageBlock, 0, len(messages))
 	var lastDate string
 	for i, message := range messages {
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
 		active := i == m.messageCursor
 		bubble := m.renderMessageBubble(message, width, active, selected)
-		block := alignMessageBubble(bubble, width, message.IsOutgoing)
+		lines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
 		if date != "" && date != lastDate {
-			block = renderDaySeparator(date, width) + "\n" + block
+			lines = append([]string{renderDaySeparator(date, width)}, lines...)
 			lastDate = date
 		}
-		blocks = append(blocks, block)
+		blocks = append(blocks, messageBlock{lines: lines})
 	}
 
 	bodyHeight := max(1, height-1)
-	body := messageViewport(blocks, clamp(m.messageCursor, 0, len(blocks)-1), bodyHeight)
-	return strings.Join(append([]string{header}, body...), "\n")
+	composerHeight := 0
+	if m.mode == ModeInsert {
+		composerHeight = min(m.composerHeight(), bodyHeight)
+	}
+	messageHeight := bodyHeight - composerHeight
+
+	body := make([]string, 0, bodyHeight)
+	if len(blocks) == 0 {
+		if messageHeight > 0 {
+			body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
+		}
+	} else if messageHeight > 0 {
+		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)...)
+	}
+	if composerHeight > 0 {
+		body = append(body, strings.Split(clipLines(m.renderComposer(max(1, width-2)), composerHeight), "\n")...)
+	}
+	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
 }
 
 func (m Model) renderMessageHeader(title string, width int) string {
@@ -499,10 +543,9 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	}
 
 	meta = truncateDisplay(meta, contentWidth)
-	metaText := alignDisplay(meta, contentWidth, message.IsOutgoing)
-	lines := []string{bubbleMessageLine(contourStyle, metaStyle, metaText, contentWidth, message.IsOutgoing)}
+	lines := []string{bubbleMessageLine(contourStyle, metaStyle, meta, contentWidth, message.IsOutgoing)}
 	for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
-		lines = append(lines, bubbleMessageLine(contourStyle, bodyStyle, padDisplay(line, contentWidth), contentWidth, message.IsOutgoing))
+		lines = append(lines, bubbleMessageLine(contourStyle, bodyStyle, line, contentWidth, message.IsOutgoing))
 	}
 
 	return strings.Join(lines, "\n")
@@ -552,11 +595,11 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 
 func bubbleMessageLine(contourStyle, textStyle lipgloss.Style, text string, width int, outgoing bool) string {
 	text = truncateDisplay(text, width)
-	text = padDisplay(text, width)
+	padding := strings.Repeat(" ", max(0, width-lipgloss.Width(text)))
 	if outgoing {
-		return textStyle.Render(text) + " " + contourStyle.Render("│")
+		return padding + textStyle.Render(text) + " " + contourStyle.Render("│")
 	}
-	return contourStyle.Render("│") + " " + textStyle.Render(text)
+	return contourStyle.Render("│") + " " + textStyle.Render(text) + padding
 }
 
 func (m Model) renderInfo(width int) string {
@@ -600,29 +643,75 @@ func (m Model) renderStatus() string {
 	if m.pinnedFirst {
 		sortMode = "pinned"
 	}
-	left := fmt.Sprintf(" MODE:%s FOCUS:%s | %s | %s/%s ", strings.ToUpper(string(m.mode)), strings.ToUpper(string(m.focus)), m.status, filter, sortMode)
-	right := " no chats "
+
+	mode := strings.ToUpper(string(m.mode))
+	focus := strings.ToUpper(string(m.focus))
+	chatTitle := "no chat"
+	if chat := m.currentChat(); chat.Title != "" {
+		chatTitle = chat.Title
+	}
+	left := strings.Join([]string{
+		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
+		statusSegment(" "+focus+" ", primaryFG, borderColor, false),
+		statusSegment(" "+truncateDisplay(chatTitle, max(8, m.width/5))+" ", primaryFG, "", false),
+	}, "")
+
+	search := ""
+	if m.activeSearch != "" {
+		search = " /" + truncateDisplay(m.activeSearch, 16)
+	}
+	center := " " + truncateDisplay(m.status, max(8, m.width/3)) + " "
+	rightText := fmt.Sprintf(" %s/%s%s ", filter, sortMode, search)
+	rightCount := " no chats "
 	if len(m.chats) > 0 {
-		right = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
+		rightCount = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
 	}
+	right := statusSegment(rightText+rightCount, primaryFG, borderColor, false)
 
-	style := lipgloss.NewStyle().Foreground(primaryFG)
+	spacerStyle := lipgloss.NewStyle().Foreground(softFG)
 	if !barsTransparent() {
-		style = style.Background(uiTheme.BarBG)
+		spacerStyle = spacerStyle.Background(uiTheme.BarBG)
 	}
 
-	leftWidth := max(0, m.width-lipgloss.Width(right))
-	left = truncateDisplay(left, leftWidth)
-	return style.Width(m.width).Render(lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Width(leftWidth).Render(left),
-		right,
-	))
+	used := lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
+	centerWidth := lipgloss.Width(center)
+	if used > m.width {
+		centerWidth = max(0, centerWidth-(used-m.width))
+		center = truncateDisplay(center, centerWidth)
+		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
+	}
+	if used > m.width {
+		return truncateDisplay(" "+mode+" "+focus+" "+m.status+" "+rightText+rightCount, m.width)
+	}
+	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, m.width-used)))
+	return left + center + spacer + right
+}
+
+func statusSegment(text string, fg, bg lipgloss.Color, bold bool) string {
+	style := lipgloss.NewStyle().Foreground(fg).Bold(bold)
+	if bg != "" {
+		style = style.Background(bg)
+	}
+	return style.Render(text)
+}
+
+func modeStatusColor(mode Mode) lipgloss.Color {
+	switch mode {
+	case ModeInsert:
+		return outgoingLine
+	case ModeVisual:
+		return selectedLine
+	case ModeCommand:
+		return activeBorder
+	case ModeSearch:
+		return warnFG
+	default:
+		return accentFG
+	}
 }
 
 func (m Model) renderInput() string {
 	switch m.mode {
-	case ModeInsert:
-		return m.renderComposer()
 	case ModeCommand:
 		return m.renderPrompt("COMMAND", ":"+m.commandLine, "enter run  esc cancel")
 	case ModeSearch:
@@ -645,17 +734,18 @@ func (m Model) renderPrompt(label, content, hint string) string {
 	return style.Render(" " + content)
 }
 
-func (m Model) renderComposer() string {
+func (m Model) renderComposer(width int) string {
 	chat := m.currentChat().Title
 	if chat == "" {
 		chat = "no chat"
 	}
 
 	header := fmt.Sprintf(" [INSERT] to %s | enter send | ctrl+j newline | esc save draft", chat)
-	lines := []string{truncateDisplay(header, m.width)}
+	separator := lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("-", max(1, width)))
+	lines := []string{separator, truncateDisplay(header, width)}
 
 	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.inputHeight()-1)
+	maxBodyLines := max(1, m.composerHeight()-2)
 	if len(bodyLines) > maxBodyLines {
 		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
 	}
@@ -663,10 +753,10 @@ func (m Model) renderComposer() string {
 		if i == len(bodyLines)-1 {
 			line += "▌"
 		}
-		lines = append(lines, truncateDisplay("> "+line, m.width))
+		lines = append(lines, truncateDisplay("> "+line, width))
 	}
 
-	style := lipgloss.NewStyle().Foreground(primaryFG).Width(m.width)
+	style := lipgloss.NewStyle().Foreground(primaryFG).Width(width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)
 	}
@@ -674,10 +764,17 @@ func (m Model) renderComposer() string {
 }
 
 func (m Model) inputHeight() int {
-	if m.mode != ModeInsert {
-		return 1
+	if m.mode == ModeInsert {
+		return 0
 	}
-	return min(4, max(2, len(composerLines(m.composer))+1))
+	return 1
+}
+
+func (m Model) composerHeight() int {
+	if m.mode != ModeInsert {
+		return 0
+	}
+	return min(5, max(3, len(composerLines(m.composer))+2))
 }
 
 func (m Model) renderHelp(width int) string {

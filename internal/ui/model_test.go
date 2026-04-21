@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -258,14 +259,14 @@ func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
 	model.height = 12
 
 	model.composer = "first\nsecond"
-	input := stripANSI(model.renderInput())
+	input := stripANSI(model.renderMessages(80, 10))
 	for _, want := range []string{"[INSERT] to Alice", "> first", "> second"} {
 		if !strings.Contains(input, want) {
-			t.Fatalf("renderInput missing %q:\n%s", want, input)
+			t.Fatalf("renderMessages missing composer content %q:\n%s", want, input)
 		}
 	}
 	if !strings.Contains(input, "▌") {
-		t.Fatalf("renderInput missing composer cursor:\n%s", input)
+		t.Fatalf("composer missing cursor:\n%s", input)
 	}
 }
 
@@ -533,6 +534,44 @@ func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 	}
 }
 
+func TestFullViewOutgoingWrappedMessagesDoNotRenderBlankRows(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{
+						ID:         "m-1",
+						ChatID:     "chat-1",
+						Sender:     "me",
+						Body:       "this is a long outgoing message that should wrap cleanly without visual spacer rows between wrapped lines",
+						IsOutgoing: true,
+					},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 92
+	model.height = 14
+	model.compactLayout = true
+	model.focus = FocusMessages
+
+	view := stripANSI(model.View())
+	if strings.Contains(view, "\n\n") {
+		t.Fatalf("full view rendered blank rows inside outgoing message\n%s", view)
+	}
+	for _, line := range strings.Split(model.View(), "\n") {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "outgoing") || strings.Contains(plain, "visual spacer") {
+			if strings.HasSuffix(plain, " ") {
+				t.Fatalf("outgoing message line retained trailing spaces that can wrap visually: %q", plain)
+			}
+		}
+	}
+}
+
 func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -549,7 +588,7 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	model.commandLine = "help"
 
 	status := stripANSI(model.renderStatus())
-	if !strings.Contains(status, "MODE:COMMAND FOCUS:MESSAGES") {
+	if !strings.Contains(status, "COMMAND") || !strings.Contains(status, "MESSAGES") {
 		t.Fatalf("status missing mode/focus: %q", status)
 	}
 	prompt := stripANSI(model.renderInput())
@@ -562,6 +601,13 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	prompt = stripANSI(model.renderInput())
 	if !strings.Contains(prompt, "[SEARCH]") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
 		t.Fatalf("search prompt missing workflow: %q", prompt)
+	}
+
+	commandStatus := model.renderStatus()
+	model.mode = ModeInsert
+	insertStatus := model.renderStatus()
+	if commandStatus == insertStatus {
+		t.Fatal("statusbar styling did not change between command and insert modes")
 	}
 }
 
@@ -583,13 +629,114 @@ func TestFullViewShowsStatusAndComposerInInsertMode(t *testing.T) {
 	model.composer = "draft reply"
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"MODE:INSERT FOCUS:MESSAGES", "[INSERT] to Alice", "> draft reply▌"} {
+	for _, want := range []string{"INSERT", "MESSAGES", "[INSERT] to Alice", "> draft reply▌"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("full insert view missing %q\n%s", want, view)
 		}
 	}
+	composerLine := plainLineContaining(view, "[INSERT] to Alice")
+	composerColumn := strings.Index(composerLine, "[INSERT] to Alice")
+	if composerColumn < 24 {
+		t.Fatalf("composer rendered outside the message pane at column %d\n%s", composerColumn, view)
+	}
 	if got := len(strings.Split(view, "\n")); got > model.height {
 		t.Fatalf("View() produced %d lines, want <= %d\n%s", got, model.height, view)
+	}
+}
+
+func TestSendingMessageScrollsConversationToNewestMessage(t *testing.T) {
+	messages := numberedMessages(18)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PersistMessage: func(chatID, body string) (store.Message, error) {
+			return store.Message{ID: "local-1", ChatID: chatID, Sender: "me", Body: body, IsOutgoing: true}, nil
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "newest sent message"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if got.messageCursor != len(got.currentMessages())-1 {
+		t.Fatalf("messageCursor = %d, want last message", got.messageCursor)
+	}
+	if got.messageScrollTop != got.messageCursor {
+		t.Fatalf("messageScrollTop = %d, want cursor %d", got.messageScrollTop, got.messageCursor)
+	}
+	view := stripANSI(got.renderMessages(70, 8))
+	if !strings.Contains(view, "newest sent message") {
+		t.Fatalf("sent message was not visible after send\n%s", view)
+	}
+	if strings.Contains(view, "message 00") {
+		t.Fatalf("viewport did not move away from the oldest message after send\n%s", view)
+	}
+}
+
+func TestMessageNavigationMovesViewportDown(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(20)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+
+	for i := 0; i < 10; i++ {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		model = updated.(Model)
+	}
+	if model.messageCursor != 10 {
+		t.Fatalf("messageCursor = %d, want 10", model.messageCursor)
+	}
+	if model.messageScrollTop == 0 {
+		t.Fatal("messageScrollTop did not advance while moving down")
+	}
+	view := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(view, "message 10") {
+		t.Fatalf("selected message was not visible after scrolling down\n%s", view)
+	}
+	if strings.Contains(view, "message 00") {
+		t.Fatalf("viewport did not move away from oldest messages\n%s", view)
+	}
+}
+
+func TestMessageNavigationTopAndBottomCommandsMoveViewport(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(20)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+
+	bottom, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	model = bottom.(Model)
+	bottomView := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(bottomView, "message 19") {
+		t.Fatalf("G did not show newest message\n%s", bottomView)
+	}
+	if strings.Contains(bottomView, "message 00") {
+		t.Fatalf("G left oldest message visible\n%s", bottomView)
+	}
+
+	top, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model = top.(Model)
+	topView := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(topView, "message 00") {
+		t.Fatalf("g did not show oldest message\n%s", topView)
+	}
+	if strings.Contains(topView, "message 19") {
+		t.Fatalf("g left newest message visible\n%s", topView)
 	}
 }
 
@@ -726,4 +873,17 @@ func plainLineContaining(view, needle string) string {
 
 func leadingSpaces(value string) int {
 	return len(value) - len(strings.TrimLeft(value, " "))
+}
+
+func numberedMessages(count int) []store.Message {
+	messages := make([]store.Message, 0, count)
+	for i := 0; i < count; i++ {
+		messages = append(messages, store.Message{
+			ID:     "m",
+			ChatID: "chat-1",
+			Sender: "Alice",
+			Body:   fmt.Sprintf("message %02d", i),
+		})
+	}
+	return messages
 }

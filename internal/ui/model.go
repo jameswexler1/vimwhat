@@ -56,6 +56,7 @@ type Model struct {
 	draftsByChat     map[string]string
 	activeChat       int
 	messageCursor    int
+	messageScrollTop int
 	visualAnchor     int
 	previewReport    media.Report
 	paths            config.Paths
@@ -250,6 +251,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g":
 		if m.focus == FocusMessages {
 			m.messageCursor = 0
+			m.messageScrollTop = 0
 		} else {
 			m.activeChat = 0
 			if err := m.ensureCurrentMessagesLoaded(); err != nil {
@@ -257,6 +259,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.messageCursor = 0
+			m.messageScrollTop = 0
 		}
 	case "G":
 		if m.focus == FocusMessages {
@@ -266,6 +269,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					target = count - 1
 				}
 				m.messageCursor = clamp(target, 0, messageCount-1)
+				m.messageScrollTop = m.messageCursor
 			}
 		} else {
 			if chatCount := len(m.chats); chatCount > 0 {
@@ -279,6 +283,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.messageCursor = 0
+				m.messageScrollTop = 0
 			}
 		}
 	case "enter":
@@ -293,6 +298,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.messageCursor = max(0, len(m.currentMessages())-1)
+			m.messageScrollTop = m.messageCursor
 			m.status = fmt.Sprintf("opened %s", m.currentChat().Title)
 		}
 	case "n":
@@ -362,6 +368,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.messagesByChat[chatID] = append(m.messagesByChat[chatID], message)
 		m.messageCursor = len(m.messagesByChat[chatID]) - 1
+		m.messageScrollTop = m.messageCursor
 		m.composer = ""
 		if err := m.setDraft(chatID, ""); err != nil {
 			m.status = fmt.Sprintf("clear draft failed: %v", err)
@@ -539,11 +546,14 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
+		m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
 	case FocusMessages:
 		if len(m.currentMessages()) == 0 {
 			return
 		}
+		previous := m.messageCursor
 		m.messageCursor = clamp(m.messageCursor+delta, 0, len(m.currentMessages())-1)
+		m.keepMessageCursorNearViewport(previous)
 	}
 }
 
@@ -691,6 +701,7 @@ func (m *Model) runStoreSearch() error {
 		}
 		m.messagesByChat[chatID] = messages
 		m.messageCursor = 0
+		m.messageScrollTop = 0
 	}
 
 	return nil
@@ -731,8 +742,10 @@ func (m *Model) advanceSearch(delta int) {
 			return
 		}
 		m.messageCursor = 0
+		m.messageScrollTop = 0
 	} else {
 		m.messageCursor = target
+		m.messageScrollTop = target
 	}
 }
 
@@ -771,6 +784,7 @@ func (m *Model) reloadCurrentMessages() error {
 	}
 	m.messagesByChat[chatID] = slices.Clone(messages)
 	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(messages)-1))
+	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(messages)-1))
 	return nil
 }
 
@@ -856,6 +870,7 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 	if len(m.chats) == 0 {
 		m.activeChat = 0
 		m.messageCursor = 0
+		m.messageScrollTop = 0
 		return nil
 	}
 
@@ -864,7 +879,24 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 		m.activeChat = 0
 	}
 	m.messageCursor = 0
+	m.messageScrollTop = 0
 	return m.ensureCurrentMessagesLoaded()
+}
+
+func (m *Model) keepMessageCursorNearViewport(previous int) {
+	messageCount := len(m.currentMessages())
+	if messageCount == 0 {
+		m.messageScrollTop = 0
+		return
+	}
+	m.messageScrollTop = clamp(m.messageScrollTop, 0, messageCount-1)
+	if m.messageCursor < m.messageScrollTop {
+		m.messageScrollTop = m.messageCursor
+		return
+	}
+	if m.messageCursor > previous && m.messageCursor > m.messageScrollTop+2 {
+		m.messageScrollTop = m.messageCursor - 2
+	}
 }
 
 func filterUnread(chats []store.Chat) []store.Chat {
