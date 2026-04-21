@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice", Pinned: true}); err != nil {
 		t.Fatalf("UpsertChat(chat-1) error = %v", err)
 	}
-	if err := store.UpsertChat(ctx, Chat{ID: "chat-2", Title: "Project"}); err != nil {
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-2", JID: "project@g.us", Title: "Project", Kind: "group"}); err != nil {
 		t.Fatalf("UpsertChat(chat-2) error = %v", err)
 	}
 
@@ -30,8 +31,11 @@ func TestStoreRoundTrip(t *testing.T) {
 	newer := older.Add(2 * time.Minute)
 	if err := store.AddMessage(ctx, Message{
 		ID:        "m-1",
+		RemoteID:  "remote-1",
 		ChatID:    "chat-1",
+		ChatJID:   "chat-1@s.whatsapp.net",
 		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
 		Body:      "older",
 		Timestamp: older,
 	}); err != nil {
@@ -54,13 +58,38 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err := store.SetSyncCursor(ctx, "history:chat-1", "cursor-123"); err != nil {
 		t.Fatalf("SetSyncCursor() error = %v", err)
 	}
+	if err := store.UpsertContact(ctx, Contact{
+		JID:         "alice@s.whatsapp.net",
+		DisplayName: "Alice",
+		NotifyName:  "Alice A.",
+		Phone:       "+15550100",
+	}); err != nil {
+		t.Fatalf("UpsertContact() error = %v", err)
+	}
+	if err := store.UpsertMediaMetadata(ctx, MediaMetadata{
+		MessageID:     "m-2",
+		MIMEType:      "image/jpeg",
+		FileName:      "photo.jpg",
+		SizeBytes:     42,
+		DownloadState: "remote",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadata() error = %v", err)
+	}
+	if err := store.SaveUISnapshot(ctx, UISnapshot{
+		Kind:   "register",
+		Name:   "a",
+		ChatID: "chat-1",
+		Value:  "copied text",
+	}); err != nil {
+		t.Fatalf("SaveUISnapshot() error = %v", err)
+	}
 
 	stats, err := store.Stats(ctx)
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 2 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=2", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -73,6 +102,9 @@ func TestStoreRoundTrip(t *testing.T) {
 	if snapshot.ActiveChatID != "chat-1" {
 		t.Fatalf("ActiveChatID = %q, want %q", snapshot.ActiveChatID, "chat-1")
 	}
+	if snapshot.Chats[1].Kind != "group" || snapshot.Chats[1].JID != "project@g.us" {
+		t.Fatalf("snapshot chat protocol fields = %+v", snapshot.Chats[1])
+	}
 	if got := len(snapshot.MessagesByChat["chat-1"]); got != 2 {
 		t.Fatalf("len(snapshot.MessagesByChat[chat-1]) = %d, want 2", got)
 	}
@@ -81,6 +113,9 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if snapshot.MessagesByChat["chat-1"][0].Body != "older" {
 		t.Fatalf("first message body = %q, want %q", snapshot.MessagesByChat["chat-1"][0].Body, "older")
+	}
+	if snapshot.MessagesByChat["chat-1"][0].RemoteID != "remote-1" {
+		t.Fatalf("first message RemoteID = %q, want remote-1", snapshot.MessagesByChat["chat-1"][0].RemoteID)
 	}
 	if !snapshot.Chats[1].HasDraft {
 		t.Fatal("expected second chat to report HasDraft")
@@ -103,6 +138,27 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if cursor != "cursor-123" {
 		t.Fatalf("SyncCursor() = %q", cursor)
+	}
+	contact, err := store.Contact(ctx, "alice@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("Contact() error = %v", err)
+	}
+	if contact.DisplayName != "Alice" || contact.NotifyName != "Alice A." {
+		t.Fatalf("Contact() = %+v", contact)
+	}
+	media, err := store.MediaMetadata(ctx, "m-2")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if media.MIMEType != "image/jpeg" || media.SizeBytes != 42 || media.DownloadState != "remote" {
+		t.Fatalf("MediaMetadata() = %+v", media)
+	}
+	savedSnapshot, err := store.UISnapshot(ctx, "register", "a", "chat-1")
+	if err != nil {
+		t.Fatalf("UISnapshot() error = %v", err)
+	}
+	if savedSnapshot.Value != "copied text" {
+		t.Fatalf("UISnapshot().Value = %q", savedSnapshot.Value)
 	}
 
 	var indexed int
@@ -127,6 +183,17 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if len(chats) != 1 || chats[0].ID != "chat-2" {
 		t.Fatalf("SearchChats() = %+v, want chat-2", chats)
+	}
+
+	if err := store.UpdateMessageStatus(ctx, "m-2", "server_ack"); err != nil {
+		t.Fatalf("UpdateMessageStatus() error = %v", err)
+	}
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() after status error = %v", err)
+	}
+	if messages[1].Status != "server_ack" {
+		t.Fatalf("updated message status = %q, want server_ack", messages[1].Status)
 	}
 }
 
@@ -217,5 +284,100 @@ func TestSeedAndClearDemoData(t *testing.T) {
 	}
 	if stats.Chats != 0 || stats.Messages != 0 || stats.Drafts != 0 {
 		t.Fatalf("Stats() after clear = %+v, want all zero", stats)
+	}
+}
+
+func TestOpenMigratesVersionOneDatabase(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	statements := []string{
+		`CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, applied_at INTEGER NOT NULL)`,
+		`INSERT INTO schema_migrations (name, applied_at) VALUES ('0001_initial_schema', 1)`,
+		`CREATE TABLE chats (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			unread_count INTEGER NOT NULL DEFAULT 0,
+			pinned INTEGER NOT NULL DEFAULT 0,
+			muted INTEGER NOT NULL DEFAULT 0,
+			last_message_at INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX chats_sort_idx ON chats (pinned DESC, last_message_at DESC, title ASC)`,
+		`CREATE TABLE messages (
+			id TEXT PRIMARY KEY,
+			chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+			sender TEXT NOT NULL,
+			body TEXT NOT NULL DEFAULT '',
+			timestamp_unix INTEGER NOT NULL,
+			is_outgoing INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX messages_chat_time_idx ON messages (chat_id, timestamp_unix ASC, id ASC)`,
+		`CREATE TABLE drafts (
+			chat_id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+			body TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE sync_cursors (
+			name TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
+		`CREATE VIRTUAL TABLE message_fts USING fts5(
+			message_id UNINDEXED,
+			chat_id UNINDEXED,
+			body
+		)`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare old schema statement %q error = %v", stmt, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close old db error = %v", err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() migrated old db error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	applied, pending, err := store.MigrationStatus(ctx)
+	if err != nil {
+		t.Fatalf("MigrationStatus() error = %v", err)
+	}
+	if len(applied) != 2 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want two applied and none pending", applied, pending)
+	}
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() after migration error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		RemoteID:  "remote-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "migrated",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() after migration error = %v", err)
+	}
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() after migration error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].RemoteID != "remote-1" {
+		t.Fatalf("messages after migration = %+v", messages)
 	}
 }

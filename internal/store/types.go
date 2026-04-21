@@ -4,7 +4,9 @@ import "time"
 
 type Chat struct {
 	ID            string
+	JID           string
 	Title         string
+	Kind          string
 	Unread        int
 	Pinned        bool
 	Muted         bool
@@ -13,12 +15,45 @@ type Chat struct {
 }
 
 type Message struct {
-	ID         string
-	ChatID     string
-	Sender     string
-	Body       string
-	Timestamp  time.Time
-	IsOutgoing bool
+	ID              string
+	RemoteID        string
+	ChatID          string
+	ChatJID         string
+	Sender          string
+	SenderJID       string
+	Body            string
+	Timestamp       time.Time
+	IsOutgoing      bool
+	Status          string
+	QuotedMessageID string
+	QuotedRemoteID  string
+}
+
+type Contact struct {
+	JID         string
+	DisplayName string
+	NotifyName  string
+	Phone       string
+	UpdatedAt   time.Time
+}
+
+type MediaMetadata struct {
+	MessageID     string
+	MIMEType      string
+	FileName      string
+	SizeBytes     int64
+	LocalPath     string
+	ThumbnailPath string
+	DownloadState string
+	UpdatedAt     time.Time
+}
+
+type UISnapshot struct {
+	Kind      string
+	Name      string
+	ChatID    string
+	Value     string
+	UpdatedAt time.Time
 }
 
 type Snapshot struct {
@@ -29,7 +64,10 @@ type Snapshot struct {
 }
 
 type Stats struct {
-	Chats    int
-	Messages int
-	Drafts   int
+	Chats      int
+	Messages   int
+	Drafts     int
+	Contacts   int
+	MediaItems int
+	Migrations int
 }

@@ -14,6 +14,7 @@ type Paths struct {
 	CacheDir        string
 	ConfigFile      string
 	DatabaseFile    string
+	SessionFile     string
 	LogFile         string
 	MediaDir        string
 	PreviewCacheDir string
@@ -50,6 +51,7 @@ func ResolvePaths() (Paths, error) {
 		CacheDir:        cacheDir,
 		ConfigFile:      filepath.Join(configDir, "config.toml"),
 		DatabaseFile:    filepath.Join(dataDir, "state.sqlite3"),
+		SessionFile:     filepath.Join(dataDir, "whatsapp-session.sqlite3"),
 		LogFile:         filepath.Join(cacheDir, "maybewhats.log"),
 		MediaDir:        filepath.Join(cacheDir, "media"),
 		PreviewCacheDir: filepath.Join(cacheDir, "preview"),

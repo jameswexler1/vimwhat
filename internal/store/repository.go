@@ -50,7 +50,9 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			c.id,
+			c.jid,
 			c.title,
+			c.kind,
 			c.unread_count,
 			c.pinned,
 			c.muted,
@@ -67,33 +69,10 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 
 	var chats []Chat
 	for rows.Next() {
-		var (
-			chat            Chat
-			pinned          int
-			muted           int
-			hasDraft        int
-			lastMessageUnix int64
-		)
-
-		if err := rows.Scan(
-			&chat.ID,
-			&chat.Title,
-			&chat.Unread,
-			&pinned,
-			&muted,
-			&lastMessageUnix,
-			&hasDraft,
-		); err != nil {
+		chat, err := scanChat(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
-
-		chat.Pinned = pinned == 1
-		chat.Muted = muted == 1
-		chat.HasDraft = hasDraft == 1
-		if lastMessageUnix > 0 {
-			chat.LastMessageAt = time.Unix(lastMessageUnix, 0)
-		}
-
 		chats = append(chats, chat)
 	}
 
@@ -113,9 +92,11 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, chat_id, sender, body, timestamp_unix, is_outgoing
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
 		FROM (
-			SELECT id, chat_id, sender, body, timestamp_unix, is_outgoing
+			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
 			FROM messages
 			WHERE chat_id = ?
 			ORDER BY timestamp_unix DESC, id DESC
@@ -130,24 +111,10 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 
 	var messages []Message
 	for rows.Next() {
-		var (
-			message       Message
-			timestampUnix int64
-			isOutgoing    int
-		)
-		if err := rows.Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.Sender,
-			&message.Body,
-			&timestampUnix,
-			&isOutgoing,
-		); err != nil {
+		message, err := scanMessage(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
-
-		message.Timestamp = time.Unix(timestampUnix, 0)
-		message.IsOutgoing = isOutgoing == 1
 		messages = append(messages, message)
 	}
 
@@ -170,7 +137,9 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			c.id,
+			c.jid,
 			c.title,
+			c.kind,
 			c.unread_count,
 			c.pinned,
 			c.muted,
@@ -189,29 +158,9 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 
 	var chats []Chat
 	for rows.Next() {
-		var (
-			chat            Chat
-			pinned          int
-			muted           int
-			hasDraft        int
-			lastMessageUnix int64
-		)
-		if err := rows.Scan(
-			&chat.ID,
-			&chat.Title,
-			&chat.Unread,
-			&pinned,
-			&muted,
-			&lastMessageUnix,
-			&hasDraft,
-		); err != nil {
+		chat, err := scanChat(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan searched chat: %w", err)
-		}
-		chat.Pinned = pinned == 1
-		chat.Muted = muted == 1
-		chat.HasDraft = hasDraft == 1
-		if lastMessageUnix > 0 {
-			chat.LastMessageAt = time.Unix(lastMessageUnix, 0)
 		}
 		chats = append(chats, chat)
 	}
@@ -235,7 +184,8 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.chat_id, m.sender, m.body, m.timestamp_unix, m.is_outgoing
+		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
+			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id
 		FROM message_fts
 		JOIN messages m ON m.id = message_fts.message_id
 		WHERE message_fts.chat_id = ?
@@ -250,23 +200,10 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 
 	var messages []Message
 	for rows.Next() {
-		var (
-			message       Message
-			timestampUnix int64
-			isOutgoing    int
-		)
-		if err := rows.Scan(
-			&message.ID,
-			&message.ChatID,
-			&message.Sender,
-			&message.Body,
-			&timestampUnix,
-			&isOutgoing,
-		); err != nil {
+		message, err := scanMessage(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan searched message: %w", err)
 		}
-		message.Timestamp = time.Unix(timestampUnix, 0)
-		message.IsOutgoing = isOutgoing == 1
 		messages = append(messages, message)
 	}
 	if err := rows.Err(); err != nil {
@@ -283,6 +220,12 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 	if strings.TrimSpace(chat.Title) == "" {
 		return fmt.Errorf("chat title is required")
 	}
+	if strings.TrimSpace(chat.Kind) == "" {
+		chat.Kind = "direct"
+	}
+	if strings.TrimSpace(chat.JID) == "" {
+		chat.JID = chat.ID
+	}
 
 	now := time.Now().Unix()
 	lastMessageAt := chat.LastMessageAt.Unix()
@@ -292,10 +235,12 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO chats (
-			id, title, unread_count, pinned, muted, last_message_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			id, jid, title, kind, unread_count, pinned, muted, last_message_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			jid = excluded.jid,
 			title = excluded.title,
+			kind = excluded.kind,
 			unread_count = excluded.unread_count,
 			pinned = excluded.pinned,
 			muted = excluded.muted,
@@ -306,7 +251,9 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 			updated_at = excluded.updated_at
 	`,
 		chat.ID,
+		chat.JID,
 		chat.Title,
+		chat.Kind,
 		chat.Unread,
 		boolToInt(chat.Pinned),
 		boolToInt(chat.Muted),
@@ -334,6 +281,15 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	if message.Timestamp.IsZero() {
 		message.Timestamp = time.Now()
 	}
+	if strings.TrimSpace(message.Status) == "" && message.IsOutgoing {
+		message.Status = "pending"
+	}
+	if strings.TrimSpace(message.ChatJID) == "" {
+		message.ChatJID = message.ChatID
+	}
+	if strings.TrimSpace(message.SenderJID) == "" {
+		message.SenderJID = message.Sender
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -341,20 +297,34 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO messages (id, chat_id, sender, body, timestamp_unix, is_outgoing)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (
+			id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			remote_id = excluded.remote_id,
+			chat_jid = excluded.chat_jid,
 			sender = excluded.sender,
+			sender_jid = excluded.sender_jid,
 			body = excluded.body,
 			timestamp_unix = excluded.timestamp_unix,
-			is_outgoing = excluded.is_outgoing
+			is_outgoing = excluded.is_outgoing,
+			status = excluded.status,
+			quoted_message_id = excluded.quoted_message_id,
+			quoted_remote_id = excluded.quoted_remote_id
 	`,
 		message.ID,
+		message.RemoteID,
 		message.ChatID,
+		message.ChatJID,
 		message.Sender,
+		message.SenderJID,
 		message.Body,
 		message.Timestamp.Unix(),
 		boolToInt(message.IsOutgoing),
+		message.Status,
+		message.QuotedMessageID,
+		message.QuotedRemoteID,
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("insert message %s: %w", message.ID, err)
@@ -402,6 +372,29 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit add message: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status string) error {
+	if strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("message id is required")
+	}
+	if strings.TrimSpace(status) == "" {
+		return fmt.Errorf("message status is required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE messages
+		SET status = ?
+		WHERE id = ?
+	`, status, messageID)
+	if err != nil {
+		return fmt.Errorf("update message status %s: %w", messageID, err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("message %s does not exist", messageID)
 	}
 
 	return nil
@@ -499,6 +492,261 @@ func (s *Store) SyncCursor(ctx context.Context, name string) (string, error) {
 	}
 
 	return value, nil
+}
+
+func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
+	if strings.TrimSpace(contact.JID) == "" {
+		return fmt.Errorf("contact jid is required")
+	}
+	if contact.UpdatedAt.IsZero() {
+		contact.UpdatedAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO contacts (jid, display_name, notify_name, phone, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(jid) DO UPDATE SET
+			display_name = excluded.display_name,
+			notify_name = excluded.notify_name,
+			phone = excluded.phone,
+			updated_at = excluded.updated_at
+	`,
+		contact.JID,
+		contact.DisplayName,
+		contact.NotifyName,
+		contact.Phone,
+		contact.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert contact %s: %w", contact.JID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {
+	var (
+		contact     Contact
+		updatedUnix int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT jid, display_name, notify_name, phone, updated_at
+		FROM contacts
+		WHERE jid = ?
+	`, jid).Scan(&contact.JID, &contact.DisplayName, &contact.NotifyName, &contact.Phone, &updatedUnix)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Contact{}, nil
+		}
+		return Contact{}, fmt.Errorf("load contact %s: %w", jid, err)
+	}
+	contact.UpdatedAt = time.Unix(updatedUnix, 0)
+
+	return contact, nil
+}
+
+func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) error {
+	if strings.TrimSpace(media.MessageID) == "" {
+		return fmt.Errorf("message id is required")
+	}
+	if media.UpdatedAt.IsZero() {
+		media.UpdatedAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO media_metadata (
+			message_id, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET
+			mime_type = excluded.mime_type,
+			file_name = excluded.file_name,
+			size_bytes = excluded.size_bytes,
+			local_path = excluded.local_path,
+			thumbnail_path = excluded.thumbnail_path,
+			download_state = excluded.download_state,
+			updated_at = excluded.updated_at
+	`,
+		media.MessageID,
+		media.MIMEType,
+		media.FileName,
+		media.SizeBytes,
+		media.LocalPath,
+		media.ThumbnailPath,
+		media.DownloadState,
+		media.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert media metadata for %s: %w", media.MessageID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) MediaMetadata(ctx context.Context, messageID string) (MediaMetadata, error) {
+	var (
+		media       MediaMetadata
+		updatedUnix int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT message_id, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, updated_at
+		FROM media_metadata
+		WHERE message_id = ?
+	`, messageID).Scan(
+		&media.MessageID,
+		&media.MIMEType,
+		&media.FileName,
+		&media.SizeBytes,
+		&media.LocalPath,
+		&media.ThumbnailPath,
+		&media.DownloadState,
+		&updatedUnix,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return MediaMetadata{}, nil
+		}
+		return MediaMetadata{}, fmt.Errorf("load media metadata for %s: %w", messageID, err)
+	}
+	media.UpdatedAt = time.Unix(updatedUnix, 0)
+
+	return media, nil
+}
+
+func (s *Store) SaveUISnapshot(ctx context.Context, snapshot UISnapshot) error {
+	if strings.TrimSpace(snapshot.Kind) == "" {
+		return fmt.Errorf("snapshot kind is required")
+	}
+	if strings.TrimSpace(snapshot.Name) == "" {
+		return fmt.Errorf("snapshot name is required")
+	}
+	if snapshot.UpdatedAt.IsZero() {
+		snapshot.UpdatedAt = time.Now()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO ui_snapshots (kind, name, chat_id, value, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(kind, name, chat_id) DO UPDATE SET
+			value = excluded.value,
+			updated_at = excluded.updated_at
+	`,
+		snapshot.Kind,
+		snapshot.Name,
+		snapshot.ChatID,
+		snapshot.Value,
+		snapshot.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("save ui snapshot %s/%s: %w", snapshot.Kind, snapshot.Name, err)
+	}
+
+	return nil
+}
+
+func (s *Store) UISnapshot(ctx context.Context, kind, name, chatID string) (UISnapshot, error) {
+	var (
+		snapshot    UISnapshot
+		updatedUnix int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT kind, name, chat_id, value, updated_at
+		FROM ui_snapshots
+		WHERE kind = ? AND name = ? AND chat_id = ?
+	`, kind, name, chatID).Scan(
+		&snapshot.Kind,
+		&snapshot.Name,
+		&snapshot.ChatID,
+		&snapshot.Value,
+		&updatedUnix,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return UISnapshot{}, nil
+		}
+		return UISnapshot{}, fmt.Errorf("load ui snapshot %s/%s: %w", kind, name, err)
+	}
+	snapshot.UpdatedAt = time.Unix(updatedUnix, 0)
+
+	return snapshot, nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanChat(row scanner) (Chat, error) {
+	var (
+		chat            Chat
+		pinned          int
+		muted           int
+		hasDraft        int
+		lastMessageUnix int64
+	)
+	if err := row.Scan(
+		&chat.ID,
+		&chat.JID,
+		&chat.Title,
+		&chat.Kind,
+		&chat.Unread,
+		&pinned,
+		&muted,
+		&lastMessageUnix,
+		&hasDraft,
+	); err != nil {
+		return Chat{}, err
+	}
+
+	chat.Pinned = pinned == 1
+	chat.Muted = muted == 1
+	chat.HasDraft = hasDraft == 1
+	if lastMessageUnix > 0 {
+		chat.LastMessageAt = time.Unix(lastMessageUnix, 0)
+	}
+	if chat.Kind == "" {
+		chat.Kind = "direct"
+	}
+	if chat.JID == "" {
+		chat.JID = chat.ID
+	}
+
+	return chat, nil
+}
+
+func scanMessage(row scanner) (Message, error) {
+	var (
+		message       Message
+		timestampUnix int64
+		isOutgoing    int
+	)
+	if err := row.Scan(
+		&message.ID,
+		&message.RemoteID,
+		&message.ChatID,
+		&message.ChatJID,
+		&message.Sender,
+		&message.SenderJID,
+		&message.Body,
+		&timestampUnix,
+		&isOutgoing,
+		&message.Status,
+		&message.QuotedMessageID,
+		&message.QuotedRemoteID,
+	); err != nil {
+		return Message{}, err
+	}
+
+	message.Timestamp = time.Unix(timestampUnix, 0)
+	message.IsOutgoing = isOutgoing == 1
+	if message.ChatJID == "" {
+		message.ChatJID = message.ChatID
+	}
+	if message.SenderJID == "" {
+		message.SenderJID = message.Sender
+	}
+
+	return message, nil
 }
 
 func boolToInt(value bool) int {

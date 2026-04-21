@@ -38,6 +38,7 @@ type Options struct {
 	PreviewReport  media.Report
 	Snapshot       store.Snapshot
 	PersistMessage func(chatID, body string) (store.Message, error)
+	LoadMessages   func(chatID string, limit int) ([]store.Message, error)
 	SaveDraft      func(chatID, body string) error
 	SearchChats    func(query string) ([]store.Chat, error)
 	SearchMessages func(chatID, query string, limit int) ([]store.Message, error)
@@ -70,10 +71,13 @@ type Model struct {
 	compactLayout   bool
 	infoPaneVisible bool
 	persistMessage  func(chatID, body string) (store.Message, error)
+	loadMessages    func(chatID string, limit int) ([]store.Message, error)
 	saveDraft       func(chatID, body string) error
 	searchChats     func(query string) ([]store.Chat, error)
 	searchMessages  func(chatID, query string, limit int) ([]store.Message, error)
 }
+
+const messageLoadLimit = 200
 
 func Run(opts Options) error {
 	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen())
@@ -105,6 +109,7 @@ func NewModel(opts Options) Model {
 		config:         opts.Config,
 		status:         "ready",
 		persistMessage: opts.PersistMessage,
+		loadMessages:   opts.LoadMessages,
 		saveDraft:      opts.SaveDraft,
 		searchChats:    opts.SearchChats,
 		searchMessages: opts.SearchMessages,
@@ -214,6 +219,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageCursor = 0
 		} else {
 			m.activeChat = 0
+			if err := m.ensureCurrentMessagesLoaded(); err != nil {
+				m.status = fmt.Sprintf("load messages failed: %v", err)
+				return m, nil
+			}
 			m.messageCursor = 0
 		}
 	case "G":
@@ -224,6 +233,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			if count := len(m.chats); count > 0 {
 				m.activeChat = count - 1
+				if err := m.ensureCurrentMessagesLoaded(); err != nil {
+					m.status = fmt.Sprintf("load messages failed: %v", err)
+					return m, nil
+				}
 				m.messageCursor = 0
 			}
 		}
@@ -234,6 +247,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.focus = FocusMessages
+			if err := m.ensureCurrentMessagesLoaded(); err != nil {
+				m.status = fmt.Sprintf("load messages failed: %v", err)
+				return m, nil
+			}
 			m.messageCursor = max(0, len(m.currentMessages())-1)
 			m.status = fmt.Sprintf("opened %s", m.currentChat().Title)
 		}
@@ -339,6 +356,18 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		m.lastSearch = m.searchLine
 		m.lastSearchFocus = m.focus
+		if strings.TrimSpace(m.lastSearch) == "" {
+			if err := m.clearSearch(); err != nil {
+				m.searchLine = ""
+				m.mode = ModeNormal
+				m.status = fmt.Sprintf("clear search failed: %v", err)
+				return m, nil
+			}
+			m.searchLine = ""
+			m.mode = ModeNormal
+			m.status = "search cleared"
+			return m, nil
+		}
 		if err := m.runStoreSearch(); err != nil {
 			m.searchLine = ""
 			m.mode = ModeNormal
@@ -404,6 +433,12 @@ func (m *Model) cycleFocus(delta int) {
 
 	index = (index + delta + len(order)) % len(order)
 	m.focus = order[index]
+	if m.focus == FocusMessages {
+		if err := m.ensureCurrentMessagesLoaded(); err != nil {
+			m.status = fmt.Sprintf("load messages failed: %v", err)
+			return
+		}
+	}
 	m.status = fmt.Sprintf("focus: %s", m.focus)
 }
 
@@ -419,6 +454,10 @@ func (m *Model) moveFocus(delta int) {
 		switch m.focus {
 		case FocusChats:
 			m.focus = FocusMessages
+			if err := m.ensureCurrentMessagesLoaded(); err != nil {
+				m.status = fmt.Sprintf("load messages failed: %v", err)
+				return
+			}
 		case FocusMessages:
 			if m.infoPaneVisible && !m.compactLayout {
 				m.focus = FocusPreview
@@ -434,6 +473,10 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		m.activeChat = clamp(m.activeChat+delta, 0, len(m.chats)-1)
+		if err := m.ensureCurrentMessagesLoaded(); err != nil {
+			m.status = fmt.Sprintf("load messages failed: %v", err)
+			return
+		}
 		m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
 	case FocusMessages:
 		if len(m.currentMessages()) == 0 {
@@ -456,6 +499,10 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.status = "focus: chats"
 	case "focus messages":
 		m.focus = FocusMessages
+		if err := m.ensureCurrentMessagesLoaded(); err != nil {
+			m.status = fmt.Sprintf("load messages failed: %v", err)
+			return m, nil
+		}
 		m.status = "focus: messages"
 	case "focus preview":
 		if m.compactLayout {
@@ -491,6 +538,12 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 	case "preview-backend auto":
 		m.previewReport = media.Detect("auto")
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
+	case "clear-search", "search clear":
+		if err := m.clearSearch(); err != nil {
+			m.status = fmt.Sprintf("clear search failed: %v", err)
+			break
+		}
+		m.status = "search cleared"
 	default:
 		m.status = fmt.Sprintf("unknown command: %s", cmd)
 	}
@@ -541,6 +594,7 @@ func (m *Model) runStoreSearch() error {
 		}
 		m.activeChat = 0
 		m.messageCursor = 0
+		return m.ensureCurrentMessagesLoaded()
 	case FocusMessages, FocusPreview:
 		if m.searchMessages == nil {
 			return nil
@@ -590,10 +644,63 @@ func (m *Model) advanceSearch(delta int) {
 	target := m.searchMatches[m.searchIndex]
 	if m.lastSearchFocus == FocusChats {
 		m.activeChat = target
+		if err := m.ensureCurrentMessagesLoaded(); err != nil {
+			m.status = fmt.Sprintf("load messages failed: %v", err)
+			return
+		}
 		m.messageCursor = 0
 	} else {
 		m.messageCursor = target
 	}
+}
+
+func (m *Model) ensureCurrentMessagesLoaded() error {
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		return nil
+	}
+	if _, ok := m.messagesByChat[chatID]; ok {
+		return nil
+	}
+	if m.loadMessages == nil {
+		m.messagesByChat[chatID] = nil
+		return nil
+	}
+
+	messages, err := m.loadMessages(chatID, messageLoadLimit)
+	if err != nil {
+		return err
+	}
+	m.messagesByChat[chatID] = slices.Clone(messages)
+	return nil
+}
+
+func (m *Model) reloadCurrentMessages() error {
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		return nil
+	}
+	if m.loadMessages == nil {
+		return nil
+	}
+	messages, err := m.loadMessages(chatID, messageLoadLimit)
+	if err != nil {
+		return err
+	}
+	m.messagesByChat[chatID] = slices.Clone(messages)
+	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(messages)-1))
+	return nil
+}
+
+func (m *Model) clearSearch() error {
+	m.lastSearch = ""
+	m.searchLine = ""
+	m.searchMatches = nil
+	m.searchIndex = -1
+	m.lastSearchFocus = ""
+	m.chats = slices.Clone(m.allChats)
+	m.activeChat = clamp(m.activeChat, 0, max(0, len(m.chats)-1))
+	return m.reloadCurrentMessages()
 }
 
 func (m Model) currentChat() store.Chat {

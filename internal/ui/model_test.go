@@ -131,6 +131,113 @@ func TestSearchMessagesUsesCallbackResults(t *testing.T) {
 	}
 }
 
+func TestOpeningChatLoadsMessagesLazily(t *testing.T) {
+	var loadedChatID string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Project"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "already loaded"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
+			loadedChatID = chatID
+			return []store.Message{{ID: "m-2", ChatID: chatID, Sender: "Project", Body: "loaded on demand"}}, nil
+		},
+	})
+	model.focus = FocusChats
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got := updated.(Model)
+	if loadedChatID != "chat-2" {
+		t.Fatalf("loadedChatID = %q, want chat-2", loadedChatID)
+	}
+	if got.messagesByChat["chat-2"][0].Body != "loaded on demand" {
+		t.Fatalf("messagesByChat[chat-2] = %+v", got.messagesByChat["chat-2"])
+	}
+}
+
+func TestClearSearchRestoresMessagesFromStore(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "normal"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
+			return []store.Message{{ID: "m-2", ChatID: chatID, Sender: "Alice", Body: "needle result"}}, nil
+		},
+		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
+			return []store.Message{{ID: "m-1", ChatID: chatID, Sender: "Alice", Body: "normal"}}, nil
+		},
+	})
+	model.focus = FocusMessages
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	searchModel := searched.(Model)
+	if searchModel.messagesByChat["chat-1"][0].ID != "m-2" {
+		t.Fatalf("search messages = %+v", searchModel.messagesByChat["chat-1"])
+	}
+
+	cleared, _ := searchModel.executeCommand("clear-search")
+	got := cleared.(Model)
+	if got.messagesByChat["chat-1"][0].ID != "m-1" {
+		t.Fatalf("cleared messages = %+v, want normal store messages", got.messagesByChat["chat-1"])
+	}
+	if got.lastSearch != "" || len(got.searchMatches) != 0 {
+		t.Fatalf("search state was not cleared: last=%q matches=%v", got.lastSearch, got.searchMatches)
+	}
+}
+
+func TestDraftPreservedAcrossLazyChatSwitch(t *testing.T) {
+	saved := make(map[string]string)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Project"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "one"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		SaveDraft: func(chatID, body string) error {
+			saved[chatID] = body
+			return nil
+		},
+		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
+			return []store.Message{{ID: "m-2", ChatID: chatID, Sender: "Project", Body: "two"}}, nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "draft for alice"
+
+	escaped, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
+	normal := escaped.(Model)
+	normal.focus = FocusChats
+	switched, _ := normal.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got := switched.(Model)
+
+	if saved["chat-1"] != "draft for alice" {
+		t.Fatalf("saved draft = %q, want draft for alice", saved["chat-1"])
+	}
+	if !got.allChats[0].HasDraft {
+		t.Fatal("draft flag was not preserved on original chat")
+	}
+}
+
 func TestViewRendersPaneContentWithinTerminalWidth(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

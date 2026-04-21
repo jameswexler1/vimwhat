@@ -62,6 +62,47 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		name: "0002_protocol_ready_local_state",
+		sql: []string{
+			`ALTER TABLE chats ADD COLUMN jid TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE chats ADD COLUMN kind TEXT NOT NULL DEFAULT 'direct'`,
+			`ALTER TABLE messages ADD COLUMN remote_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE messages ADD COLUMN chat_jid TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE messages ADD COLUMN sender_jid TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE messages ADD COLUMN quoted_message_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE messages ADD COLUMN quoted_remote_id TEXT NOT NULL DEFAULT ''`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS messages_remote_idx
+				ON messages (chat_id, remote_id)
+				WHERE remote_id <> ''`,
+			`CREATE TABLE IF NOT EXISTS contacts (
+				jid TEXT PRIMARY KEY,
+				display_name TEXT NOT NULL DEFAULT '',
+				notify_name TEXT NOT NULL DEFAULT '',
+				phone TEXT NOT NULL DEFAULT '',
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS media_metadata (
+				message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+				mime_type TEXT NOT NULL DEFAULT '',
+				file_name TEXT NOT NULL DEFAULT '',
+				size_bytes INTEGER NOT NULL DEFAULT 0,
+				local_path TEXT NOT NULL DEFAULT '',
+				thumbnail_path TEXT NOT NULL DEFAULT '',
+				download_state TEXT NOT NULL DEFAULT '',
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE TABLE IF NOT EXISTS ui_snapshots (
+				kind TEXT NOT NULL,
+				name TEXT NOT NULL,
+				chat_id TEXT NOT NULL DEFAULT '',
+				value TEXT NOT NULL DEFAULT '',
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (kind, name, chat_id)
+			)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {
@@ -196,6 +237,44 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM drafts`).Scan(&stats.Drafts); err != nil {
 		return Stats{}, fmt.Errorf("count drafts: %w", err)
 	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts`).Scan(&stats.Contacts); err != nil {
+		return Stats{}, fmt.Errorf("count contacts: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_metadata`).Scan(&stats.MediaItems); err != nil {
+		return Stats{}, fmt.Errorf("count media metadata: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&stats.Migrations); err != nil {
+		return Stats{}, fmt.Errorf("count migrations: %w", err)
+	}
 
 	return stats, nil
+}
+
+func (s *Store) MigrationStatus(ctx context.Context) (applied []string, pending []string, err error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM schema_migrations ORDER BY id ASC`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query migrations: %w", err)
+	}
+	defer rows.Close()
+
+	appliedSet := make(map[string]struct{})
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, nil, fmt.Errorf("scan migration status: %w", err)
+		}
+		applied = append(applied, name)
+		appliedSet[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate migration status: %w", err)
+	}
+
+	for _, migration := range migrations {
+		if _, ok := appliedSet[migration.name]; !ok {
+			pending = append(pending, migration.name)
+		}
+	}
+
+	return applied, pending, nil
 }

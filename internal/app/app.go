@@ -111,20 +111,15 @@ func runTUI(env Environment, stderr io.Writer) int {
 		PreviewReport: env.PreviewReport,
 		Snapshot:      snapshot,
 		PersistMessage: func(chatID, body string) (store.Message, error) {
-			message := store.Message{
-				ID:         fmt.Sprintf("local-%d", time.Now().UnixNano()),
-				ChatID:     chatID,
-				Sender:     "me",
-				Body:       body,
-				Timestamp:  time.Now(),
-				IsOutgoing: true,
-			}
-
+			message := pendingOutgoingMessage(chatID, body)
 			if err := env.Store.AddMessage(context.Background(), message); err != nil {
 				return store.Message{}, err
 			}
 
 			return message, nil
+		},
+		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
+			return env.Store.ListMessages(context.Background(), chatID, limit)
 		},
 		SaveDraft: func(chatID, body string) error {
 			return env.Store.SaveDraft(context.Background(), chatID, body)
@@ -143,6 +138,21 @@ func runTUI(env Environment, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+func pendingOutgoingMessage(chatID, body string) store.Message {
+	now := time.Now()
+	return store.Message{
+		ID:         fmt.Sprintf("local-%d", now.UnixNano()),
+		ChatID:     chatID,
+		ChatJID:    chatID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       body,
+		Timestamp:  now,
+		IsOutgoing: true,
+		Status:     "pending",
+	}
 }
 
 func runMedia(args []string, stderr io.Writer) int {
@@ -197,23 +207,51 @@ func printDoctor(env Environment, w io.Writer) {
 	if err != nil {
 		stats = store.Stats{}
 	}
+	appliedMigrations, pendingMigrations, migrationErr := env.Store.MigrationStatus(context.Background())
+	sessionStatus := "not configured"
+	if _, err := os.Stat(env.Paths.SessionFile); err == nil {
+		sessionStatus = "present"
+	} else if err != nil && !os.IsNotExist(err) {
+		sessionStatus = fmt.Sprintf("check failed: %v", err)
+	}
 
 	lines := []string{
 		"maybewhats doctor",
 		"",
+		"app: maybewhats",
 		fmt.Sprintf("config file: %s", env.Paths.ConfigFile),
 		fmt.Sprintf("data dir: %s", env.Paths.DataDir),
 		fmt.Sprintf("cache dir: %s", env.Paths.CacheDir),
 		fmt.Sprintf("database path: %s", env.Paths.DatabaseFile),
+		fmt.Sprintf("session path: %s", env.Paths.SessionFile),
+		fmt.Sprintf("session status: %s", sessionStatus),
 		fmt.Sprintf("editor: %s", env.Config.Editor),
 		fmt.Sprintf("downloads dir: %s", env.Config.DownloadsDir),
 		fmt.Sprintf("chat rows: %d", stats.Chats),
 		fmt.Sprintf("message rows: %d", stats.Messages),
 		fmt.Sprintf("draft rows: %d", stats.Drafts),
+		fmt.Sprintf("contact rows: %d", stats.Contacts),
+		fmt.Sprintf("media rows: %d", stats.MediaItems),
+		fmt.Sprintf("migration rows: %d", stats.Migrations),
+	}
+	if migrationErr != nil {
+		lines = append(lines, fmt.Sprintf("migration status: %v", migrationErr))
+	} else {
+		lines = append(lines,
+			fmt.Sprintf("applied migrations: %s", strings.Join(appliedMigrations, ", ")),
+			fmt.Sprintf("pending migrations: %s", noneIfEmpty(pendingMigrations)),
+		)
 	}
 	lines = append(lines, env.PreviewReport.Lines()...)
 
 	fmt.Fprintln(w, strings.Join(lines, "\n"))
+}
+
+func noneIfEmpty(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ", ")
 }
 
 func printUsage(w io.Writer) {
