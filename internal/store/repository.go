@@ -57,6 +57,13 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.pinned,
 			c.muted,
 			c.last_message_at,
+			COALESCE((
+				SELECT m.body
+				FROM messages m
+				WHERE m.chat_id = c.id
+				ORDER BY m.timestamp_unix DESC, m.id DESC
+				LIMIT 1
+			), '') AS last_preview,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -144,6 +151,13 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 			c.pinned,
 			c.muted,
 			c.last_message_at,
+			COALESCE((
+				SELECT m.body
+				FROM messages m
+				WHERE m.chat_id = c.id
+				ORDER BY m.timestamp_unix DESC, m.id DESC
+				LIMIT 1
+			), '') AS last_preview,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -693,6 +707,7 @@ func scanChat(row scanner) (Chat, error) {
 		&pinned,
 		&muted,
 		&lastMessageUnix,
+		&chat.LastPreview,
 		&hasDraft,
 	); err != nil {
 		return Chat{}, err

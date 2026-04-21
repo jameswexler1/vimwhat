@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,36 +46,44 @@ type Options struct {
 }
 
 type Model struct {
-	width           int
-	height          int
-	mode            Mode
-	focus           Focus
-	allChats        []store.Chat
-	chats           []store.Chat
-	messagesByChat  map[string][]store.Message
-	draftsByChat    map[string]string
-	activeChat      int
-	messageCursor   int
-	visualAnchor    int
-	previewReport   media.Report
-	paths           config.Paths
-	config          config.Config
-	status          string
-	commandLine     string
-	searchLine      string
-	composer        string
-	lastSearch      string
-	lastSearchFocus Focus
-	searchMatches   []int
-	searchIndex     int
-	yankRegister    string
-	compactLayout   bool
-	infoPaneVisible bool
-	persistMessage  func(chatID, body string) (store.Message, error)
-	loadMessages    func(chatID string, limit int) ([]store.Message, error)
-	saveDraft       func(chatID, body string) error
-	searchChats     func(query string) ([]store.Chat, error)
-	searchMessages  func(chatID, query string, limit int) ([]store.Message, error)
+	width            int
+	height           int
+	mode             Mode
+	focus            Focus
+	allChats         []store.Chat
+	chats            []store.Chat
+	messagesByChat   map[string][]store.Message
+	draftsByChat     map[string]string
+	activeChat       int
+	messageCursor    int
+	visualAnchor     int
+	previewReport    media.Report
+	paths            config.Paths
+	config           config.Config
+	status           string
+	commandLine      string
+	searchLine       string
+	composer         string
+	lastSearch       string
+	lastSearchFocus  Focus
+	activeSearch     string
+	searchChatSource []store.Chat
+	searchMatches    []int
+	searchIndex      int
+	pendingCount     int
+	yankRegister     string
+	compactLayout    bool
+	infoPaneVisible  bool
+	helpVisible      bool
+	unreadOnly       bool
+	pinnedFirst      bool
+	commandHistory   []string
+	searchHistory    []string
+	persistMessage   func(chatID, body string) (store.Message, error)
+	loadMessages     func(chatID string, limit int) ([]store.Message, error)
+	saveDraft        func(chatID, body string) error
+	searchChats      func(query string) ([]store.Chat, error)
+	searchMessages   func(chatID, query string, limit int) ([]store.Message, error)
 }
 
 const messageLoadLimit = 200
@@ -108,6 +117,7 @@ func NewModel(opts Options) Model {
 		paths:          opts.Paths,
 		config:         opts.Config,
 		status:         "ready",
+		pinnedFirst:    true,
 		persistMessage: opts.PersistMessage,
 		loadMessages:   opts.LoadMessages,
 		saveDraft:      opts.SaveDraft,
@@ -173,9 +183,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.helpVisible {
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.helpVisible = false
+			m.status = "help closed"
+			return m, nil
+		}
+		if msg.String() == "?" {
+			m.helpVisible = false
+			m.status = "help closed"
+			return m, nil
+		}
+		return m, nil
+	}
+
+	if m.captureCount(msg) {
+		return m, nil
+	}
+	count := m.consumeCount()
+
 	switch msg.String() {
 	case "q":
 		return m, tea.Quit
+	case "?":
+		m.helpVisible = true
+		m.status = "help"
 	case "i":
 		if len(m.chats) == 0 {
 			m.status = "no chat selected"
@@ -211,9 +244,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		m.moveFocus(1)
 	case "j":
-		m.moveCursor(1)
+		m.moveCursor(count)
 	case "k":
-		m.moveCursor(-1)
+		m.moveCursor(-count)
 	case "g":
 		if m.focus == FocusMessages {
 			m.messageCursor = 0
@@ -227,12 +260,20 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "G":
 		if m.focus == FocusMessages {
-			if count := len(m.currentMessages()); count > 0 {
-				m.messageCursor = count - 1
+			if messageCount := len(m.currentMessages()); messageCount > 0 {
+				target := messageCount - 1
+				if count > 1 {
+					target = count - 1
+				}
+				m.messageCursor = clamp(target, 0, messageCount-1)
 			}
 		} else {
-			if count := len(m.chats); count > 0 {
-				m.activeChat = count - 1
+			if chatCount := len(m.chats); chatCount > 0 {
+				target := chatCount - 1
+				if count > 1 {
+					target = count - 1
+				}
+				m.activeChat = clamp(target, 0, chatCount-1)
 				if err := m.ensureCurrentMessagesLoaded(); err != nil {
 					m.status = fmt.Sprintf("load messages failed: %v", err)
 					return m, nil
@@ -258,6 +299,16 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.advanceSearch(1)
 	case "N":
 		m.advanceSearch(-1)
+	case "u":
+		if err := m.setUnreadOnly(!m.unreadOnly); err != nil {
+			m.status = fmt.Sprintf("filter failed: %v", err)
+			return m, nil
+		}
+	case "p":
+		if err := m.setPinnedFirst(!m.pinnedFirst); err != nil {
+			m.status = fmt.Sprintf("sort failed: %v", err)
+			return m, nil
+		}
 	default:
 		return m, nil
 	}
@@ -266,6 +317,11 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "alt+enter" || msg.String() == "ctrl+j" {
+		m.composer += "\n"
+		return m, nil
+	}
+
 	switch msg.Type {
 	case tea.KeyEsc:
 		if err := m.persistCurrentDraft(); err != nil {
@@ -335,6 +391,9 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		cmd := strings.TrimSpace(m.commandLine)
 		m.commandLine = ""
 		m.mode = ModeNormal
+		if cmd != "" {
+			m.commandHistory = append(m.commandHistory, cmd)
+		}
 		return m.executeCommand(cmd)
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		m.commandLine = trimLastRune(m.commandLine)
@@ -368,6 +427,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "search cleared"
 			return m, nil
 		}
+		m.activeSearch = strings.TrimSpace(m.lastSearch)
+		m.searchHistory = append(m.searchHistory, m.activeSearch)
 		if err := m.runStoreSearch(); err != nil {
 			m.searchLine = ""
 			m.mode = ModeNormal
@@ -493,7 +554,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 	case "q", "quit":
 		return m, tea.Quit
 	case "help":
-		m.status = "normal: hjkl/tab : / i v enter q"
+		m.helpVisible = true
+		m.status = "help"
 	case "focus chats":
 		m.focus = FocusChats
 		m.status = "focus: chats"
@@ -544,6 +606,26 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.status = "search cleared"
+	case "filter unread":
+		if err := m.setUnreadOnly(true); err != nil {
+			m.status = fmt.Sprintf("filter failed: %v", err)
+			break
+		}
+	case "filter all":
+		if err := m.setUnreadOnly(false); err != nil {
+			m.status = fmt.Sprintf("filter failed: %v", err)
+			break
+		}
+	case "sort pinned":
+		if err := m.setPinnedFirst(true); err != nil {
+			m.status = fmt.Sprintf("sort failed: %v", err)
+			break
+		}
+	case "sort recent":
+		if err := m.setPinnedFirst(false); err != nil {
+			m.status = fmt.Sprintf("sort failed: %v", err)
+			break
+		}
 	default:
 		m.status = fmt.Sprintf("unknown command: %s", cmd)
 	}
@@ -583,18 +665,18 @@ func (m *Model) runStoreSearch() error {
 		if m.searchChats == nil {
 			return nil
 		}
+		source := m.allChats
 		if query == "" {
-			m.chats = slices.Clone(m.allChats)
+			m.activeSearch = ""
 		} else {
 			chats, err := m.searchChats(query)
 			if err != nil {
 				return err
 			}
-			m.chats = slices.Clone(chats)
+			source = chats
 		}
-		m.activeChat = 0
-		m.messageCursor = 0
-		return m.ensureCurrentMessagesLoaded()
+		m.searchChatSource = slices.Clone(source)
+		return m.applyChatView(source, "")
 	case FocusMessages, FocusPreview:
 		if m.searchMessages == nil {
 			return nil
@@ -695,12 +777,130 @@ func (m *Model) reloadCurrentMessages() error {
 func (m *Model) clearSearch() error {
 	m.lastSearch = ""
 	m.searchLine = ""
+	m.activeSearch = ""
+	m.searchChatSource = nil
 	m.searchMatches = nil
 	m.searchIndex = -1
 	m.lastSearchFocus = ""
-	m.chats = slices.Clone(m.allChats)
-	m.activeChat = clamp(m.activeChat, 0, max(0, len(m.chats)-1))
+	if err := m.applyChatView(m.allChats, m.currentChat().ID); err != nil {
+		return err
+	}
 	return m.reloadCurrentMessages()
+}
+
+func (m *Model) captureCount(msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+		return false
+	}
+	r := msg.Runes[0]
+	if r < '0' || r > '9' {
+		return false
+	}
+	if r == '0' && m.pendingCount == 0 {
+		return false
+	}
+	m.pendingCount = m.pendingCount*10 + int(r-'0')
+	m.status = fmt.Sprintf("count: %d", m.pendingCount)
+	return true
+}
+
+func (m *Model) consumeCount() int {
+	if m.pendingCount <= 0 {
+		return 1
+	}
+	count := m.pendingCount
+	m.pendingCount = 0
+	return count
+}
+
+func (m *Model) setUnreadOnly(enabled bool) error {
+	m.unreadOnly = enabled
+	if err := m.applyChatView(m.currentChatSource(), m.currentChat().ID); err != nil {
+		return err
+	}
+	m.status = fmt.Sprintf("unread filter: %s", onOff(enabled))
+	return nil
+}
+
+func (m *Model) setPinnedFirst(enabled bool) error {
+	m.pinnedFirst = enabled
+	if err := m.applyChatView(m.currentChatSource(), m.currentChat().ID); err != nil {
+		return err
+	}
+	if enabled {
+		m.status = "sort: pinned"
+	} else {
+		m.status = "sort: recent"
+	}
+	return nil
+}
+
+func (m Model) currentChatSource() []store.Chat {
+	if strings.TrimSpace(m.activeSearch) == "" {
+		return m.allChats
+	}
+	if len(m.searchChatSource) == 0 {
+		return m.allChats
+	}
+	return m.searchChatSource
+}
+
+func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error {
+	chats := slices.Clone(source)
+	if m.unreadOnly {
+		chats = filterUnread(chats)
+	}
+	sortChats(chats, m.pinnedFirst)
+	m.chats = chats
+
+	if len(m.chats) == 0 {
+		m.activeChat = 0
+		m.messageCursor = 0
+		return nil
+	}
+
+	m.activeChat = indexOfChat(m.chats, preferredChatID)
+	if m.activeChat == -1 {
+		m.activeChat = 0
+	}
+	m.messageCursor = 0
+	return m.ensureCurrentMessagesLoaded()
+}
+
+func filterUnread(chats []store.Chat) []store.Chat {
+	out := make([]store.Chat, 0, len(chats))
+	for _, chat := range chats {
+		if chat.Unread > 0 {
+			out = append(out, chat)
+		}
+	}
+	return out
+}
+
+func sortChats(chats []store.Chat, pinnedFirst bool) {
+	sort.SliceStable(chats, func(i, j int) bool {
+		left := chats[i]
+		right := chats[j]
+		if pinnedFirst && left.Pinned != right.Pinned {
+			return left.Pinned
+		}
+		if !left.LastMessageAt.Equal(right.LastMessageAt) {
+			return left.LastMessageAt.After(right.LastMessageAt)
+		}
+		return strings.ToLower(left.Title) < strings.ToLower(right.Title)
+	})
+}
+
+func indexOfChat(chats []store.Chat, chatID string) int {
+	if chatID == "" {
+		return -1
+	}
+	for i, chat := range chats {
+		if chat.ID == chatID {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m Model) currentChat() store.Chat {

@@ -11,6 +11,7 @@ type Chat struct {
 	Pinned        bool
 	Muted         bool
 	HasDraft      bool
+	LastPreview   string
 	LastMessageAt time.Time
 }
 

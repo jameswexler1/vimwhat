@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -162,6 +163,104 @@ func TestOpeningChatLoadsMessagesLazily(t *testing.T) {
 	}
 }
 
+func TestNormalCountsMoveCursor(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "one"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "two"},
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "three"},
+					{ID: "m-4", ChatID: "chat-1", Sender: "Alice", Body: "four"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+
+	counted, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	moved, _ := counted.(Model).updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got := moved.(Model)
+	if got.messageCursor != 3 {
+		t.Fatalf("messageCursor = %d, want 3", got.messageCursor)
+	}
+}
+
+func TestUnreadFilterAndSortCommands(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "read-pinned", Title: "Read Pinned", Pinned: true, LastMessageAt: now.Add(-time.Hour)},
+				{ID: "unread-old", Title: "Unread Old", Unread: 1, LastMessageAt: now.Add(-2 * time.Hour)},
+				{ID: "unread-new", Title: "Unread New", Unread: 2, LastMessageAt: now},
+			},
+			MessagesByChat: map[string][]store.Message{},
+			DraftsByChat:   map[string]string{},
+		},
+	})
+
+	filtered, _ := model.executeCommand("filter unread")
+	got := filtered.(Model)
+	if len(got.chats) != 2 {
+		t.Fatalf("filtered chats = %+v, want two unread chats", got.chats)
+	}
+
+	sorted, _ := got.executeCommand("sort recent")
+	got = sorted.(Model)
+	if got.chats[0].ID != "unread-new" {
+		t.Fatalf("first chat after recent sort = %s, want unread-new", got.chats[0].ID)
+	}
+}
+
+func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 24
+
+	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	got := helped.(Model)
+	if !got.helpVisible {
+		t.Fatal("helpVisible = false, want true")
+	}
+	view := got.View()
+	for _, want := range []string{"maybewhats help", "normal:", "insert:", "command:"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help view missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "first"
+	model.width = 80
+	model.height = 12
+
+	model.composer = "first\nsecond"
+	if !strings.Contains(model.renderInput(), `first\nsecond`) {
+		t.Fatalf("renderInput did not expose multiline composer preview: %q", model.renderInput())
+	}
+}
+
 func TestClearSearchRestoresMessagesFromStore(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -275,6 +374,67 @@ func TestViewRendersPaneContentWithinTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{
+					ID:          "chat-1",
+					Title:       "Project",
+					Kind:        "group",
+					Unread:      3,
+					Pinned:      true,
+					Muted:       true,
+					HasDraft:    true,
+					LastPreview: "latest project update",
+				},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "draft reply"},
+			ActiveChatID:   "chat-1",
+		},
+	})
+
+	view := stripANSI(model.renderChats(40))
+	for _, want := range []string{"Project", "[PMDG] 3", "draft: draft reply"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("chat list missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestCompactViewShowsFocusedPaneOnly(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "compact message"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 70
+	model.height = 18
+	model.compactLayout = true
+	model.focus = FocusMessages
+
+	view := model.View()
+	if !strings.Contains(view, "compact message") {
+		t.Fatalf("compact message pane missing body\n%s", view)
+	}
+	if strings.Contains(view, "Chats") {
+		t.Fatalf("compact message focus rendered chat pane too\n%s", view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d width = %d, want <= %d", i+1, width, model.width)
+		}
+	}
+}
+
 func TestPreviewCommandTogglesInfoPane(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -297,7 +457,7 @@ func TestPreviewCommandTogglesInfoPane(t *testing.T) {
 	}
 }
 
-func TestMessagesRenderAsIncomingAndOutgoingBubbles(t *testing.T) {
+func TestMessagesRenderAsCompactBlocks(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -312,33 +472,25 @@ func TestMessagesRenderAsIncomingAndOutgoingBubbles(t *testing.T) {
 		},
 	})
 
-	view := model.renderMessages(80, 24)
+	view := model.renderMessages(50, 24)
 	incomingLine := plainLineContaining(view, "incoming text")
 	outgoingLine := plainLineContaining(view, "outgoing text")
 	if incomingLine == "" || outgoingLine == "" {
 		t.Fatalf("rendered messages missing expected bodies\n%s", view)
 	}
-	if leadingSpaces(incomingLine) > 2 {
-		t.Fatalf("incoming message was not left aligned: %q", incomingLine)
+	if !strings.Contains(stripANSI(view), "| Alice") {
+		t.Fatalf("incoming metadata missing from compact block\n%s", view)
 	}
-	if leadingSpaces(outgoingLine) < 20 {
-		t.Fatalf("outgoing message was not right aligned: %q", outgoingLine)
-	}
-	if !strings.Contains(stripANSI(view), "me") {
+	if !strings.Contains(stripANSI(view), "| me") {
 		t.Fatalf("outgoing bubble did not include sender label\n%s", view)
-	}
-
-	outgoingMeta := plainLineContaining(view, "me")
-	if outgoingMeta == "" || leadingSpaces(outgoingMeta) < 20 {
-		t.Fatalf("outgoing metadata was not part of the right-aligned block: %q", outgoingMeta)
 	}
 
 	outgoingIndentedLines := 0
 	for _, line := range strings.Split(stripANSI(view), "\n") {
 		if strings.Contains(line, "outgoing text") || strings.Contains(line, "more than one line") || strings.Contains(line, "viewport") {
 			outgoingIndentedLines++
-			if leadingSpaces(line) < 20 {
-				t.Fatalf("wrapped outgoing message line drifted left: %q", line)
+			if !strings.Contains(line, "|") {
+				t.Fatalf("wrapped outgoing message line lost compact gutter: %q", line)
 			}
 		}
 	}
