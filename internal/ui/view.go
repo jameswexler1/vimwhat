@@ -489,11 +489,9 @@ func (m Model) renderMessages(width, height int) string {
 	}
 
 	bodyHeight := max(1, height-1)
-	composerHeight := 0
-	if m.mode == ModeInsert {
-		composerHeight = min(m.composerHeight(), bodyHeight)
-	}
-	messageHeight := max(1, bodyHeight-composerHeight)
+	footer := m.renderMessageFooter(max(1, width-2))
+	footerHeight := min(countLines(footer), bodyHeight)
+	messageHeight := max(1, bodyHeight-footerHeight)
 
 	body := make([]string, 0, bodyHeight)
 	if len(blocks) == 0 {
@@ -501,12 +499,22 @@ func (m Model) renderMessages(width, height int) string {
 	} else {
 		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)...)
 	}
-	if composerHeight > 0 {
-		body = padTopLines(body, messageHeight)
-		composer := padLines(strings.Split(clipLines(m.renderComposer(max(1, width-2)), composerHeight), "\n"), composerHeight)
-		body = append(body, composer...)
+	if footerHeight > 0 {
+		if len(blocks) == 0 || messageBlocksHeight(blocks) <= messageHeight {
+			body = padLines(body, messageHeight)
+		} else {
+			body = padTopLines(body, messageHeight)
+		}
+		body = append(body, padLines(strings.Split(clipLines(footer, footerHeight), "\n"), footerHeight)...)
 	}
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+}
+
+func countLines(content string) int {
+	if content == "" {
+		return 0
+	}
+	return len(strings.Split(content, "\n"))
 }
 
 func padTopLines(lines []string, height int) []string {
@@ -795,7 +803,7 @@ func (m Model) renderInput() string {
 	case ModeSearch:
 		return m.renderPrompt("SEARCH", "/"+m.searchLine, "enter search  esc cancel  empty clears")
 	default:
-		return m.renderPrompt("NORMAL", "j/k move  5j counts  enter open  i insert  : command  / search  ? help", "")
+		return ""
 	}
 }
 
@@ -841,11 +849,40 @@ func (m Model) renderComposer(width int) string {
 	return style.Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) inputHeight() int {
+func (m Model) renderMessageFooter(width int) string {
+	if m.mode == ModeCommand || m.mode == ModeSearch {
+		return ""
+	}
 	if m.mode == ModeInsert {
+		return m.renderComposer(width)
+	}
+
+	label := "NORMAL"
+	hint := "j/k move | i insert | : command | / search | ? help"
+	if m.mode == ModeVisual {
+		label = "VISUAL"
+		hint = "j/k extend | y yank | esc normal"
+	}
+	separator := lipgloss.NewStyle().Foreground(borderColor).Render(strings.Repeat("-", max(1, width)))
+	lines := []string{
+		separator,
+		truncateDisplay(" ["+label+"] "+hint, width),
+		"",
+	}
+	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
+	if !barsTransparent() {
+		style = style.Background(uiTheme.BarBG)
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) inputHeight() int {
+	switch m.mode {
+	case ModeCommand, ModeSearch:
+		return 1
+	default:
 		return 0
 	}
-	return 1
 }
 
 func (m Model) composerHeight() int {

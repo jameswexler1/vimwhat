@@ -619,11 +619,19 @@ func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 		}
 	}
 	messageStarted := false
+	blankAfterMessage := false
 	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if messageStarted && isFooterLine(line) {
+			break
+		}
 		if strings.Contains(line, "me") {
 			messageStarted = true
 		}
 		if messageStarted && strings.TrimSpace(line) == "" {
+			blankAfterMessage = true
+			continue
+		}
+		if messageStarted && blankAfterMessage && strings.TrimSpace(line) != "" {
 			t.Fatalf("outgoing message rendered blank spacer lines inside the bubble\n%s", stripANSI(view))
 		}
 	}
@@ -655,11 +663,19 @@ func TestFullViewOutgoingWrappedMessagesDoNotRenderBlankRows(t *testing.T) {
 
 	view := stripANSI(model.View())
 	messageStarted := false
+	blankAfterMessage := false
 	for _, line := range strings.Split(view, "\n") {
+		if messageStarted && isFooterLine(line) {
+			break
+		}
 		if strings.Contains(line, "me") {
 			messageStarted = true
 		}
 		if messageStarted && strings.TrimSpace(line) == "" {
+			blankAfterMessage = true
+			continue
+		}
+		if messageStarted && blankAfterMessage && strings.TrimSpace(line) != "" {
 			t.Fatalf("full view rendered blank rows inside outgoing message\n%s", view)
 		}
 	}
@@ -799,6 +815,36 @@ func TestComposerRemainsVisibleOverFullMessagePane(t *testing.T) {
 	}
 }
 
+func TestMessageVerticalAlignmentDoesNotChangeBetweenNormalAndInsert(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(20)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 19
+	model.messageScrollTop = 19
+
+	normalView := stripANSI(model.renderMessages(70, 10))
+	normalLine := lineIndexContaining(normalView, "message 19")
+	if normalLine == -1 {
+		t.Fatalf("normal view missing newest message\n%s", normalView)
+	}
+
+	model.mode = ModeInsert
+	insertView := stripANSI(model.renderMessages(70, 10))
+	insertLine := lineIndexContaining(insertView, "message 19")
+	if insertLine == -1 {
+		t.Fatalf("insert view missing newest message\n%s", insertView)
+	}
+	if normalLine != insertLine {
+		t.Fatalf("newest message line changed from normal=%d to insert=%d\nnormal:\n%s\ninsert:\n%s", normalLine, insertLine, normalView, insertView)
+	}
+}
+
 func TestSendingMessageScrollsConversationToNewestMessage(t *testing.T) {
 	messages := numberedMessages(18)
 	model := NewModel(Options{
@@ -885,7 +931,7 @@ func TestMessageNavigationTopAndBottomCommandsMoveViewport(t *testing.T) {
 	if strings.Contains(bottomView, "message 00") {
 		t.Fatalf("G left oldest message visible\n%s", bottomView)
 	}
-	assertLastNonEmptyLineContains(t, bottomView, "message 19")
+	assertLineBeforeFooterContains(t, bottomView, "message 19")
 
 	top, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
 	model = top.(Model)
@@ -940,7 +986,7 @@ func TestViewportDoesNotAllowBlankSpaceBelowNewestMessageWhenOverscrolled(t *tes
 	model.messageScrollTop = 19
 
 	view := stripANSI(model.renderMessages(70, 8))
-	assertLastNonEmptyLineContains(t, view, "message 19")
+	assertLineBeforeFooterContains(t, view, "message 19")
 	if !strings.Contains(view, "message 18") {
 		t.Fatalf("overscrolled viewport did not keep selected message visible\n%s", view)
 	}
@@ -1081,6 +1127,23 @@ func leadingSpaces(value string) int {
 	return len(value) - len(strings.TrimLeft(value, " "))
 }
 
+func isFooterLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.Contains(trimmed, "[NORMAL]") ||
+		strings.Contains(trimmed, "[VISUAL]") ||
+		strings.Contains(trimmed, "[INSERT]") ||
+		(trimmed != "" && strings.Trim(trimmed, "-") == "")
+}
+
+func lineIndexContaining(view, needle string) int {
+	for i, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, needle) {
+			return i
+		}
+	}
+	return -1
+}
+
 func assertLastNonEmptyLineContains(t *testing.T, view, want string) {
 	t.Helper()
 	lines := strings.Split(view, "\n")
@@ -1109,6 +1172,21 @@ func assertLineBeforeComposerContains(t *testing.T, view, want string) {
 		}
 	}
 	t.Fatalf("composer marker not found\n%s", view)
+}
+
+func assertLineBeforeFooterContains(t *testing.T, view, want string) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "[NORMAL]") || strings.Contains(line, "[VISUAL]") || strings.Contains(line, "[INSERT]") {
+			target := i - 2
+			if target < 0 || !strings.Contains(lines[target], want) {
+				t.Fatalf("line before footer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
+			}
+			return
+		}
+	}
+	t.Fatalf("footer marker not found\n%s", view)
 }
 
 func lineBefore(lines []string, index int) string {
