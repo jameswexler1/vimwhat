@@ -223,6 +223,9 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 	}
 
 	selected := clamp(cursor, 0, len(blocks)-1)
+	if selected == len(blocks)-1 {
+		return bottomMessageViewport(blocks, height)
+	}
 	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
 	var out []string
 	used := 0
@@ -246,6 +249,31 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 
 	if len(out) > height {
 		return tailLines(out, height)
+	}
+	return out
+}
+
+func bottomMessageViewport(blocks []messageBlock, height int) []string {
+	height = max(1, height)
+	var out []string
+	used := 0
+
+	for i := len(blocks) - 1; i >= 0; i-- {
+		block := blocks[i].lines
+		if used+len(block) > height {
+			remaining := height - used
+			if remaining > 0 {
+				out = append(tailLines(block, remaining), out...)
+			}
+			break
+		}
+		out = append(block, out...)
+		used += len(block)
+	}
+
+	if len(out) < height {
+		padding := make([]string, height-len(out))
+		out = append(padding, out...)
 	}
 	return out
 }
@@ -438,20 +466,29 @@ func (m Model) renderMessages(width, height int) string {
 	if m.mode == ModeInsert {
 		composerHeight = min(m.composerHeight(), bodyHeight)
 	}
+	messageHeight := max(1, bodyHeight-composerHeight)
 
 	body := make([]string, 0, bodyHeight)
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
-		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), bodyHeight)...)
+		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)...)
 	}
 	if composerHeight > 0 {
-		body = padLines(body, bodyHeight)
+		body = padTopLines(body, messageHeight)
 		composer := padLines(strings.Split(clipLines(m.renderComposer(max(1, width-2)), composerHeight), "\n"), composerHeight)
-		start := max(0, bodyHeight-composerHeight)
-		copy(body[start:], composer)
+		body = append(body, composer...)
 	}
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+}
+
+func padTopLines(lines []string, height int) []string {
+	height = max(1, height)
+	if len(lines) >= height {
+		return lines[len(lines)-height:]
+	}
+	padding := make([]string, height-len(lines))
+	return append(padding, lines...)
 }
 
 func padLines(lines []string, height int) []string {

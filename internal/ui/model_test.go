@@ -618,8 +618,14 @@ func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 			t.Fatalf("outgoing line %d width = %d, want < %d to avoid terminal edge wrap\n%s", i+1, got, width, stripANSI(view))
 		}
 	}
-	if strings.Contains(stripANSI(view), "\n\n") {
-		t.Fatalf("outgoing message rendered blank spacer lines\n%s", stripANSI(view))
+	messageStarted := false
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		if strings.Contains(line, "me") {
+			messageStarted = true
+		}
+		if messageStarted && strings.TrimSpace(line) == "" {
+			t.Fatalf("outgoing message rendered blank spacer lines inside the bubble\n%s", stripANSI(view))
+		}
 	}
 }
 
@@ -648,8 +654,14 @@ func TestFullViewOutgoingWrappedMessagesDoNotRenderBlankRows(t *testing.T) {
 	model.focus = FocusMessages
 
 	view := stripANSI(model.View())
-	if strings.Contains(view, "\n\n") {
-		t.Fatalf("full view rendered blank rows inside outgoing message\n%s", view)
+	messageStarted := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "me") {
+			messageStarted = true
+		}
+		if messageStarted && strings.TrimSpace(line) == "" {
+			t.Fatalf("full view rendered blank rows inside outgoing message\n%s", view)
+		}
 	}
 	for _, line := range strings.Split(model.View(), "\n") {
 		plain := stripANSI(line)
@@ -819,6 +831,8 @@ func TestSendingMessageScrollsConversationToNewestMessage(t *testing.T) {
 	if strings.Contains(view, "message 00") {
 		t.Fatalf("viewport did not move away from the oldest message after send\n%s", view)
 	}
+	assertLastNonEmptyLineContains(t, view, "> ▌")
+	assertLineBeforeComposerContains(t, view, "newest sent message")
 }
 
 func TestMessageNavigationMovesViewportDown(t *testing.T) {
@@ -871,6 +885,7 @@ func TestMessageNavigationTopAndBottomCommandsMoveViewport(t *testing.T) {
 	if strings.Contains(bottomView, "message 00") {
 		t.Fatalf("G left oldest message visible\n%s", bottomView)
 	}
+	assertLastNonEmptyLineContains(t, bottomView, "message 19")
 
 	top, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
 	model = top.(Model)
@@ -1016,6 +1031,43 @@ func plainLineContaining(view, needle string) string {
 
 func leadingSpaces(value string) int {
 	return len(value) - len(strings.TrimLeft(value, " "))
+}
+
+func assertLastNonEmptyLineContains(t *testing.T, view, want string) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		if !strings.Contains(lines[i], want) {
+			t.Fatalf("last non-empty line = %q, want it to contain %q\n%s", lines[i], want, view)
+		}
+		return
+	}
+	t.Fatalf("view had no non-empty lines; want %q\n%s", want, view)
+}
+
+func assertLineBeforeComposerContains(t *testing.T, view, want string) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "[INSERT]") {
+			target := i - 2
+			if target < 0 || !strings.Contains(lines[target], want) {
+				t.Fatalf("line before composer = %q, want it to contain %q\n%s", lineBefore(lines, i-1), want, view)
+			}
+			return
+		}
+	}
+	t.Fatalf("composer marker not found\n%s", view)
+}
+
+func lineBefore(lines []string, index int) string {
+	if index <= 0 || index > len(lines)-1 {
+		return ""
+	}
+	return lines[index-1]
 }
 
 func numberedMessages(count int) []store.Message {
