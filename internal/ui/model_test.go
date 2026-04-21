@@ -898,6 +898,54 @@ func TestMessageNavigationTopAndBottomCommandsMoveViewport(t *testing.T) {
 	}
 }
 
+func TestShortChatStartsAtTopEvenWhenNewestSelected(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "first short"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "second short"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+
+	view := stripANSI(model.renderMessages(70, 12))
+	lines := strings.Split(view, "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[1]) == "" {
+		t.Fatalf("short chat did not start at top\n%s", view)
+	}
+	if !strings.Contains(view, "first short") || !strings.Contains(view, "second short") {
+		t.Fatalf("short chat did not show all messages\n%s", view)
+	}
+}
+
+func TestViewportDoesNotAllowBlankSpaceBelowNewestMessageWhenOverscrolled(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(20)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 18
+	model.messageScrollTop = 19
+
+	view := stripANSI(model.renderMessages(70, 8))
+	assertLastNonEmptyLineContains(t, view, "message 19")
+	if !strings.Contains(view, "message 18") {
+		t.Fatalf("overscrolled viewport did not keep selected message visible\n%s", view)
+	}
+}
+
 func TestDefaultRenderingAvoidsBackgroundFills(t *testing.T) {
 	t.Setenv("MAYBEWHATS_TRANSPARENT_BARS", "1")
 	model := NewModel(Options{

@@ -227,6 +227,7 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 		return bottomMessageViewport(blocks, height)
 	}
 	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
+	scrollTop = clampMessageScrollTop(blocks, scrollTop, height)
 	var out []string
 	used := 0
 
@@ -235,7 +236,7 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 		if used+len(block) > height {
 			remaining := height - used
 			if remaining > 0 {
-				if i == selected {
+				if i == selected || i == len(blocks)-1 {
 					out = append(out, tailLines(block, remaining)...)
 				} else {
 					out = append(out, block[:remaining]...)
@@ -255,6 +256,10 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 
 func bottomMessageViewport(blocks []messageBlock, height int) []string {
 	height = max(1, height)
+	if messageBlocksHeight(blocks) <= height {
+		return flattenMessageBlocks(blocks)
+	}
+
 	var out []string
 	used := 0
 
@@ -270,10 +275,32 @@ func bottomMessageViewport(blocks []messageBlock, height int) []string {
 		out = append(block, out...)
 		used += len(block)
 	}
+	return out
+}
 
-	if len(out) < height {
-		padding := make([]string, height-len(out))
-		out = append(padding, out...)
+func clampMessageScrollTop(blocks []messageBlock, scrollTop, height int) int {
+	scrollTop = clamp(scrollTop, 0, len(blocks)-1)
+	if messageBlocksHeight(blocks) <= height {
+		return 0
+	}
+	for scrollTop > 0 && messageBlocksHeight(blocks[scrollTop:]) < height {
+		scrollTop--
+	}
+	return scrollTop
+}
+
+func messageBlocksHeight(blocks []messageBlock) int {
+	total := 0
+	for _, block := range blocks {
+		total += len(block.lines)
+	}
+	return total
+}
+
+func flattenMessageBlocks(blocks []messageBlock) []string {
+	var out []string
+	for _, block := range blocks {
+		out = append(out, block.lines...)
 	}
 	return out
 }
