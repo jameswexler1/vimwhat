@@ -259,7 +259,7 @@ func TestInsertSupportsMultilineComposerPreview(t *testing.T) {
 
 	model.composer = "first\nsecond"
 	input := stripANSI(model.renderInput())
-	for _, want := range []string{"INSERT to Alice", "> first", "> second"} {
+	for _, want := range []string{"[INSERT] to Alice", "> first", "> second"} {
 		if !strings.Contains(input, want) {
 			t.Fatalf("renderInput missing %q:\n%s", want, input)
 		}
@@ -497,6 +497,42 @@ func TestMessagesRenderIncomingLeftAndOutgoingRight(t *testing.T) {
 	}
 }
 
+func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{
+						ID:         "m-1",
+						ChatID:     "chat-1",
+						Sender:     "me",
+						Body:       "outgoing text that wraps across several visual lines in a narrow message pane",
+						IsOutgoing: true,
+					},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	const width = 42
+	view := model.renderMessages(width, 12)
+	for i, line := range strings.Split(view, "\n") {
+		plain := stripANSI(line)
+		if !strings.Contains(plain, "me") && !strings.Contains(plain, "outgoing") && !strings.Contains(plain, "visual") && !strings.Contains(plain, "narrow") {
+			continue
+		}
+		if got := lipgloss.Width(line); got >= width {
+			t.Fatalf("outgoing line %d width = %d, want < %d to avoid terminal edge wrap\n%s", i+1, got, width, stripANSI(view))
+		}
+	}
+	if strings.Contains(stripANSI(view), "\n\n") {
+		t.Fatalf("outgoing message rendered blank spacer lines\n%s", stripANSI(view))
+	}
+}
+
 func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -513,19 +549,47 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	model.commandLine = "help"
 
 	status := stripANSI(model.renderStatus())
-	if !strings.Contains(status, "COMMAND MESSAGES") {
+	if !strings.Contains(status, "MODE:COMMAND FOCUS:MESSAGES") {
 		t.Fatalf("status missing mode/focus: %q", status)
 	}
 	prompt := stripANSI(model.renderInput())
-	if !strings.Contains(prompt, "COMMAND") || !strings.Contains(prompt, ":help") || !strings.Contains(prompt, "enter run") {
+	if !strings.Contains(prompt, "[COMMAND]") || !strings.Contains(prompt, ":help") || !strings.Contains(prompt, "enter run") {
 		t.Fatalf("command prompt missing workflow: %q", prompt)
 	}
 
 	model.mode = ModeSearch
 	model.searchLine = "needle"
 	prompt = stripANSI(model.renderInput())
-	if !strings.Contains(prompt, "SEARCH") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
+	if !strings.Contains(prompt, "[SEARCH]") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
 		t.Fatalf("search prompt missing workflow: %q", prompt)
+	}
+}
+
+func TestFullViewShowsStatusAndComposerInInsertMode(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "hello"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 88
+	model.height = 8
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "draft reply"
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"MODE:INSERT FOCUS:MESSAGES", "[INSERT] to Alice", "> draft reply▌"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("full insert view missing %q\n%s", want, view)
+		}
+	}
+	if got := len(strings.Split(view, "\n")); got > model.height {
+		t.Fatalf("View() produced %d lines, want <= %d\n%s", got, model.height, view)
 	}
 }
 

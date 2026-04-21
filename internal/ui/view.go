@@ -29,8 +29,11 @@ func (m Model) View() string {
 	}
 
 	inputHeight := m.inputHeight()
-	bodyHeight := max(3, m.height-1-inputHeight)
-	body := m.renderBody(bodyHeight)
+	bodyHeight := m.height - 1 - inputHeight
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	body := capLines(m.renderBody(bodyHeight), bodyHeight)
 	status := m.renderStatus()
 	input := m.renderInput()
 
@@ -537,15 +540,12 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 		blockWidth = max(blockWidth, lipgloss.Width(line))
 	}
 	if !outgoing {
-		for i, line := range lines {
-			lines[i] = lipgloss.NewStyle().Width(width).Render(line)
-		}
 		return strings.Join(lines, "\n")
 	}
 
+	indent := max(0, width-blockWidth-1)
 	for i, line := range lines {
-		indent := max(0, width-blockWidth)
-		lines[i] = strings.Repeat(" ", indent) + line
+		lines[i] = truncateDisplay(strings.Repeat(" ", indent)+line, width)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -600,7 +600,7 @@ func (m Model) renderStatus() string {
 	if m.pinnedFirst {
 		sortMode = "pinned"
 	}
-	left := fmt.Sprintf(" %s %s  %s  %s/%s ", strings.ToUpper(string(m.mode)), strings.ToUpper(string(m.focus)), m.status, filter, sortMode)
+	left := fmt.Sprintf(" MODE:%s FOCUS:%s | %s | %s/%s ", strings.ToUpper(string(m.mode)), strings.ToUpper(string(m.focus)), m.status, filter, sortMode)
 	right := " no chats "
 	if len(m.chats) > 0 {
 		right = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
@@ -636,13 +636,13 @@ func (m Model) renderPrompt(label, content, hint string) string {
 	if hint != "" {
 		content = content + "  " + hint
 	}
-	content = truncateDisplay(content, max(1, m.width-2))
+	prefix := "[" + label + "] "
+	content = truncateDisplay(prefix+content, max(1, m.width-1))
 	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)
 	}
-	prefix := lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render(" " + label + " ")
-	return style.Render(truncateDisplay(prefix+content, m.width))
+	return style.Render(" " + content)
 }
 
 func (m Model) renderComposer() string {
@@ -651,7 +651,7 @@ func (m Model) renderComposer() string {
 		chat = "no chat"
 	}
 
-	header := fmt.Sprintf(" INSERT to %s  enter send  ctrl+j newline  esc save draft", chat)
+	header := fmt.Sprintf(" [INSERT] to %s | enter send | ctrl+j newline | esc save draft", chat)
 	lines := []string{truncateDisplay(header, m.width)}
 
 	bodyLines := composerLines(m.composer)
