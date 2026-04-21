@@ -844,6 +844,76 @@ func TestMessageStatusTicks(t *testing.T) {
 	}
 }
 
+func TestShortMessageBubblesUseProportionalWidth(t *testing.T) {
+	now := time.Date(2026, 4, 21, 20, 59, 0, 0, time.UTC)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+
+	shortBubble := stripANSI(model.renderMessageBubble(store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Body:      "ok",
+		Timestamp: now,
+	}, 80, false, false))
+	longBubble := stripANSI(model.renderMessageBubble(store.Message{
+		ID:        "m-2",
+		ChatID:    "chat-1",
+		Body:      "this message is long enough to use a wider bubble and wrap naturally",
+		Timestamp: now,
+	}, 80, false, false))
+
+	shortWidth := maxRenderedLineWidth(shortBubble)
+	longWidth := maxRenderedLineWidth(longBubble)
+	if shortWidth >= longWidth {
+		t.Fatalf("short bubble width = %d, long bubble width = %d, want short < long\nshort:\n%s\nlong:\n%s", shortWidth, longWidth, shortBubble, longBubble)
+	}
+	if shortWidth > 12 {
+		t.Fatalf("short bubble width = %d, want compact width <= 12\n%s", shortWidth, shortBubble)
+	}
+}
+
+func TestShortOutgoingBubbleIsSmallAndRightAligned(t *testing.T) {
+	now := time.Date(2026, 4, 21, 20, 59, 0, 0, time.UTC)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:         "m-1",
+					ChatID:     "chat-1",
+					Body:       "ok",
+					Timestamp:  now,
+					IsOutgoing: true,
+					Status:     "read",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	view := stripANSI(model.renderMessages(80, 10))
+	bodyLine := plainLineContaining(view, "ok")
+	if bodyLine == "" {
+		t.Fatalf("short outgoing body missing\n%s", view)
+	}
+	if leadingSpaces(bodyLine) < 50 {
+		t.Fatalf("short outgoing bubble was not right aligned: %q\n%s", bodyLine, view)
+	}
+	if got := lipgloss.Width(strings.TrimLeft(bodyLine, " ")); got > 12 {
+		t.Fatalf("short outgoing bubble line width = %d, want compact <= 12\n%s", got, view)
+	}
+	if !strings.Contains(view, "20:59 ✓✓") {
+		t.Fatalf("short outgoing bubble missing compact read receipt\n%s", view)
+	}
+}
+
 func TestOutgoingBubblesKeepRightMarginToAvoidTerminalWrap(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -1550,6 +1620,14 @@ func plainLineContaining(view, needle string) string {
 		}
 	}
 	return ""
+}
+
+func maxRenderedLineWidth(view string) int {
+	width := 0
+	for _, line := range strings.Split(stripANSI(view), "\n") {
+		width = max(width, lipgloss.Width(line))
+	}
+	return width
 }
 
 func leadingSpaces(value string) int {

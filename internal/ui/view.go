@@ -702,7 +702,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(alignDisplay(meta, contentWidth, true)))
 	}
 
-	return boxStyle.Width(panelBoxWidth(boxStyle, maxBubbleWidth)).Render(strings.Join(lines, "\n"))
+	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
 }
 
 func bubbleWidth(available int) int {
@@ -728,7 +728,11 @@ func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, se
 			widest = max(widest, lineWidth)
 		}
 	}
-	return clamp(max(widest, 16), min(8, maxContentWidth), maxContentWidth)
+	return clamp(max(widest, 4), min(4, maxContentWidth), maxContentWidth)
+}
+
+func bubbleBoxWidth(style lipgloss.Style, contentWidth int) int {
+	return max(1, contentWidth+style.GetHorizontalPadding())
 }
 
 func shouldShowMessageSender(chat store.Chat, message store.Message) bool {
