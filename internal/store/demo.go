@@ -3,11 +3,20 @@ package store
 import (
 	"context"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
+	"path/filepath"
 	"time"
 )
 
 func (s *Store) SeedDemoData(ctx context.Context) error {
 	now := time.Now().Truncate(time.Minute)
+	demoImagePath, demoImageSize, err := s.ensureDemoImage()
+	if err != nil {
+		return err
+	}
 
 	chats := []Chat{
 		{ID: "demo-chat-alice", JID: "alice@s.whatsapp.net", Title: "Alice", Kind: "direct", Unread: 2, Pinned: true},
@@ -132,6 +141,24 @@ func (s *Store) SeedDemoData(ctx context.Context) error {
 			Timestamp: now.Add(-45 * time.Minute),
 		},
 		{
+			ID:        "demo-msg-project-media-1",
+			ChatID:    "demo-chat-project",
+			ChatJID:   "project@g.us",
+			Sender:    "Design",
+			SenderJID: "design@s.whatsapp.net",
+			Body:      "Local demo image. Focus this message and press Enter to render the preview.",
+			Timestamp: now.Add(-35 * time.Minute),
+			Media: []MediaMetadata{{
+				MessageID:     "demo-msg-project-media-1",
+				MIMEType:      "image/png",
+				FileName:      filepath.Base(demoImagePath),
+				SizeBytes:     demoImageSize,
+				LocalPath:     demoImagePath,
+				DownloadState: "downloaded",
+				UpdatedAt:     now,
+			}},
+		},
+		{
 			ID:        "demo-msg-ops-1",
 			ChatID:    "demo-chat-ops",
 			ChatJID:   "ops@g.us",
@@ -179,6 +206,7 @@ func (s *Store) ClearDemoData(ctx context.Context) error {
 		arg   string
 	}{
 		{query: `DELETE FROM message_fts WHERE message_id LIKE ?`, arg: "demo-msg-%"},
+		{query: `DELETE FROM media_metadata WHERE message_id LIKE ?`, arg: "demo-msg-%"},
 		{query: `DELETE FROM messages WHERE id LIKE ?`, arg: "demo-msg-%"},
 		{query: `DELETE FROM drafts WHERE chat_id LIKE ?`, arg: "demo-chat-%"},
 		{query: `DELETE FROM chats WHERE id LIKE ?`, arg: "demo-chat-%"},
@@ -196,5 +224,57 @@ func (s *Store) ClearDemoData(ctx context.Context) error {
 		return fmt.Errorf("commit clear demo data: %w", err)
 	}
 
+	_ = os.RemoveAll(s.demoMediaDir())
 	return nil
+}
+
+func (s *Store) ensureDemoImage() (string, int64, error) {
+	dir := s.demoMediaDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", 0, fmt.Errorf("create demo media dir: %w", err)
+	}
+
+	path := filepath.Join(dir, "maybewhats-demo.png")
+	file, err := os.Create(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("create demo image: %w", err)
+	}
+	defer file.Close()
+
+	img := image.NewRGBA(image.Rect(0, 0, 48, 24))
+	for y := 0; y < 24; y++ {
+		for x := 0; x < 48; x++ {
+			switch {
+			case x < 16:
+				img.Set(x, y, color.RGBA{R: 38, G: 166, B: 154, A: 255})
+			case x < 32:
+				img.Set(x, y, color.RGBA{R: 245, G: 180, B: 66, A: 255})
+			default:
+				img.Set(x, y, color.RGBA{R: 229, G: 91, B: 91, A: 255})
+			}
+			if (x+y)%9 == 0 {
+				img.Set(x, y, color.RGBA{R: 250, G: 250, B: 250, A: 255})
+			}
+		}
+	}
+
+	if err := png.Encode(file, img); err != nil {
+		return "", 0, fmt.Errorf("encode demo image: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return "", 0, fmt.Errorf("close demo image: %w", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", 0, fmt.Errorf("stat demo image: %w", err)
+	}
+	return path, info.Size(), nil
+}
+
+func (s *Store) demoMediaDir() string {
+	baseDir := filepath.Dir(s.path)
+	if baseDir == "." || !filepath.IsAbs(baseDir) {
+		baseDir = os.TempDir()
+	}
+	return filepath.Join(baseDir, "demo-media")
 }

@@ -45,6 +45,12 @@ type mediaPreviewReadyMsg struct {
 	Preview media.Preview
 }
 
+type mediaDownloadedMsg struct {
+	MessageID string
+	Media     store.MediaMetadata
+	Err       error
+}
+
 type Options struct {
 	Paths           config.Paths
 	Config          config.Config
@@ -59,6 +65,7 @@ type Options struct {
 	PickAttachment  func() tea.Cmd
 	DeleteMessage   func(messageID string) error
 	SaveMedia       func(media store.MediaMetadata) error
+	DownloadMedia   func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 }
 
 type Model struct {
@@ -78,6 +85,7 @@ type Model struct {
 	previewReport    media.Report
 	previewCache     map[string]media.Preview
 	previewInflight  map[string]bool
+	previewRequested map[string]bool
 	paths            config.Paths
 	config           config.Config
 	status           string
@@ -112,6 +120,7 @@ type Model struct {
 	pickAttachment   func() tea.Cmd
 	deleteMessage    func(messageID string) error
 	saveMedia        func(media store.MediaMetadata) error
+	downloadMedia    func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 }
 
 const messageLoadLimit = 200
@@ -144,6 +153,7 @@ func NewModel(opts Options) Model {
 		previewReport:    opts.PreviewReport,
 		previewCache:     map[string]media.Preview{},
 		previewInflight:  map[string]bool{},
+		previewRequested: map[string]bool{},
 		paths:            opts.Paths,
 		config:           opts.Config,
 		status:           "ready",
@@ -157,6 +167,7 @@ func NewModel(opts Options) Model {
 		pickAttachment:   opts.PickAttachment,
 		deleteMessage:    opts.DeleteMessage,
 		saveMedia:        opts.SaveMedia,
+		downloadMedia:    opts.DownloadMedia,
 		unfilteredByChat: map[string][]store.Message{},
 	}
 }
@@ -203,6 +214,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePickedAttachment(msg)
 	case mediaPreviewReadyMsg:
 		return m.handleMediaPreviewReady(msg)
+	case mediaDownloadedMsg:
+		updated, cmd := m.handleMediaDownloaded(msg)
+		if next, ok := updated.(Model); ok {
+			return next.withPreviewCmd(cmd)
+		}
+		return updated, cmd
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
 		if next, ok := updated.(Model); ok {
@@ -352,6 +369,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageCursor = max(0, len(m.currentMessages())-1)
 			m.messageScrollTop = m.messageCursor
 			m.status = fmt.Sprintf("opened %s", m.currentChat().Title)
+		} else if m.focus == FocusMessages || m.focus == FocusPreview {
+			return m.activateFocusedMediaPreview()
 		}
 	case "n":
 		m.advanceSearch(1)
@@ -684,11 +703,15 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.previewReport = media.Detect(backend)
 		m.previewCache = map[string]media.Preview{}
 		m.previewInflight = map[string]bool{}
+		m.previewRequested = map[string]bool{}
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
 	case cmd == "preview-cache clear" || cmd == "clear-preview-cache":
 		m.previewCache = map[string]media.Preview{}
 		m.previewInflight = map[string]bool{}
+		m.previewRequested = map[string]bool{}
 		m.status = "preview cache cleared"
+	case cmd == "media-preview" || cmd == "preview-media" || cmd == "media preview":
+		return m.activateFocusedMediaPreview()
 	case cmd == "clear-search" || cmd == "search clear":
 		m.clearSearch()
 		m.status = "search cleared"
@@ -1089,7 +1112,7 @@ func (m *Model) keepMessageCursorNearViewport(previous int) {
 }
 
 func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
-	next, previewCmd := m.queueVisiblePreviewCmd()
+	next, previewCmd := m.queueRequestedPreviewCmd()
 	if cmd == nil {
 		return next, previewCmd
 	}
@@ -1099,8 +1122,8 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	return next, tea.Batch(cmd, previewCmd)
 }
 
-func (m Model) queueVisiblePreviewCmd() (Model, tea.Cmd) {
-	requests := m.visiblePreviewRequests()
+func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
+	requests := m.requestedPreviewRequests()
 	if len(requests) == 0 {
 		return m, nil
 	}
@@ -1142,8 +1165,11 @@ func (m Model) queueVisiblePreviewCmd() (Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) visiblePreviewRequests() []media.PreviewRequest {
+func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 	if m.width <= 0 || m.height <= 0 || m.previewReport.Selected == media.BackendNone {
+		return nil
+	}
+	if len(m.previewRequested) == 0 {
 		return nil
 	}
 
@@ -1157,33 +1183,117 @@ func (m Model) visiblePreviewRequests() []media.PreviewRequest {
 		return nil
 	}
 
-	start := clamp(m.messageScrollTop-1, 0, len(messages)-1)
-	end := min(len(messages), start+12)
 	requests := make([]media.PreviewRequest, 0, 4)
-	for i := start; i < end && len(requests) < 4; i++ {
-		for _, item := range messages[i].Media {
-			if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+	for _, message := range messages {
+		for _, item := range message.Media {
+			if !m.previewRequested[mediaActivationKey(message, item)] {
 				continue
 			}
-			request := media.PreviewRequest{
-				MessageID:     item.MessageID,
-				MIMEType:      item.MIMEType,
-				FileName:      item.FileName,
-				LocalPath:     item.LocalPath,
-				ThumbnailPath: item.ThumbnailPath,
-				CacheDir:      m.paths.PreviewCacheDir,
-				Backend:       m.previewReport.Selected,
-				Width:         width,
-				Height:        height,
+			request, ok := m.previewRequestForMedia(message, item, width, height)
+			if !ok {
+				continue
 			}
-			if request.MessageID == "" {
-				request.MessageID = messages[i].ID
+			if strings.TrimSpace(request.LocalPath) == "" && strings.TrimSpace(request.ThumbnailPath) == "" {
+				continue
 			}
 			requests = append(requests, request)
+			if len(requests) >= 4 {
+				return requests
+			}
 			break
 		}
 	}
 	return requests
+}
+
+func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {
+	if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+		return media.PreviewRequest{}, false
+	}
+	if width <= 0 || height <= 0 {
+		width, height = m.previewDimensions()
+	}
+	if width <= 0 || height <= 0 {
+		return media.PreviewRequest{}, false
+	}
+
+	request := media.PreviewRequest{
+		MessageID:     item.MessageID,
+		MIMEType:      item.MIMEType,
+		FileName:      item.FileName,
+		LocalPath:     item.LocalPath,
+		ThumbnailPath: item.ThumbnailPath,
+		CacheDir:      m.paths.PreviewCacheDir,
+		Backend:       m.previewReport.Selected,
+		Width:         width,
+		Height:        height,
+	}
+	if request.MessageID == "" {
+		request.MessageID = message.ID
+	}
+	return request, true
+}
+
+func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	item, ok := firstMessageMedia(message)
+	if !ok {
+		m.status = "no media on focused message"
+		return m, nil
+	}
+
+	kind := media.MediaKind(item.MIMEType, item.FileName)
+	if kind == media.KindUnsupported {
+		m.status = fmt.Sprintf("no inline preview for %s", mediaDisplayName(item))
+		return m, nil
+	}
+	if m.previewReport.Selected == media.BackendNone || m.previewReport.Selected == media.BackendExternal {
+		m.status = fmt.Sprintf("preview backend %s cannot render inline", m.previewReport.Selected)
+		return m, nil
+	}
+	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
+		if m.downloadMedia != nil {
+			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			return m, func() tea.Msg {
+				downloaded, err := m.downloadMedia(message, item)
+				return mediaDownloadedMsg{
+					MessageID: message.ID,
+					Media:     downloaded,
+					Err:       err,
+				}
+			}
+		}
+		m.status = fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
+		return m, nil
+	}
+
+	request, ok := m.previewRequestForMedia(message, item, 0, 0)
+	if !ok {
+		m.status = fmt.Sprintf("no inline preview for %s", mediaDisplayName(item))
+		return m, nil
+	}
+	previewKey := media.PreviewKey(request)
+	if preview, ok := m.previewCache[previewKey]; ok {
+		if preview.Err == nil && len(preview.Lines) > 0 {
+			m.status = fmt.Sprintf("preview ready: %s", mediaDisplayName(item))
+			return m, nil
+		}
+		delete(m.previewCache, previewKey)
+	}
+	if m.previewInflight != nil && m.previewInflight[previewKey] {
+		m.status = fmt.Sprintf("rendering preview: %s", mediaDisplayName(item))
+		return m, nil
+	}
+	if m.previewRequested == nil {
+		m.previewRequested = map[string]bool{}
+	}
+	m.previewRequested[mediaActivationKey(message, item)] = true
+	m.status = fmt.Sprintf("rendering preview: %s", mediaDisplayName(item))
+	return m, nil
 }
 
 func (m Model) previewDimensions() (int, int) {
@@ -1227,6 +1337,10 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		delete(m.previewInflight, msg.Key)
 	}
 	m.previewCache[msg.Key] = msg.Preview
+	if msg.Preview.Err != nil {
+		m.status = fmt.Sprintf("preview failed: %s", shortError(msg.Preview.Err))
+		return m, nil
+	}
 	if msg.Preview.Err == nil && msg.Preview.GeneratedThumbnail && msg.Preview.ThumbnailPath != "" {
 		if err := m.applyGeneratedThumbnail(msg.Request.MessageID, msg.Preview.ThumbnailPath); err != nil {
 			m.status = fmt.Sprintf("preview metadata failed: %v", err)
@@ -1235,6 +1349,67 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		updatedRequest.ThumbnailPath = msg.Preview.ThumbnailPath
 		m.previewCache[media.PreviewKey(updatedRequest)] = msg.Preview
 	}
+	if len(msg.Preview.Lines) > 0 {
+		m.status = fmt.Sprintf("preview ready: %s", previewRequestName(msg.Request))
+	}
+	return m, nil
+}
+
+func (m Model) handleMediaDownloaded(msg mediaDownloadedMsg) (tea.Model, tea.Cmd) {
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("download failed: %s", shortError(msg.Err))
+		return m, nil
+	}
+	if strings.TrimSpace(msg.MessageID) == "" {
+		m.status = "download failed: missing message id"
+		return m, nil
+	}
+	if msg.Media.MessageID == "" {
+		msg.Media.MessageID = msg.MessageID
+	}
+	if msg.Media.DownloadState == "" {
+		msg.Media.DownloadState = "downloaded"
+	}
+	if strings.TrimSpace(msg.Media.LocalPath) == "" && strings.TrimSpace(msg.Media.ThumbnailPath) == "" {
+		m.status = "download failed: media has no local file"
+		return m, nil
+	}
+
+	var (
+		updatedChatID  string
+		updatedMessage store.Message
+		updated        bool
+	)
+	for chatID, messages := range m.messagesByChat {
+		replaced, ok, message := replaceMessageMedia(messages, msg.MessageID, msg.Media)
+		if !ok {
+			continue
+		}
+		m.messagesByChat[chatID] = replaced
+		updatedChatID = chatID
+		updatedMessage = message
+		updated = true
+		break
+	}
+	if !updated {
+		m.status = "download failed: message is not loaded"
+		return m, nil
+	}
+	if base, ok := m.unfilteredByChat[updatedChatID]; ok {
+		replaced, _, _ := replaceMessageMedia(base, msg.MessageID, msg.Media)
+		m.unfilteredByChat[updatedChatID] = replaced
+	}
+	if m.saveMedia != nil {
+		if err := m.saveMedia(msg.Media); err != nil {
+			m.status = fmt.Sprintf("download metadata failed: %v", err)
+			return m, nil
+		}
+	}
+	if m.previewRequested == nil {
+		m.previewRequested = map[string]bool{}
+	}
+	m.previewRequested[mediaActivationKey(updatedMessage, msg.Media)] = true
+	m.status = fmt.Sprintf("downloaded media; rendering preview: %s", mediaDisplayName(msg.Media))
 	return m, nil
 }
 
@@ -1408,6 +1583,80 @@ func (m Model) focusedMessage() (store.Message, bool) {
 		return store.Message{}, false
 	}
 	return messages[clamp(m.messageCursor, 0, len(messages)-1)], true
+}
+
+func firstMessageMedia(message store.Message) (store.MediaMetadata, bool) {
+	if len(message.Media) == 0 {
+		return store.MediaMetadata{}, false
+	}
+	return message.Media[0], true
+}
+
+func replaceMessageMedia(messages []store.Message, messageID string, mediaItem store.MediaMetadata) ([]store.Message, bool, store.Message) {
+	for index := range messages {
+		if messages[index].ID != messageID {
+			continue
+		}
+		if mediaItem.MessageID == "" {
+			mediaItem.MessageID = messageID
+		}
+		if mediaItem.DownloadState == "" {
+			mediaItem.DownloadState = "downloaded"
+		}
+		if len(messages[index].Media) == 0 {
+			messages[index].Media = []store.MediaMetadata{mediaItem}
+		} else {
+			messages[index].Media[0] = mediaItem
+		}
+		return messages, true, messages[index]
+	}
+	return messages, false, store.Message{}
+}
+
+func mediaActivationKey(message store.Message, item store.MediaMetadata) string {
+	messageID := strings.TrimSpace(item.MessageID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(message.ID)
+	}
+	return strings.Join([]string{
+		messageID,
+		strings.ToLower(strings.TrimSpace(item.MIMEType)),
+		strings.TrimSpace(item.FileName),
+		strings.TrimSpace(item.LocalPath),
+	}, "\x00")
+}
+
+func mediaDisplayName(item store.MediaMetadata) string {
+	name := strings.TrimSpace(item.FileName)
+	if name == "" {
+		name = strings.TrimSpace(item.LocalPath)
+	}
+	if name == "" {
+		return "media"
+	}
+	return name
+}
+
+func previewRequestName(request media.PreviewRequest) string {
+	name := strings.TrimSpace(request.FileName)
+	if name == "" {
+		name = strings.TrimSpace(request.LocalPath)
+	}
+	if name == "" {
+		return "media"
+	}
+	return name
+}
+
+func shortError(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	if text == "" {
+		return "unknown error"
+	}
+	return truncateDisplay(text, 96)
 }
 
 func removeMessageByID(messages []store.Message, id string) []store.Message {

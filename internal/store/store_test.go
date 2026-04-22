@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -322,8 +323,8 @@ func TestSeedAndClearDemoData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() after seed error = %v", err)
 	}
-	if stats.Chats < 4 || stats.Messages < 10 || stats.Drafts < 1 {
-		t.Fatalf("Stats() after seed = %+v, want at least chats=4 messages=10 drafts=1", stats)
+	if stats.Chats < 4 || stats.Messages < 10 || stats.Drafts < 1 || stats.MediaItems < 1 {
+		t.Fatalf("Stats() after seed = %+v, want at least chats=4 messages=10 drafts=1 media=1", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 200)
@@ -341,6 +342,19 @@ func TestSeedAndClearDemoData(t *testing.T) {
 	if got := len(projectMessages); got == 0 {
 		t.Fatal("expected seeded messages for demo-chat-project")
 	}
+	var demoMedia MediaMetadata
+	for _, message := range projectMessages {
+		if len(message.Media) > 0 {
+			demoMedia = message.Media[0]
+			break
+		}
+	}
+	if demoMedia.LocalPath == "" || demoMedia.MIMEType != "image/png" {
+		t.Fatalf("demo media = %+v, want local image/png media", demoMedia)
+	}
+	if _, err := os.Stat(demoMedia.LocalPath); err != nil {
+		t.Fatalf("demo media file stat error = %v", err)
+	}
 
 	if err := store.ClearDemoData(ctx); err != nil {
 		t.Fatalf("ClearDemoData() error = %v", err)
@@ -350,7 +364,7 @@ func TestSeedAndClearDemoData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() after clear error = %v", err)
 	}
-	if stats.Chats != 0 || stats.Messages != 0 || stats.Drafts != 0 {
+	if stats.Chats != 0 || stats.Messages != 0 || stats.Drafts != 0 || stats.MediaItems != 0 {
 		t.Fatalf("Stats() after clear = %+v, want all zero", stats)
 	}
 }

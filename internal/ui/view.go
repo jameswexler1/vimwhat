@@ -722,7 +722,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		Padding(0, 1)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
 	previewWidth, _ := m.previewDimensions()
-	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message.Media, previewWidth)
+	contentWidth := m.bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message, previewWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
 	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
 		bodyStyle = bodyStyle.Foreground(warnFG)
@@ -736,7 +736,8 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
 			lines = append(lines, preview.Lines...)
 		} else {
-			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected))
+			state := m.mediaAttachmentState(message, item)
+			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected, state))
 		}
 	}
 	if body != "" {
@@ -756,20 +757,9 @@ func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, wid
 	if len(m.previewCache) == 0 || width <= 0 {
 		return media.Preview{}, false
 	}
-	_, height := m.previewDimensions()
-	request := media.PreviewRequest{
-		MessageID:     item.MessageID,
-		MIMEType:      item.MIMEType,
-		FileName:      item.FileName,
-		LocalPath:     item.LocalPath,
-		ThumbnailPath: item.ThumbnailPath,
-		CacheDir:      m.paths.PreviewCacheDir,
-		Backend:       m.previewReport.Selected,
-		Width:         width,
-		Height:        height,
-	}
-	if request.MessageID == "" {
-		request.MessageID = message.ID
+	request, ok := m.previewRequestForMedia(message, item, 0, 0)
+	if !ok {
+		return media.Preview{}, false
 	}
 	preview, ok := m.previewCache[media.PreviewKey(request)]
 	if !ok || preview.Err != nil || len(preview.Lines) == 0 {
@@ -785,7 +775,7 @@ func bubbleWidth(available int) int {
 	return min(max(22, available*46/100), available-2)
 }
 
-func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, mediaItems []store.MediaMetadata, previewWidth int) int {
+func (m Model) bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, message store.Message, previewWidth int) int {
 	maxContentWidth := max(1, panelContentWidth(style, maxBubbleWidth))
 	widest := max(lipgloss.Width(meta), lipgloss.Width(sender))
 	for _, line := range strings.Split(body, "\n") {
@@ -801,21 +791,66 @@ func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, se
 			widest = max(widest, lineWidth)
 		}
 	}
-	for _, media := range mediaItems {
-		widest = max(widest, lipgloss.Width(attachmentLabel(media)))
-		if previewWidth > 0 && mediaPreviewable(media) {
+	for _, media := range message.Media {
+		label := attachmentLabel(media)
+		if state := m.mediaAttachmentState(message, media); state != "" {
+			label += " - " + state
+		}
+		widest = max(widest, lipgloss.Width(label))
+		if previewWidth > 0 && m.mediaPreviewShouldReserve(message, media) {
 			widest = max(widest, min(previewWidth, maxContentWidth))
 		}
 	}
 	return clamp(max(widest, 4), min(4, maxContentWidth), maxContentWidth)
 }
 
-func mediaPreviewable(mediaItem store.MediaMetadata) bool {
-	return media.MediaKind(mediaItem.MIMEType, mediaItem.FileName) != media.KindUnsupported
+func (m Model) mediaPreviewShouldReserve(message store.Message, item store.MediaMetadata) bool {
+	request, ok := m.previewRequestForMedia(message, item, 0, 0)
+	if !ok {
+		return false
+	}
+	key := media.PreviewKey(request)
+	if m.previewInflight != nil && m.previewInflight[key] {
+		return true
+	}
+	preview, ok := m.previewCache[key]
+	return ok && preview.Err == nil && len(preview.Lines) > 0
 }
 
-func renderAttachmentLine(media store.MediaMetadata, width int, active bool) string {
+func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetadata) string {
+	if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+		return ""
+	}
+	request, ok := m.previewRequestForMedia(message, item, 0, 0)
+	if !ok {
+		return ""
+	}
+	key := media.PreviewKey(request)
+	if m.previewInflight != nil && m.previewInflight[key] {
+		return "rendering preview"
+	}
+	if preview, ok := m.previewCache[key]; ok {
+		if preview.Err != nil {
+			return "preview failed"
+		}
+		if len(preview.Lines) > 0 {
+			return ""
+		}
+	}
+	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
+		return "enter download"
+	}
+	if m.previewRequested != nil && m.previewRequested[mediaActivationKey(message, item)] {
+		return "preview pending"
+	}
+	return "enter preview"
+}
+
+func renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
 	label := attachmentLabel(media)
+	if state != "" {
+		label += " - " + state
+	}
 	style := lipgloss.NewStyle().Foreground(softFG)
 	if active {
 		style = style.Foreground(primaryFG)
@@ -860,6 +895,14 @@ func attachmentKind(mimeType, name string) string {
 	default:
 		return "[file]"
 	}
+}
+
+func emptyLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "none"
+	}
+	return value
 }
 
 func humanSize(size int64) string {
@@ -940,8 +983,33 @@ func (m Model) renderInfo(width int) string {
 		chatTitle = "none"
 	}
 	message := ""
+	var mediaLines []string
 	if messages := m.currentMessages(); len(messages) > 0 {
-		message = messages[clamp(m.messageCursor, 0, len(messages)-1)].Body
+		focused := messages[clamp(m.messageCursor, 0, len(messages)-1)]
+		message = focused.Body
+		if item, ok := firstMessageMedia(focused); ok {
+			mediaLines = append(mediaLines,
+				"media:",
+				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("file: %s", mediaDisplayName(item))),
+				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("mime: %s", emptyLabel(item.MIMEType))),
+				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("state: %s", emptyLabel(item.DownloadState))),
+			)
+			if state := m.mediaAttachmentState(focused, item); state != "" {
+				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("preview: %s", state)))
+			}
+			if item.LocalPath != "" {
+				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("local: %s", item.LocalPath)))
+			}
+			if item.ThumbnailPath != "" {
+				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("thumb: %s", item.ThumbnailPath)))
+			}
+			if request, ok := m.previewRequestForMedia(focused, item, 0, 0); ok {
+				if preview, ok := m.previewCache[media.PreviewKey(request)]; ok && preview.Err != nil {
+					mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(warnFG).Width(width).Render(fmt.Sprintf("error: %s", shortError(preview.Err))))
+				}
+			}
+			mediaLines = append(mediaLines, "")
+		}
 	}
 
 	lines := []string{
@@ -954,9 +1022,12 @@ func (m Model) renderInfo(width int) string {
 		"message:",
 		lipgloss.NewStyle().Foreground(softFG).Width(width).Render(message),
 		"",
+	}
+	lines = append(lines, mediaLines...)
+	lines = append(lines,
 		"paths:",
 		lipgloss.NewStyle().Foreground(softFG).Width(width).Render(m.paths.DatabaseFile),
-	}
+	)
 
 	if m.yankRegister != "" {
 		lines = append(lines, "", "unnamed register:", lipgloss.NewStyle().Foreground(warnFG).Width(width).Render(m.yankRegister))
@@ -1113,7 +1184,7 @@ func (m Model) composerAttachmentLines(width int) []string {
 			LocalPath:     attachment.LocalPath,
 			DownloadState: attachment.DownloadState,
 		}
-		lines = append(lines, renderAttachmentLine(media, width, true))
+		lines = append(lines, renderAttachmentLine(media, width, true, ""))
 	}
 	return lines
 }
@@ -1184,12 +1255,12 @@ func (m Model) renderHelp(width int) string {
 		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("maybewhats help"),
 		"",
 		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
-		"         enter open  i insert    v visual          / search    : command",
+		"         enter open/preview        i insert    v visual          / search    : command",
 		"         u unread    p sort      n/N next search   ? help      q quit",
 		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
 		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
-		"         sort pinned/recent  preview  preview-backend <name>  clear-preview-cache",
+		"         sort pinned/recent  preview  media-preview  preview-backend <name>  clear-preview-cache",
 		"         attach <path>  delete-message",
 		"",
 		"state:",
