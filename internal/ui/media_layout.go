@@ -150,10 +150,21 @@ func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementC
 		return nil, nil
 	}
 
-	blocks := make([]messageLayoutBlock, 0, len(m.currentMessages()))
+	messages := m.currentMessages()
+	bodyHeight := max(1, height-1)
+	footer := m.renderMessageFooter(max(1, width-2))
+	footerHeight := min(countLines(footer), bodyHeight)
+	messageHeight := max(1, bodyHeight-footerHeight)
+	start, end := m.visibleMessageRange(len(messages), messageHeight)
+
+	blocks := make([]messageLayoutBlock, 0, end-start)
 	candidates := map[string]mediaPlacementCandidate{}
 	var lastDate string
-	for i, message := range m.currentMessages() {
+	if start > 0 {
+		lastDate = messageDate(messages[start-1])
+	}
+	for i := start; i < end; i++ {
+		message := messages[i]
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
 		active := i == m.messageCursor
@@ -191,11 +202,12 @@ func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementC
 		blocks = append(blocks, messageLayoutBlock{lines: lines, refs: refs})
 	}
 
-	bodyHeight := max(1, height-1)
-	footer := m.renderMessageFooter(max(1, width-2))
-	footerHeight := min(countLines(footer), bodyHeight)
-	messageHeight := max(1, bodyHeight-footerHeight)
-	viewportRefs := messageViewportRefs(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)
+	viewportRefs := messageViewportRefs(
+		blocks,
+		clamp(m.messageScrollTop-start, 0, max(0, len(blocks)-1)),
+		clamp(m.messageCursor-start, 0, max(0, len(blocks)-1)),
+		messageHeight,
+	)
 	return candidates, viewportRefs
 }
 

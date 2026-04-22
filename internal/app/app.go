@@ -312,12 +312,28 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				})
 				continue
 			}
+			if isHistoricalImportEvent(event) {
+				continue
+			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
 		case chatID := <-historyRequests:
 			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func isHistoricalImportEvent(event whatsapp.Event) bool {
+	switch event.Kind {
+	case whatsapp.EventChatUpsert:
+		return event.Chat.Historical
+	case whatsapp.EventMessageUpsert:
+		return event.Message.Historical
+	case whatsapp.EventMediaMetadata:
+		return event.Media.Historical
+	default:
+		return false
 	}
 }
 
@@ -349,8 +365,8 @@ func handleHistoryRequest(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: fmt.Sprintf("history cursor failed: %s", shortStatusError(err))})
 		return
 	}
-	if exhausted == "true" {
-		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history exhausted"})
+	if status := blockedHistoryCursorStatus(exhausted); status != "" {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: status})
 		return
 	}
 
@@ -388,13 +404,27 @@ func handleHistoryRequest(
 }
 
 func historyStatusLine(event whatsapp.HistoryEvent) string {
-	if event.Exhausted {
+	switch event.TerminalReason {
+	case "no_more":
 		return fmt.Sprintf("history exhausted; imported %d older message(s)", event.Messages)
+	case "no_access":
+		return fmt.Sprintf("older history unavailable; imported %d older message(s)", event.Messages)
 	}
 	if event.Messages == 0 {
 		return "history response contained no older messages"
 	}
 	return fmt.Sprintf("imported %d older message(s)", event.Messages)
+}
+
+func blockedHistoryCursorStatus(value string) string {
+	switch value {
+	case "no_more":
+		return "history exhausted"
+	case "no_access":
+		return "older history unavailable from primary"
+	default:
+		return ""
+	}
 }
 
 func liveUpdateForConnectionEvent(event whatsapp.ConnectionEvent) ui.LiveUpdate {

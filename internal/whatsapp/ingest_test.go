@@ -146,9 +146,10 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	if err := ingestor.Apply(ctx, Event{
 		Kind: EventHistoryStatus,
 		History: HistoryEvent{
-			ChatID:    "chat-1",
-			Messages:  1,
-			Exhausted: true,
+			ChatID:         "chat-1",
+			Messages:       1,
+			Exhausted:      true,
+			TerminalReason: "no_more",
 		},
 	}); err != nil {
 		t.Fatalf("Apply(history status) error = %v", err)
@@ -165,7 +166,7 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncCursor() error = %v", err)
 	}
-	if cursor != "true" {
-		t.Fatalf("history cursor = %q, want true", cursor)
+	if cursor != "no_more" {
+		t.Fatalf("history cursor = %q, want no_more", cursor)
 	}
 }

@@ -145,80 +145,81 @@ type Options struct {
 }
 
 type Model struct {
-	width               int
-	height              int
-	mode                Mode
-	focus               Focus
-	allChats            []store.Chat
-	chats               []store.Chat
-	messagesByChat      map[string][]store.Message
-	draftsByChat        map[string]string
-	activeChat          int
-	chatScrollTop       int
-	messageCursor       int
-	messageScrollTop    int
-	visualAnchor        int
-	previewReport       media.Report
-	previewCache        map[string]media.Preview
-	previewInflight     map[string]bool
-	previewRequested    map[string]bool
-	previewGeneration   int
-	overlay             *media.OverlayManager
-	suppressOverlay     bool
-	audioProcess        AudioProcess
-	audioSession        int
-	audioMessageID      string
-	audioMediaKey       string
-	audioDisplayName    string
-	paths               config.Paths
-	config              config.Config
-	status              string
-	connectionState     ConnectionState
-	commandLine         string
-	searchLine          string
-	composer            string
-	attachments         []Attachment
-	lastSearch          string
-	lastSearchFocus     Focus
-	activeSearch        string
-	searchChatSource    []store.Chat
-	searchMatches       []int
-	searchIndex         int
-	messageFilter       string
-	unfilteredByChat    map[string][]store.Message
-	pendingCount        int
-	leaderPending       bool
-	leaderSequence      string
-	yankRegister        string
-	quitting            bool
-	compactLayout       bool
-	infoPaneVisible     bool
-	helpVisible         bool
-	unreadOnly          bool
-	pinnedFirst         bool
-	commandHistory      []string
-	searchHistory       []string
-	deleteConfirmID     string
-	persistMessage      func(chatID, body string, attachments []Attachment) (store.Message, error)
-	loadMessages        func(chatID string, limit int) ([]store.Message, error)
-	loadOlderMessages   func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	requestHistory      func(chatID string) error
-	reloadSnapshot      func(activeChatID string, limit int) (store.Snapshot, error)
-	saveDraft           func(chatID, body string) error
-	searchChats         func(query string) ([]store.Chat, error)
-	searchMessages      func(chatID, query string, limit int) ([]store.Message, error)
-	copyToClipboard     func(text string) error
-	pickAttachment      func() tea.Cmd
-	openMedia           func(media store.MediaMetadata) tea.Cmd
-	startAudio          func(media store.MediaMetadata) (AudioProcess, error)
-	deleteMessage       func(messageID string) error
-	saveMedia           func(media store.MediaMetadata) error
-	downloadMedia       func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	liveUpdates         <-chan LiveUpdate
-	reloadInFlight      bool
-	refreshQueued       bool
-	blockSending        bool
-	messageLimitsByChat map[string]int
+	width                  int
+	height                 int
+	mode                   Mode
+	focus                  Focus
+	allChats               []store.Chat
+	chats                  []store.Chat
+	messagesByChat         map[string][]store.Message
+	draftsByChat           map[string]string
+	activeChat             int
+	chatScrollTop          int
+	messageCursor          int
+	messageScrollTop       int
+	visualAnchor           int
+	previewReport          media.Report
+	previewCache           map[string]media.Preview
+	previewInflight        map[string]bool
+	previewRequested       map[string]bool
+	previewGeneration      int
+	overlay                *media.OverlayManager
+	suppressOverlay        bool
+	audioProcess           AudioProcess
+	audioSession           int
+	audioMessageID         string
+	audioMediaKey          string
+	audioDisplayName       string
+	paths                  config.Paths
+	config                 config.Config
+	status                 string
+	connectionState        ConnectionState
+	commandLine            string
+	searchLine             string
+	composer               string
+	attachments            []Attachment
+	lastSearch             string
+	lastSearchFocus        Focus
+	activeSearch           string
+	searchChatSource       []store.Chat
+	searchMatches          []int
+	searchIndex            int
+	messageFilter          string
+	unfilteredByChat       map[string][]store.Message
+	pendingCount           int
+	leaderPending          bool
+	leaderSequence         string
+	yankRegister           string
+	quitting               bool
+	compactLayout          bool
+	infoPaneVisible        bool
+	helpVisible            bool
+	unreadOnly             bool
+	pinnedFirst            bool
+	commandHistory         []string
+	searchHistory          []string
+	deleteConfirmID        string
+	persistMessage         func(chatID, body string, attachments []Attachment) (store.Message, error)
+	loadMessages           func(chatID string, limit int) ([]store.Message, error)
+	loadOlderMessages      func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	requestHistory         func(chatID string) error
+	reloadSnapshot         func(activeChatID string, limit int) (store.Snapshot, error)
+	saveDraft              func(chatID, body string) error
+	searchChats            func(query string) ([]store.Chat, error)
+	searchMessages         func(chatID, query string, limit int) ([]store.Message, error)
+	copyToClipboard        func(text string) error
+	pickAttachment         func() tea.Cmd
+	openMedia              func(media store.MediaMetadata) tea.Cmd
+	startAudio             func(media store.MediaMetadata) (AudioProcess, error)
+	deleteMessage          func(messageID string) error
+	saveMedia              func(media store.MediaMetadata) error
+	downloadMedia          func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	liveUpdates            <-chan LiveUpdate
+	reloadInFlight         bool
+	refreshQueued          bool
+	blockSending           bool
+	messageLimitsByChat    map[string]int
+	historyRequestedByChat map[string]bool
 }
 
 const messageLoadLimit = 200
@@ -247,41 +248,42 @@ func NewModel(opts Options) Model {
 	}
 
 	return Model{
-		mode:                ModeNormal,
-		focus:               FocusChats,
-		allChats:            slices.Clone(chats),
-		chats:               chats,
-		messagesByChat:      cloneMessages(opts.Snapshot.MessagesByChat),
-		draftsByChat:        cloneDrafts(opts.Snapshot.DraftsByChat),
-		activeChat:          activeChat,
-		previewReport:       opts.PreviewReport,
-		previewCache:        map[string]media.Preview{},
-		previewInflight:     map[string]bool{},
-		previewRequested:    map[string]bool{},
-		paths:               opts.Paths,
-		config:              normalizeConfig(opts.Config),
-		status:              "ready",
-		connectionState:     opts.ConnectionState,
-		pinnedFirst:         true,
-		persistMessage:      opts.PersistMessage,
-		loadMessages:        opts.LoadMessages,
-		loadOlderMessages:   opts.LoadOlderMessages,
-		requestHistory:      opts.RequestHistory,
-		reloadSnapshot:      opts.ReloadSnapshot,
-		saveDraft:           opts.SaveDraft,
-		searchChats:         opts.SearchChats,
-		searchMessages:      opts.SearchMessages,
-		copyToClipboard:     opts.CopyToClipboard,
-		pickAttachment:      opts.PickAttachment,
-		openMedia:           opts.OpenMedia,
-		startAudio:          opts.StartAudio,
-		deleteMessage:       opts.DeleteMessage,
-		saveMedia:           opts.SaveMedia,
-		downloadMedia:       opts.DownloadMedia,
-		liveUpdates:         opts.LiveUpdates,
-		blockSending:        opts.BlockSending,
-		unfilteredByChat:    map[string][]store.Message{},
-		messageLimitsByChat: map[string]int{},
+		mode:                   ModeNormal,
+		focus:                  FocusChats,
+		allChats:               slices.Clone(chats),
+		chats:                  chats,
+		messagesByChat:         cloneMessages(opts.Snapshot.MessagesByChat),
+		draftsByChat:           cloneDrafts(opts.Snapshot.DraftsByChat),
+		activeChat:             activeChat,
+		previewReport:          opts.PreviewReport,
+		previewCache:           map[string]media.Preview{},
+		previewInflight:        map[string]bool{},
+		previewRequested:       map[string]bool{},
+		paths:                  opts.Paths,
+		config:                 normalizeConfig(opts.Config),
+		status:                 "ready",
+		connectionState:        opts.ConnectionState,
+		pinnedFirst:            true,
+		persistMessage:         opts.PersistMessage,
+		loadMessages:           opts.LoadMessages,
+		loadOlderMessages:      opts.LoadOlderMessages,
+		requestHistory:         opts.RequestHistory,
+		reloadSnapshot:         opts.ReloadSnapshot,
+		saveDraft:              opts.SaveDraft,
+		searchChats:            opts.SearchChats,
+		searchMessages:         opts.SearchMessages,
+		copyToClipboard:        opts.CopyToClipboard,
+		pickAttachment:         opts.PickAttachment,
+		openMedia:              opts.OpenMedia,
+		startAudio:             opts.StartAudio,
+		deleteMessage:          opts.DeleteMessage,
+		saveMedia:              opts.SaveMedia,
+		downloadMedia:          opts.DownloadMedia,
+		liveUpdates:            opts.LiveUpdates,
+		blockSending:           opts.BlockSending,
+		unfilteredByChat:       map[string][]store.Message{},
+		messageLimitsByChat:    map[string]int{},
+		historyRequestedByChat: map[string]bool{},
 	}
 }
 
@@ -350,6 +352,9 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	if update.HistoryChatID != "" && update.HistoryMessages > 0 {
 		m.addMessageLimit(update.HistoryChatID, update.HistoryMessages)
 	}
+	if update.HistoryChatID != "" && m.historyRequestedByChat != nil {
+		delete(m.historyRequestedByChat, update.HistoryChatID)
+	}
 
 	if update.Refresh && m.reloadSnapshot != nil {
 		if m.reloadInFlight {
@@ -386,7 +391,11 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		m.status = fmt.Sprintf("refresh failed: %v", msg.Err)
 		return m, m.nextQueuedRefreshCmd()
 	}
-	if err := m.applySnapshot(msg.Snapshot, msg.ActiveChatID, m.messageFilter); err != nil {
+	preferredChatID := m.currentChat().ID
+	if preferredChatID == "" {
+		preferredChatID = msg.ActiveChatID
+	}
+	if err := m.applySnapshot(msg.Snapshot, preferredChatID, m.messageFilter); err != nil {
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
 	}
@@ -1275,10 +1284,18 @@ func (m *Model) loadOlderOrRequestHistory() {
 		m.status = "remote history fetch unavailable"
 		return
 	}
+	if m.historyRequestedByChat != nil && m.historyRequestedByChat[chatID] {
+		m.status = "history already loading"
+		return
+	}
 	if err := m.requestHistory(chatID); err != nil {
 		m.status = fmt.Sprintf("history request failed: %v", err)
 		return
 	}
+	if m.historyRequestedByChat == nil {
+		m.historyRequestedByChat = map[string]bool{}
+	}
+	m.historyRequestedByChat[chatID] = true
 	m.status = "requested older history"
 }
 
@@ -1687,7 +1704,11 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 	}
 
 	requests := make([]media.PreviewRequest, 0, 4)
-	for _, message := range messages {
+	start, end := 0, len(messages)
+	if geometry, ok := m.messagePaneGeometry(); ok {
+		start, end = m.visibleMessageRange(len(messages), max(1, geometry.height-2))
+	}
+	for _, message := range messages[start:end] {
 		for _, item := range message.Media {
 			if !m.previewRequested[mediaActivationKey(message, item)] {
 				continue

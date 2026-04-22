@@ -677,10 +677,20 @@ func (m Model) renderMessages(width, height int) string {
 	}
 
 	messages := m.currentMessages()
-	blocks := make([]messageBlock, 0, len(messages))
+	bodyHeight := max(1, height-1)
+	footer := m.renderMessageFooter(max(1, width-2))
+	footerHeight := min(countLines(footer), bodyHeight)
+	messageHeight := max(1, bodyHeight-footerHeight)
+	start, end := m.visibleMessageRange(len(messages), messageHeight)
+
+	blocks := make([]messageBlock, 0, end-start)
 	visibleOverlays := m.visibleOverlayIdentifiers()
 	var lastDate string
-	for i, message := range messages {
+	if start > 0 {
+		lastDate = messageDate(messages[start-1])
+	}
+	for i := start; i < end; i++ {
+		message := messages[i]
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
 		active := i == m.messageCursor
@@ -693,16 +703,16 @@ func (m Model) renderMessages(width, height int) string {
 		blocks = append(blocks, messageBlock{lines: lines})
 	}
 
-	bodyHeight := max(1, height-1)
-	footer := m.renderMessageFooter(max(1, width-2))
-	footerHeight := min(countLines(footer), bodyHeight)
-	messageHeight := max(1, bodyHeight-footerHeight)
-
 	body := make([]string, 0, bodyHeight)
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
-		body = append(body, messageViewport(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)...)
+		body = append(body, messageViewport(
+			blocks,
+			clamp(m.messageScrollTop-start, 0, len(blocks)-1),
+			clamp(m.messageCursor-start, 0, len(blocks)-1),
+			messageHeight,
+		)...)
 	}
 	if footerHeight > 0 {
 		if len(blocks) == 0 || messageBlocksHeight(blocks) <= messageHeight {
@@ -713,6 +723,26 @@ func (m Model) renderMessages(width, height int) string {
 		body = append(body, padLines(strings.Split(clipLines(footer, footerHeight), "\n"), footerHeight)...)
 	}
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+}
+
+func (m Model) visibleMessageRange(count, height int) (int, int) {
+	if count <= 0 {
+		return 0, 0
+	}
+	window := max(80, height*6)
+	cursor := clamp(m.messageCursor, 0, count-1)
+	scrollTop := clamp(m.messageScrollTop, 0, count-1)
+
+	if cursor == count-1 {
+		return max(0, count-window), count
+	}
+
+	start := max(0, min(scrollTop, cursor)-max(8, height))
+	end := min(count, max(scrollTop, cursor)+window)
+	if end <= start {
+		end = min(count, start+1)
+	}
+	return start, end
 }
 
 func countLines(content string) int {

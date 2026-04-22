@@ -82,6 +82,7 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 				Pinned:        conversation.GetPinned() > 0,
 				Muted:         conversation.GetMuteEndTime() > uint64(time.Now().Unix()),
 				LastMessageAt: historyConversationTimestamp(conversation),
+				Historical:    true,
 			},
 		})
 
@@ -98,6 +99,7 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 			for _, normalized := range normalizeMessageEvent(messageEvent) {
 				if normalized.Kind == EventChatUpsert {
 					normalized.Chat.UnreadKnown = false
+					normalized.Chat.Historical = true
 					if strings.TrimSpace(conversation.GetName()) != "" {
 						normalized.Chat.Title = strings.TrimSpace(conversation.GetName())
 					}
@@ -106,21 +108,40 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 					normalized.Message.Historical = true
 					messages++
 				}
+				if normalized.Kind == EventMediaMetadata {
+					normalized.Media.Historical = true
+				}
 				out = append(out, normalized)
 			}
 		}
 
+		terminalReason := historyTerminalReason(conversation)
 		out = append(out, Event{
 			Kind: EventHistoryStatus,
 			History: HistoryEvent{
-				ChatID:    chatID,
-				SyncType:  history.GetSyncType().String(),
-				Messages:  messages,
-				Exhausted: conversation.GetEndOfHistoryTransfer(),
+				ChatID:         chatID,
+				SyncType:       history.GetSyncType().String(),
+				Messages:       messages,
+				Exhausted:      terminalReason != "",
+				TerminalReason: terminalReason,
 			},
 		})
 	}
 	return out
+}
+
+func historyTerminalReason(conversation *waHistorySync.Conversation) string {
+	if conversation == nil {
+		return ""
+	}
+	switch conversation.GetEndOfHistoryTransferType() {
+	case waHistorySync.Conversation_COMPLETE_AND_NO_MORE_MESSAGE_REMAIN_ON_PRIMARY:
+		return "no_more"
+	case waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_WITH_MORE_MSG_ON_PRIMARY_BUT_NO_ACCESS:
+		return "no_access"
+	default:
+		return ""
+	}
 }
 
 func historyConversationJID(conversation *waHistorySync.Conversation) (types.JID, bool) {

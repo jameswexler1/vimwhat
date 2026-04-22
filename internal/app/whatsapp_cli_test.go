@@ -256,6 +256,48 @@ func TestHandleHistoryRequestUsesOldestAnchorAndCoalesces(t *testing.T) {
 	}
 }
 
+func TestHandleHistoryRequestIgnoresLegacyTrueCursor(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "chat-1@s.whatsapp.net", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	when := time.Unix(1_700_000_000, 0)
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "chat-1/oldest",
+		RemoteID:  "oldest",
+		ChatID:    "chat-1",
+		ChatJID:   "chat-1@s.whatsapp.net",
+		Sender:    "Alice",
+		Body:      "oldest local",
+		Timestamp: when,
+	}); err != nil {
+		t.Fatalf("AddMessage(oldest) error = %v", err)
+	}
+	if err := db.SetSyncCursor(ctx, whatsapp.HistoryExhaustedCursor("chat-1"), "true"); err != nil {
+		t.Fatalf("SetSyncCursor() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{historyRequests: make(chan fakeHistoryRequest, 1)}
+	handleHistoryRequest(ctx, db, session, make(chan ui.LiveUpdate, 4), map[string]time.Time{}, true, "chat-1")
+
+	select {
+	case request := <-session.historyRequests:
+		if request.anchor.MessageID != "oldest" {
+			t.Fatalf("history request anchor = %+v, want oldest", request.anchor)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("legacy true cursor blocked history request")
+	}
+}
+
 func waitForStoredMessages(t *testing.T, db *store.Store, chatID string, count int) []store.Message {
 	t.Helper()
 	deadline := time.After(time.Second)

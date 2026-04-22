@@ -565,6 +565,7 @@ type ChatEvent struct {
 	Pinned        bool
 	Muted         bool
 	LastMessageAt time.Time
+	Historical    bool
 }
 
 type MessageEvent struct {
@@ -584,10 +585,11 @@ type MessageEvent struct {
 }
 
 type HistoryEvent struct {
-	ChatID    string
-	SyncType  string
-	Messages  int
-	Exhausted bool
+	ChatID         string
+	SyncType       string
+	Messages       int
+	Exhausted      bool
+	TerminalReason string
 }
 
 type ReceiptEvent struct {
@@ -605,4 +607,5 @@ type MediaEvent struct {
 	ThumbnailPath string
 	DownloadState string
 	UpdatedAt     time.Time
+	Historical    bool
 }

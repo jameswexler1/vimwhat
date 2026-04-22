@@ -188,6 +188,56 @@ func TestLiveUpdateRefreshesSnapshotAndStatusLine(t *testing.T) {
 	}
 }
 
+func TestSnapshotReloadKeepsCurrentChatWhenRequestWasStale(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Project"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "one"}},
+				"chat-2": {{ID: "m-2", ChatID: "chat-2", Sender: "Project", Body: "two"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.activeChat = 1
+
+	refreshed, _ := model.handleSnapshotReloaded(snapshotReloadedMsg{
+		ActiveChatID: "chat-1",
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Unread: 1},
+				{ID: "chat-2", Title: "Project"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "updated"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	if refreshed.currentChat().ID != "chat-2" {
+		t.Fatalf("current chat after stale reload = %q, want chat-2", refreshed.currentChat().ID)
+	}
+}
+
+func TestVisibleMessageRangeBoundsLargeLoadedChat(t *testing.T) {
+	model := NewModel(Options{})
+	model.messageCursor = 2500
+	model.messageScrollTop = 2500
+
+	start, end := model.visibleMessageRange(5000, 12)
+	if start > model.messageCursor || end <= model.messageCursor {
+		t.Fatalf("visible range [%d,%d) does not contain cursor %d", start, end, model.messageCursor)
+	}
+	if got := end - start; got > 100 {
+		t.Fatalf("visible range length = %d, want bounded window", got)
+	}
+}
+
 func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	searchCalled := false
 	model := NewModel(Options{

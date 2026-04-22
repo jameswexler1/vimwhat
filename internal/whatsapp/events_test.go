@@ -86,17 +86,19 @@ func TestNormalizeReceiptEventMapsRemoteIDsToLocalStatus(t *testing.T) {
 func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {
 	when := uint64(1_700_000_000)
 	syncType := waHistorySync.HistorySync_ON_DEMAND
-	exhausted := true
+	transferComplete := true
+	transferType := waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_BUT_MORE_MSG_REMAIN_ON_PRIMARY
 	client := &Client{client: &whatsmeow.Client{}}
 
 	normalized := client.normalizeWhatsmeowEvent(&events.HistorySync{
 		Data: &waHistorySync.HistorySync{
 			SyncType: &syncType,
 			Conversations: []*waHistorySync.Conversation{{
-				ID:                   proto.String("12345@s.whatsapp.net"),
-				Name:                 proto.String("Alice"),
-				LastMsgTimestamp:     proto.Uint64(when),
-				EndOfHistoryTransfer: proto.Bool(exhausted),
+				ID:                       proto.String("12345@s.whatsapp.net"),
+				Name:                     proto.String("Alice"),
+				LastMsgTimestamp:         proto.Uint64(when),
+				EndOfHistoryTransfer:     proto.Bool(transferComplete),
+				EndOfHistoryTransferType: &transferType,
 				Messages: []*waHistorySync.HistorySyncMsg{{
 					Message: &waWeb.WebMessageInfo{
 						Key: &waCommon.MessageKey{
@@ -126,13 +128,46 @@ func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {
 		case EventHistoryStatus:
 			if event.History.ChatID == "12345@s.whatsapp.net" &&
 				event.History.Messages == 1 &&
-				event.History.Exhausted {
+				!event.History.Exhausted {
 				sawHistoryStatus = true
 			}
 		}
 	}
 	if !sawHistoricalMessage || !sawHistoryStatus {
 		t.Fatalf("normalized history events = %+v, want historical message and status", normalized)
+	}
+}
+
+func TestHistoryTerminalReasonOnlyExhaustsForTerminalTransferTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		kind waHistorySync.Conversation_EndOfHistoryTransferType
+		want string
+	}{
+		{
+			name: "more remains on primary",
+			kind: waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_BUT_MORE_MSG_REMAIN_ON_PRIMARY,
+			want: "",
+		},
+		{
+			name: "no more remains",
+			kind: waHistorySync.Conversation_COMPLETE_AND_NO_MORE_MESSAGE_REMAIN_ON_PRIMARY,
+			want: "no_more",
+		},
+		{
+			name: "no access",
+			kind: waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_WITH_MORE_MSG_ON_PRIMARY_BUT_NO_ACCESS,
+			want: "no_access",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conversation := &waHistorySync.Conversation{EndOfHistoryTransferType: &tt.kind}
+			if got := historyTerminalReason(conversation); got != tt.want {
+				t.Fatalf("historyTerminalReason() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

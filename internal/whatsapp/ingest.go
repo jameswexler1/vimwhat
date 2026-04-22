@@ -72,8 +72,12 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
 		return err
 	case EventHistoryStatus:
-		if event.History.Exhausted && event.History.ChatID != "" {
-			return i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), "true")
+		if event.History.ChatID != "" {
+			value := "more"
+			if event.History.TerminalReason != "" {
+				value = event.History.TerminalReason
+			}
+			return i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), value)
 		}
 		return nil
 	case EventConnectionState:
