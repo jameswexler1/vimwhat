@@ -14,6 +14,7 @@ import (
 
 type Kind string
 type PreviewDisplay string
+type SourceKind string
 
 const (
 	KindUnsupported Kind = "unsupported"
@@ -22,6 +23,10 @@ const (
 
 	PreviewDisplayText    PreviewDisplay = "text"
 	PreviewDisplayOverlay PreviewDisplay = "overlay"
+
+	SourceLocal              SourceKind = "local"
+	SourceThumbnail          SourceKind = "thumbnail"
+	SourceGeneratedThumbnail SourceKind = "generated_thumbnail"
 )
 
 type PreviewRequest struct {
@@ -43,6 +48,7 @@ type Preview struct {
 	Backend            Backend
 	RenderedBackend    Backend
 	Display            PreviewDisplay
+	SourceKind         SourceKind
 	SourcePath         string
 	ThumbnailPath      string
 	GeneratedThumbnail bool
@@ -77,10 +83,10 @@ var runPreviewCommand = func(ctx context.Context, name string, args ...string) (
 
 func NewPreviewer(report Report, cacheDir string, maxWidth, maxHeight int) Previewer {
 	if maxWidth <= 0 {
-		maxWidth = 48
+		maxWidth = 67
 	}
 	if maxHeight <= 0 {
-		maxHeight = 12
+		maxHeight = 40
 	}
 
 	return Previewer{
@@ -111,12 +117,16 @@ func (p Previewer) Render(ctx context.Context, req PreviewRequest) Preview {
 		return preview
 	}
 
-	source, generated, err := p.previewSource(ctx, req, preview.Kind)
+	source, sourceKind, generated, err := p.previewSource(ctx, req, preview.Kind)
 	if err != nil {
 		preview.Err = err
 		return preview
 	}
+	preview.SourceKind = sourceKind
 	preview.SourcePath = source
+	if sourceKind == SourceThumbnail || sourceKind == SourceGeneratedThumbnail {
+		preview.ThumbnailPath = source
+	}
 	if generated {
 		preview.ThumbnailPath = source
 		preview.GeneratedThumbnail = true
@@ -151,41 +161,47 @@ func (p Previewer) normalizeRequest(req PreviewRequest) PreviewRequest {
 	return req
 }
 
-func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind Kind) (string, bool, error) {
-	if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
-		return req.ThumbnailPath, false, nil
-	}
+func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind Kind) (string, SourceKind, bool, error) {
 	if kind == KindImage {
-		if req.LocalPath == "" {
-			return "", false, fmt.Errorf("image is not downloaded")
+		if req.LocalPath != "" && fileExists(req.LocalPath) {
+			return req.LocalPath, SourceLocal, false, nil
 		}
-		if !fileExists(req.LocalPath) {
-			return "", false, fmt.Errorf("image file is missing")
+		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			return req.ThumbnailPath, SourceThumbnail, false, nil
 		}
-		return req.LocalPath, false, nil
+		if req.LocalPath != "" {
+			return "", "", false, fmt.Errorf("image file is missing")
+		}
+		return "", "", false, fmt.Errorf("image is not downloaded")
 	}
 	if kind != KindVideo {
-		return "", false, fmt.Errorf("unsupported media kind")
+		return "", "", false, fmt.Errorf("unsupported media kind")
 	}
 	if req.LocalPath == "" {
-		return "", false, fmt.Errorf("video is not downloaded")
+		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			return req.ThumbnailPath, SourceThumbnail, false, nil
+		}
+		return "", "", false, fmt.Errorf("video is not downloaded")
 	}
 	if !fileExists(req.LocalPath) {
-		return "", false, fmt.Errorf("video file is missing")
+		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			return req.ThumbnailPath, SourceThumbnail, false, nil
+		}
+		return "", "", false, fmt.Errorf("video file is missing")
 	}
 
 	thumbnailPath := p.videoThumbnailPath(req)
 	if thumbnailPath == "" {
-		return "", false, fmt.Errorf("preview cache is unavailable")
+		return "", "", false, fmt.Errorf("preview cache is unavailable")
 	}
 	if fileExists(thumbnailPath) {
-		return thumbnailPath, false, nil
+		return thumbnailPath, SourceGeneratedThumbnail, false, nil
 	}
 	if !hasCommand("ffmpeg") {
-		return "", false, fmt.Errorf("ffmpeg not found")
+		return "", "", false, fmt.Errorf("ffmpeg not found")
 	}
 	if err := os.MkdirAll(filepath.Dir(thumbnailPath), 0o755); err != nil {
-		return "", false, fmt.Errorf("create preview cache: %w", err)
+		return "", "", false, fmt.Errorf("create preview cache: %w", err)
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.timeout())
@@ -200,12 +216,12 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 		thumbnailPath,
 	}
 	if output, err := runPreviewCommand(timeoutCtx, "ffmpeg", args...); err != nil {
-		return "", false, fmt.Errorf("generate video thumbnail: %s: %w", strings.TrimSpace(string(output)), err)
+		return "", "", false, fmt.Errorf("generate video thumbnail: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	if !fileExists(thumbnailPath) {
-		return "", false, fmt.Errorf("ffmpeg did not produce a thumbnail")
+		return "", "", false, fmt.Errorf("ffmpeg did not produce a thumbnail")
 	}
-	return thumbnailPath, true, nil
+	return thumbnailPath, SourceGeneratedThumbnail, true, nil
 }
 
 func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {

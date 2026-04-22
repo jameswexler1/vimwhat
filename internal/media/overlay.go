@@ -17,6 +17,7 @@ type Placement struct {
 	MaxWidth   int
 	MaxHeight  int
 	Path       string
+	Scaler     string
 }
 
 type OverlayManager struct {
@@ -36,6 +37,7 @@ type overlayCommand struct {
 	MaxWidth   int    `json:"max_width,omitempty"`
 	MaxHeight  int    `json:"max_height,omitempty"`
 	Path       string `json:"path,omitempty"`
+	Scaler     string `json:"scaler,omitempty"`
 }
 
 func NewOverlayManager(output string) *OverlayManager {
@@ -55,6 +57,9 @@ func (m *OverlayManager) Place(ctx context.Context, placement Placement) error {
 	}
 	if placement.MaxWidth <= 0 || placement.MaxHeight <= 0 {
 		return fmt.Errorf("overlay size must be positive")
+	}
+	if placement.Scaler == "" {
+		placement.Scaler = "fit_contain"
 	}
 
 	m.mu.Lock()
@@ -77,11 +82,32 @@ func (m *OverlayManager) Place(ctx context.Context, placement Placement) error {
 		MaxWidth:   placement.MaxWidth,
 		MaxHeight:  placement.MaxHeight,
 		Path:       placement.Path,
+		Scaler:     placement.Scaler,
 	}); err != nil {
 		return err
 	}
 	m.active = placement.Identifier
 	return nil
+}
+
+func OverlayAddCommandJSON(placement Placement) string {
+	if placement.Scaler == "" {
+		placement.Scaler = "fit_contain"
+	}
+	data, err := json.Marshal(overlayCommand{
+		Action:     "add",
+		Identifier: placement.Identifier,
+		X:          placement.X,
+		Y:          placement.Y,
+		MaxWidth:   placement.MaxWidth,
+		MaxHeight:  placement.MaxHeight,
+		Path:       placement.Path,
+		Scaler:     placement.Scaler,
+	})
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func (m *OverlayManager) Remove(ctx context.Context) error {

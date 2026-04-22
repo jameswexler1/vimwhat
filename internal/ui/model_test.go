@@ -1916,6 +1916,44 @@ func TestActiveMediaPlacementAccountsForAlignmentAndCompactLayout(t *testing.T) 
 	}
 }
 
+func TestMediaPreviewUsesWiderBubbleBoundsThanText(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	model.config.PreviewMaxWidth = 67
+	model.config.PreviewMaxHeight = 40
+
+	width, height := model.previewDimensions()
+	textWidth := max(10, bubbleWidth(model.messagePaneContentWidth())-4)
+	if width <= textWidth {
+		t.Fatalf("preview width = %d, want wider than text bubble width %d", width, textWidth)
+	}
+	if width != 67 {
+		t.Fatalf("preview width = %d, want configured/Yazi-like width 67", width)
+	}
+	if height <= 6 {
+		t.Fatalf("preview height = %d, want roomier media preview", height)
+	}
+}
+
+func TestInfoPaneShowsOverlayDebugCommand(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+
+	info := stripANSI(model.renderInfo(120))
+	for _, want := range []string{"rendered: ueberzug++", "source: " + localPath, "overlay json:", `"scaler":"fit_contain"`} {
+		if !strings.Contains(info, want) {
+			t.Fatalf("renderInfo missing %q\n%s", want, info)
+		}
+	}
+}
+
 func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T) {
 	var deletedID string
 	model := NewModel(Options{
@@ -2538,6 +2576,7 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 		Backend:         media.BackendUeberzugPP,
 		RenderedBackend: media.BackendUeberzugPP,
 		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
 		SourcePath:      sourcePath,
 		Width:           request.Width,
 		Height:          request.Height,

@@ -721,6 +721,9 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		BorderForeground(border).
 		Padding(0, 1)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
+	if m.messageUsesMediaBubbleWidth(message, active) {
+		maxBubbleWidth = max(6, mediaBubbleWidth(availableWidth))
+	}
 	previewWidth, _ := m.previewDimensions()
 	contentWidth := m.bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message, previewWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
@@ -786,6 +789,25 @@ func bubbleWidth(available int) int {
 		return max(10, available-2)
 	}
 	return min(max(22, available*46/100), available-2)
+}
+
+func mediaBubbleWidth(available int) int {
+	if available < 28 {
+		return max(10, available-2)
+	}
+	return min(max(30, available*83/100), available-2)
+}
+
+func (m Model) messageUsesMediaBubbleWidth(message store.Message, active bool) bool {
+	for _, item := range message.Media {
+		if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+			continue
+		}
+		if active || m.mediaPreviewShouldReserve(message, item) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, message store.Message, previewWidth int) int {
@@ -1017,8 +1039,21 @@ func (m Model) renderInfo(width int) string {
 				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("thumb: %s", item.ThumbnailPath)))
 			}
 			if request, ok := m.previewRequestForMedia(focused, item, 0, 0); ok {
-				if preview, ok := m.previewCache[media.PreviewKey(request)]; ok && preview.Err != nil {
-					mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(warnFG).Width(width).Render(fmt.Sprintf("error: %s", shortError(preview.Err))))
+				if preview, ok := m.previewCache[media.PreviewKey(request)]; ok {
+					if preview.Err != nil {
+						mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(warnFG).Width(width).Render(fmt.Sprintf("error: %s", shortError(preview.Err))))
+					} else if preview.Ready() {
+						mediaLines = append(mediaLines,
+							lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("rendered: %s %s %dx%d", preview.RenderedBackend, preview.SourceKind, preview.Width, preview.Height)),
+							lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("source: %s", preview.SourcePath)),
+						)
+						if placement, ok := m.activeMediaPlacement(); ok {
+							mediaLines = append(mediaLines,
+								lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("placement: x=%d y=%d max=%dx%d", placement.X, placement.Y, placement.MaxWidth, placement.MaxHeight)),
+								lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("overlay json: %s", media.OverlayAddCommandJSON(placement))),
+							)
+						}
+					}
 				}
 			}
 			mediaLines = append(mediaLines, "")

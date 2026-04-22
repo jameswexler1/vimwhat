@@ -241,18 +241,24 @@ func (s *Store) ensureDemoImage() (string, int64, error) {
 	}
 	defer file.Close()
 
-	img := image.NewRGBA(image.Rect(0, 0, 48, 24))
-	for y := 0; y < 24; y++ {
-		for x := 0; x < 48; x++ {
+	const (
+		width  = 1024
+		height = 512
+	)
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			ramp := uint8((x * 180) / width)
+			shade := uint8((y * 120) / height)
 			switch {
-			case x < 16:
-				img.Set(x, y, color.RGBA{R: 38, G: 166, B: 154, A: 255})
-			case x < 32:
-				img.Set(x, y, color.RGBA{R: 245, G: 180, B: 66, A: 255})
+			case x < width/3:
+				img.Set(x, y, color.RGBA{R: 38 + ramp/4, G: 130 + shade, B: 154, A: 255})
+			case x < 2*width/3:
+				img.Set(x, y, color.RGBA{R: 170 + ramp/3, G: 130 + shade/2, B: 55, A: 255})
 			default:
-				img.Set(x, y, color.RGBA{R: 229, G: 91, B: 91, A: 255})
+				img.Set(x, y, color.RGBA{R: 150 + ramp/3, G: 70 + shade/3, B: 110 + shade/2, A: 255})
 			}
-			if (x+y)%9 == 0 {
+			if x%64 == 0 || y%64 == 0 || (x+y)%127 == 0 {
 				img.Set(x, y, color.RGBA{R: 250, G: 250, B: 250, A: 255})
 			}
 		}

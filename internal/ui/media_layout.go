@@ -53,6 +53,7 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 		MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
 		MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
 		Path:       preview.SourcePath,
+		Scaler:     "fit_contain",
 	}, true
 }
 

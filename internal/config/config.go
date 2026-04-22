@@ -60,8 +60,8 @@ func Default(paths Paths) Config {
 		VideoPlayerCommand: "mpv {path}",
 		FileOpenerCommand:  "xdg-open {path}",
 		LeaderKey:          "space",
-		PreviewMaxWidth:    48,
-		PreviewMaxHeight:   12,
+		PreviewMaxWidth:    67,
+		PreviewMaxHeight:   40,
 		PreviewDelayMS:     80,
 		DownloadsDir:       downloadsDir,
 	}

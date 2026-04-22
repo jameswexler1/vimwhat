@@ -178,8 +178,60 @@ func TestPreviewerReturnsOverlayPreviewForUeberzugPP(t *testing.T) {
 	if preview.Display != PreviewDisplayOverlay || preview.RenderedBackend != BackendUeberzugPP {
 		t.Fatalf("preview display/backend = %s/%s, want overlay/ueberzug++", preview.Display, preview.RenderedBackend)
 	}
-	if preview.SourcePath != imagePath || preview.Width != 10 || preview.Height != 4 || !preview.Ready() {
+	if preview.SourcePath != imagePath || preview.SourceKind != SourceLocal || preview.Width != 10 || preview.Height != 4 || !preview.Ready() {
 		t.Fatalf("overlay preview metadata = %+v", preview)
+	}
+}
+
+func TestPreviewerPrefersFullImageOverThumbnail(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "photo.jpg")
+	thumbPath := filepath.Join(dir, "thumb.jpg")
+	if err := os.WriteFile(imagePath, []byte("full"), 0o644); err != nil {
+		t.Fatalf("WriteFile(image) error = %v", err)
+	}
+	if err := os.WriteFile(thumbPath, []byte("thumb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(thumb) error = %v", err)
+	}
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID:     "m-1",
+		MIMEType:      "image/jpeg",
+		LocalPath:     imagePath,
+		ThumbnailPath: thumbPath,
+		Width:         10,
+		Height:        4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.SourcePath != imagePath || preview.SourceKind != SourceLocal {
+		t.Fatalf("preview source = %q %s, want full local image", preview.SourcePath, preview.SourceKind)
+	}
+}
+
+func TestPreviewerUsesImageThumbnailOnlyWhenFullImageUnavailable(t *testing.T) {
+	thumbPath := filepath.Join(t.TempDir(), "thumb.jpg")
+	if err := os.WriteFile(thumbPath, []byte("thumb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(thumb) error = %v", err)
+	}
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID:     "m-1",
+		MIMEType:      "image/jpeg",
+		ThumbnailPath: thumbPath,
+		Width:         10,
+		Height:        4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.SourcePath != thumbPath || preview.SourceKind != SourceThumbnail {
+		t.Fatalf("preview source = %q %s, want thumbnail fallback", preview.SourcePath, preview.SourceKind)
 	}
 }
 
@@ -209,7 +261,7 @@ func TestOverlayManagerSendsAddAndRemoveJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &add); err != nil {
 		t.Fatalf("unmarshal add: %v", err)
 	}
-	if add.Action != "add" || add.Identifier != "media-1" || add.X != 4 || add.Y != 5 || add.MaxWidth != 20 || add.MaxHeight != 8 || add.Path != "/tmp/photo.jpg" {
+	if add.Action != "add" || add.Identifier != "media-1" || add.X != 4 || add.Y != 5 || add.MaxWidth != 20 || add.MaxHeight != 8 || add.Path != "/tmp/photo.jpg" || add.Scaler != "fit_contain" {
 		t.Fatalf("add command = %+v", add)
 	}
 	var remove overlayCommand
@@ -273,7 +325,7 @@ func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	if preview.Err != nil {
 		t.Fatalf("Render() error = %v", preview.Err)
 	}
-	if preview.Kind != KindVideo || !preview.GeneratedThumbnail || preview.ThumbnailPath == "" {
+	if preview.Kind != KindVideo || preview.SourceKind != SourceGeneratedThumbnail || !preview.GeneratedThumbnail || preview.ThumbnailPath == "" {
 		t.Fatalf("preview video metadata = %+v", preview)
 	}
 	if !strings.HasPrefix(preview.ThumbnailPath, filepath.Join(cacheDir, "thumbs")) {
@@ -281,6 +333,67 @@ func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	}
 	if len(preview.Lines) != 1 || preview.Lines[0] != "thumbnail" {
 		t.Fatalf("preview lines = %+v", preview.Lines)
+	}
+}
+
+func TestPreviewerIgnoresProvidedVideoThumbnailWhenLocalVideoExists(t *testing.T) {
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "clip.mp4")
+	remoteThumbPath := filepath.Join(dir, "remote-thumb.jpg")
+	if err := os.WriteFile(videoPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile(video) error = %v", err)
+	}
+	if err := os.WriteFile(remoteThumbPath, []byte("remote thumb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(remote thumb) error = %v", err)
+	}
+	cacheDir := t.TempDir()
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "ffmpeg":
+			return "/usr/bin/ffmpeg", nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "ffmpeg" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		output := args[len(args)-1]
+		if err := os.WriteFile(output, []byte("generated"), 0o644); err != nil {
+			t.Fatalf("write generated thumbnail error = %v", err)
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, cacheDir, 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID:     "m-1",
+		MIMEType:      "video/mp4",
+		LocalPath:     videoPath,
+		ThumbnailPath: remoteThumbPath,
+		Width:         10,
+		Height:        4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.SourcePath == remoteThumbPath || preview.SourceKind != SourceGeneratedThumbnail {
+		t.Fatalf("preview source = %q %s, want generated cache thumbnail", preview.SourcePath, preview.SourceKind)
+	}
+	if !strings.HasPrefix(preview.SourcePath, filepath.Join(cacheDir, "thumbs")) {
+		t.Fatalf("generated source = %q, want cache thumbnail", preview.SourcePath)
 	}
 }
 

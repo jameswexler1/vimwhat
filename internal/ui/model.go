@@ -1519,10 +1519,13 @@ func (m Model) previewDimensions() (int, int) {
 	if contentWidth <= 0 {
 		return 0, 0
 	}
-	width := min(previewMaxWidth(m.config), max(10, bubbleWidth(contentWidth)-4))
+	width := min(previewMaxWidth(m.config), max(10, mediaBubbleWidth(contentWidth)-4))
 	height := previewMaxHeight(m.config)
+	if geometry, ok := m.messagePaneGeometry(); ok {
+		height = min(height, max(6, geometry.height-5))
+	}
 	if m.compactLayout && m.width < 72 {
-		height = min(height, 8)
+		height = min(height, 12)
 	}
 	return width, height
 }
@@ -1559,7 +1562,7 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		m.status = fmt.Sprintf("preview failed: %s", shortError(msg.Preview.Err))
 		return m, nil
 	}
-	if msg.Preview.Err == nil && msg.Preview.GeneratedThumbnail && msg.Preview.ThumbnailPath != "" {
+	if msg.Preview.Err == nil && (msg.Preview.SourceKind == media.SourceGeneratedThumbnail || msg.Preview.GeneratedThumbnail) && msg.Preview.ThumbnailPath != "" {
 		if err := m.applyGeneratedThumbnail(msg.Request.MessageID, msg.Preview.ThumbnailPath); err != nil {
 			m.status = fmt.Sprintf("preview metadata failed: %v", err)
 		}
@@ -1568,7 +1571,7 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		m.previewCache[media.PreviewKey(updatedRequest)] = msg.Preview
 	}
 	if msg.Preview.Ready() {
-		m.status = fmt.Sprintf("preview ready: %s", previewRequestName(msg.Request))
+		m.status = fmt.Sprintf("preview ready: %s (%s %s %dx%d)", previewRequestName(msg.Request), msg.Preview.RenderedBackend, msg.Preview.SourceKind, msg.Preview.Width, msg.Preview.Height)
 	}
 	return m, nil
 }
@@ -1689,14 +1692,14 @@ func (m *Model) applyGeneratedThumbnail(messageID, thumbnailPath string) error {
 
 func previewMaxWidth(cfg config.Config) int {
 	if cfg.PreviewMaxWidth <= 0 {
-		return 48
+		return 67
 	}
 	return cfg.PreviewMaxWidth
 }
 
 func previewMaxHeight(cfg config.Config) int {
 	if cfg.PreviewMaxHeight <= 0 {
-		return 12
+		return 40
 	}
 	return cfg.PreviewMaxHeight
 }

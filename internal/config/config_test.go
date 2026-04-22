@@ -33,6 +33,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
+	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 40 {
+		t.Fatalf("preview defaults = %dx%d, want 67x40", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
+	}
 }
 
 func TestLoadParsesSupportedKeys(t *testing.T) {
