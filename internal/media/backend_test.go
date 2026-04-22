@@ -548,6 +548,12 @@ func TestMediaKindFallsBackFromFileExtension(t *testing.T) {
 	if got := MediaKind("", "movie.webm"); got != KindVideo {
 		t.Fatalf("MediaKind(movie.webm) = %s, want video", got)
 	}
+	if got := MediaKind("audio/ogg", "voice.ogg"); got != KindAudio {
+		t.Fatalf("MediaKind(audio/ogg) = %s, want audio", got)
+	}
+	if got := MediaKind("", "voice.opus"); got != KindAudio {
+		t.Fatalf("MediaKind(voice.opus) = %s, want audio", got)
+	}
 	if got := MediaKind("application/pdf", "doc.pdf"); got != KindUnsupported {
 		t.Fatalf("MediaKind(pdf) = %s, want unsupported", got)
 	}

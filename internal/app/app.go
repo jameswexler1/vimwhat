@@ -141,6 +141,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
 			return openMedia(env.Config, media)
 		},
+		StartAudio: func(media store.MediaMetadata) (ui.AudioProcess, error) {
+			return startAudio(env.Config, media)
+		},
 		DeleteMessage: func(messageID string) error {
 			return env.Store.DeleteMessage(context.Background(), messageID)
 		},
@@ -250,6 +253,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("leader key: %s", env.Config.LeaderKey),
 		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
 		fmt.Sprintf("video player command: %s", emptyAsAuto(env.Config.VideoPlayerCommand)),
+		fmt.Sprintf("audio player command: %s", emptyAsAuto(env.Config.AudioPlayerCommand)),
 		fmt.Sprintf("file opener command: %s", emptyAsAuto(env.Config.FileOpenerCommand)),
 		fmt.Sprintf("chat rows: %d", stats.Chats),
 		fmt.Sprintf("message rows: %d", stats.Messages),

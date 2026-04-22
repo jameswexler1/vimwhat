@@ -18,6 +18,7 @@ type Config struct {
 	FilePickerCommand   string
 	ImageViewerCommand  string
 	VideoPlayerCommand  string
+	AudioPlayerCommand  string
 	FileOpenerCommand   string
 	LeaderKey           string
 	PreviewMaxWidth     int
@@ -58,6 +59,7 @@ func Default(paths Paths) Config {
 		FilePickerCommand:  "yazi --chooser-file {chooser}",
 		ImageViewerCommand: "nsxiv {path}",
 		VideoPlayerCommand: "mpv {path}",
+		AudioPlayerCommand: "mpv --no-video --no-terminal --really-quiet {path}",
 		FileOpenerCommand:  "xdg-open {path}",
 		LeaderKey:          "space",
 		PreviewMaxWidth:    67,
@@ -117,6 +119,8 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.ImageViewerCommand = parsed
 		case "video_player_command":
 			cfg.VideoPlayerCommand = parsed
+		case "audio_player_command":
+			cfg.AudioPlayerCommand = parsed
 		case "file_opener_command":
 			cfg.FileOpenerCommand = parsed
 		case "leader_key":

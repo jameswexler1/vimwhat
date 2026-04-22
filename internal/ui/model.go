@@ -58,6 +58,22 @@ type mediaSavedMsg struct {
 	Err       error
 }
 
+type audioStartedMsg struct {
+	Session    int
+	MessageID  string
+	Media      store.MediaMetadata
+	Process    AudioProcess
+	Downloaded bool
+	Err        error
+}
+
+type audioFinishedMsg struct {
+	Session   int
+	MessageID string
+	MediaKey  string
+	Err       error
+}
+
 type mediaOverlayMsg struct {
 	Err error
 }
@@ -65,6 +81,11 @@ type mediaOverlayMsg struct {
 type MediaOpenFinishedMsg struct {
 	Path string
 	Err  error
+}
+
+type AudioProcess interface {
+	Wait() error
+	Stop() error
 }
 
 type Options struct {
@@ -80,6 +101,7 @@ type Options struct {
 	CopyToClipboard func(text string) error
 	PickAttachment  func() tea.Cmd
 	OpenMedia       func(media store.MediaMetadata) tea.Cmd
+	StartAudio      func(media store.MediaMetadata) (AudioProcess, error)
 	DeleteMessage   func(messageID string) error
 	SaveMedia       func(media store.MediaMetadata) error
 	DownloadMedia   func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
@@ -105,6 +127,11 @@ type Model struct {
 	previewRequested map[string]bool
 	overlay          *media.OverlayManager
 	suppressOverlay  bool
+	audioProcess     AudioProcess
+	audioSession     int
+	audioMessageID   string
+	audioMediaKey    string
+	audioDisplayName string
 	paths            config.Paths
 	config           config.Config
 	status           string
@@ -141,6 +168,7 @@ type Model struct {
 	copyToClipboard  func(text string) error
 	pickAttachment   func() tea.Cmd
 	openMedia        func(media store.MediaMetadata) tea.Cmd
+	startAudio       func(media store.MediaMetadata) (AudioProcess, error)
 	deleteMessage    func(messageID string) error
 	saveMedia        func(media store.MediaMetadata) error
 	downloadMedia    func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
@@ -194,6 +222,7 @@ func NewModel(opts Options) Model {
 		copyToClipboard:  opts.CopyToClipboard,
 		pickAttachment:   opts.PickAttachment,
 		openMedia:        opts.OpenMedia,
+		startAudio:       opts.StartAudio,
 		deleteMessage:    opts.DeleteMessage,
 		saveMedia:        opts.SaveMedia,
 		downloadMedia:    opts.DownloadMedia,
@@ -212,10 +241,16 @@ func normalizeConfig(cfg config.Config) config.Config {
 }
 
 func (m Model) Close() error {
-	if m.overlay == nil {
-		return nil
+	var err error
+	if m.audioProcess != nil {
+		err = m.audioProcess.Stop()
 	}
-	return m.overlay.Close()
+	if m.overlay != nil {
+		if closeErr := m.overlay.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	return err
 }
 
 func cloneMessages(input map[string][]store.Message) map[string][]store.Message {
@@ -272,6 +307,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return updated, cmd
 	case mediaSavedMsg:
 		return m.handleMediaSaved(msg)
+	case audioStartedMsg:
+		return m.handleAudioStarted(msg)
+	case audioFinishedMsg:
+		return m.handleAudioFinished(msg)
 	case MediaOpenFinishedMsg:
 		if msg.Err != nil {
 			m.status = fmt.Sprintf("open failed: %s", shortError(msg.Err))
@@ -1378,7 +1417,8 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 }
 
 func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {
-	if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+	kind := media.MediaKind(item.MIMEType, item.FileName)
+	if kind != media.KindImage && kind != media.KindVideo {
 		return media.PreviewRequest{}, false
 	}
 	if width <= 0 || height <= 0 {
@@ -1418,6 +1458,9 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 	}
 
 	kind := media.MediaKind(item.MIMEType, item.FileName)
+	if kind == media.KindAudio {
+		return m.toggleFocusedAudio(message, item)
+	}
 	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
 		if m.downloadMedia != nil {
 			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
@@ -1544,6 +1587,193 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 		path, err := saveMediaToDownloads(item, m.config.DownloadsDir)
 		return mediaSavedMsg{MessageID: message.ID, Media: item, Path: path, Err: err}
 	}
+}
+
+func (m Model) toggleFocusedAudio(message store.Message, item store.MediaMetadata) (tea.Model, tea.Cmd) {
+	if m.audioMediaKey != "" && m.audioMediaKey == mediaActivationKey(message, item) {
+		return m.stopAudio("audio stopped")
+	}
+	if strings.TrimSpace(item.LocalPath) == "" && m.downloadMedia == nil {
+		m.status = mediaDownloadUnavailableStatus(item)
+		return m, nil
+	}
+	if m.startAudio == nil {
+		m.status = "audio player unavailable"
+		return m, nil
+	}
+
+	m.stopActiveAudio()
+	m.audioSession++
+	session := m.audioSession
+	m.audioMessageID = message.ID
+	m.audioMediaKey = mediaActivationKey(message, item)
+	m.audioDisplayName = mediaDisplayName(item)
+	if strings.TrimSpace(item.LocalPath) == "" {
+		m.status = fmt.Sprintf("downloading audio: %s", m.audioDisplayName)
+	} else {
+		m.status = fmt.Sprintf("starting audio: %s", m.audioDisplayName)
+	}
+	return m, m.startAudioCmd(session, message, item)
+}
+
+func (m Model) startAudioCmd(session int, message store.Message, item store.MediaMetadata) tea.Cmd {
+	return func() tea.Msg {
+		audioItem := item
+		downloaded := false
+		if strings.TrimSpace(audioItem.LocalPath) == "" {
+			downloaded = true
+			next, err := m.downloadMedia(message, audioItem)
+			audioItem = next
+			if audioItem.MessageID == "" {
+				audioItem.MessageID = message.ID
+			}
+			if audioItem.DownloadState == "" && strings.TrimSpace(audioItem.LocalPath) != "" {
+				audioItem.DownloadState = "downloaded"
+			}
+			if err != nil {
+				return audioStartedMsg{Session: session, MessageID: message.ID, Media: audioItem, Err: err}
+			}
+		}
+		if strings.TrimSpace(audioItem.LocalPath) == "" {
+			return audioStartedMsg{
+				Session:    session,
+				MessageID:  message.ID,
+				Media:      audioItem,
+				Downloaded: downloaded,
+				Err:        fmt.Errorf("audio is not downloaded"),
+			}
+		}
+
+		process, err := m.startAudio(audioItem)
+		return audioStartedMsg{
+			Session:    session,
+			MessageID:  message.ID,
+			Media:      audioItem,
+			Process:    process,
+			Downloaded: downloaded,
+			Err:        err,
+		}
+	}
+}
+
+func (m Model) handleAudioStarted(msg audioStartedMsg) (tea.Model, tea.Cmd) {
+	if msg.Session != m.audioSession {
+		if msg.Process != nil {
+			_ = msg.Process.Stop()
+		}
+		return m, nil
+	}
+
+	if msg.Downloaded {
+		updated, err := m.applyDownloadedAudio(msg.MessageID, msg.Media)
+		if err != nil {
+			if msg.Process != nil {
+				_ = msg.Process.Stop()
+			}
+			m.clearAudioState()
+			m.status = fmt.Sprintf("audio failed: %s", shortError(err))
+			return m, nil
+		}
+		msg.Media = updated
+	}
+
+	if msg.Err != nil {
+		if msg.Process != nil {
+			_ = msg.Process.Stop()
+		}
+		m.clearAudioState()
+		m.status = fmt.Sprintf("audio failed: %s", shortError(msg.Err))
+		return m, nil
+	}
+	if msg.Process == nil {
+		m.clearAudioState()
+		m.status = "audio failed: player did not start"
+		return m, nil
+	}
+
+	m.audioProcess = msg.Process
+	m.audioMessageID = msg.MessageID
+	m.audioMediaKey = mediaActivationKey(store.Message{ID: msg.MessageID}, msg.Media)
+	m.audioDisplayName = mediaDisplayName(msg.Media)
+	m.status = fmt.Sprintf("playing audio: %s", m.audioDisplayName)
+	return m, m.waitAudioCmd(msg.Session, msg.MessageID, m.audioMediaKey, msg.Process)
+}
+
+func (m Model) handleAudioFinished(msg audioFinishedMsg) (tea.Model, tea.Cmd) {
+	if msg.Session != m.audioSession || msg.MediaKey != m.audioMediaKey {
+		return m, nil
+	}
+	displayName := m.audioDisplayName
+	m.clearAudioState()
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("audio stopped: %s", shortError(msg.Err))
+	} else {
+		m.status = fmt.Sprintf("audio finished: %s", displayName)
+	}
+	return m, nil
+}
+
+func (m Model) waitAudioCmd(session int, messageID, mediaKey string, process AudioProcess) tea.Cmd {
+	return func() tea.Msg {
+		return audioFinishedMsg{
+			Session:   session,
+			MessageID: messageID,
+			MediaKey:  mediaKey,
+			Err:       process.Wait(),
+		}
+	}
+}
+
+func (m Model) stopAudio(status string) (tea.Model, tea.Cmd) {
+	m.stopActiveAudio()
+	m.audioSession++
+	m.clearAudioState()
+	if strings.TrimSpace(status) == "" {
+		status = "audio stopped"
+	}
+	m.status = status
+	return m, nil
+}
+
+func (m *Model) stopActiveAudio() {
+	if m.audioProcess != nil {
+		_ = m.audioProcess.Stop()
+		m.audioProcess = nil
+	}
+}
+
+func (m *Model) clearAudioState() {
+	m.audioProcess = nil
+	m.audioMessageID = ""
+	m.audioMediaKey = ""
+	m.audioDisplayName = ""
+}
+
+func (m *Model) applyDownloadedAudio(messageID string, item store.MediaMetadata) (store.MediaMetadata, error) {
+	if strings.TrimSpace(messageID) == "" {
+		return store.MediaMetadata{}, fmt.Errorf("missing message id")
+	}
+	if item.MessageID == "" {
+		item.MessageID = messageID
+	}
+	if item.DownloadState == "" && strings.TrimSpace(item.LocalPath) != "" {
+		item.DownloadState = "downloaded"
+	}
+	if strings.TrimSpace(item.LocalPath) == "" {
+		return store.MediaMetadata{}, fmt.Errorf("downloaded audio has no local file")
+	}
+
+	updated, _, message := m.updateLoadedMedia(messageID, item)
+	if !updated {
+		return store.MediaMetadata{}, fmt.Errorf("message is not loaded")
+	}
+	item = message.Media[0]
+	if m.saveMedia != nil {
+		if err := m.saveMedia(item); err != nil {
+			return store.MediaMetadata{}, fmt.Errorf("save media metadata: %w", err)
+		}
+	}
+	return item, nil
 }
 
 func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {

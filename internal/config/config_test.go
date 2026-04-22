@@ -27,8 +27,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.PreviewBackend != "auto" {
 		t.Fatalf("PreviewBackend = %q, want %q", cfg.PreviewBackend, "auto")
 	}
-	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
-		t.Fatalf("media commands = image %q video %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.FileOpenerCommand)
+	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
+		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
@@ -51,6 +51,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
 		`image_viewer_command = "imv {path}"`,
 		`video_player_command = "mpv --force-window {path}"`,
+		`audio_player_command = "mpv --no-video {path}"`,
 		`file_opener_command = ""`,
 		`leader_key = ","`,
 		`preview_max_width = 44`,
@@ -88,6 +89,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.VideoPlayerCommand != "mpv --force-window {path}" {
 		t.Fatalf("VideoPlayerCommand = %q", cfg.VideoPlayerCommand)
+	}
+	if cfg.AudioPlayerCommand != "mpv --no-video {path}" {
+		t.Fatalf("AudioPlayerCommand = %q", cfg.AudioPlayerCommand)
 	}
 	if cfg.FileOpenerCommand != "" {
 		t.Fatalf("FileOpenerCommand = %q", cfg.FileOpenerCommand)

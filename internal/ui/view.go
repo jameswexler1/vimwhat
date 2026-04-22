@@ -996,6 +996,9 @@ func (m Model) mediaPreviewShouldReserve(message store.Message, item store.Media
 
 func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetadata) string {
 	kind := media.MediaKind(item.MIMEType, item.FileName)
+	if kind == media.KindAudio {
+		return m.audioAttachmentState(message, item)
+	}
 	if kind == media.KindUnsupported {
 		return ""
 	}
@@ -1028,6 +1031,23 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 		return "preview pending"
 	}
 	return "enter preview"
+}
+
+func (m Model) audioAttachmentState(message store.Message, item store.MediaMetadata) string {
+	key := mediaActivationKey(message, item)
+	if m.audioMediaKey == key {
+		if m.audioProcess != nil {
+			return "playing; enter stop"
+		}
+		return "starting"
+	}
+	if strings.TrimSpace(item.LocalPath) == "" {
+		if m.downloadMedia != nil {
+			return "enter download"
+		}
+		return ""
+	}
+	return "enter play"
 }
 
 func renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
@@ -1072,7 +1092,7 @@ func attachmentKind(mimeType, name string) string {
 		return "[img]"
 	case strings.HasPrefix(mimeType, "video/"):
 		return "[vid]"
-	case strings.HasPrefix(mimeType, "audio/"):
+	case strings.HasPrefix(mimeType, "audio/") || media.MediaKind(mimeType, name) == media.KindAudio:
 		return "[aud]"
 	case strings.Contains(mimeType, "pdf") || strings.HasSuffix(strings.ToLower(name), ".pdf"):
 		return "[pdf]"

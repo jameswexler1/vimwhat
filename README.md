@@ -9,7 +9,7 @@ The GitHub repository is named `vimwhat`, but the binary and package names curre
 - Bubble Tea TUI with normal, insert, visual, command, and search modes.
 - SQLite state under XDG data paths with migrations, FTS message indexing, drafts, contacts, media metadata, sync cursors, and UI snapshot storage.
 - Demo seeding commands for local development before live WhatsApp sync exists.
-- Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa` with graceful fallback rows.
+- Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa`, and focused audio playback through `mpv`.
 - WhatsApp adapter boundary exists, but live login/sync is not implemented yet.
 
 ## Commands

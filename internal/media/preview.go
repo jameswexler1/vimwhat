@@ -20,6 +20,7 @@ const (
 	KindUnsupported Kind = "unsupported"
 	KindImage       Kind = "image"
 	KindVideo       Kind = "video"
+	KindAudio       Kind = "audio"
 
 	PreviewDisplayText    PreviewDisplay = "text"
 	PreviewDisplayOverlay PreviewDisplay = "overlay"
@@ -109,7 +110,7 @@ func (p Previewer) Render(ctx context.Context, req PreviewRequest) Preview {
 		Height:    req.Height,
 	}
 
-	if preview.Kind == KindUnsupported {
+	if preview.Kind == KindUnsupported || preview.Kind == KindAudio {
 		return preview
 	}
 	if req.Backend == BackendNone || req.Backend == BackendExternal {
@@ -385,6 +386,8 @@ func MediaKind(mimeType, fileName string) Kind {
 		return KindImage
 	case strings.HasPrefix(mimeType, "video/"):
 		return KindVideo
+	case strings.HasPrefix(mimeType, "audio/"):
+		return KindAudio
 	case strings.HasSuffix(fileName, ".jpg"),
 		strings.HasSuffix(fileName, ".jpeg"),
 		strings.HasSuffix(fileName, ".png"),
@@ -396,6 +399,15 @@ func MediaKind(mimeType, fileName string) Kind {
 		strings.HasSuffix(fileName, ".mkv"),
 		strings.HasSuffix(fileName, ".webm"):
 		return KindVideo
+	case strings.HasSuffix(fileName, ".ogg"),
+		strings.HasSuffix(fileName, ".opus"),
+		strings.HasSuffix(fileName, ".mp3"),
+		strings.HasSuffix(fileName, ".m4a"),
+		strings.HasSuffix(fileName, ".aac"),
+		strings.HasSuffix(fileName, ".wav"),
+		strings.HasSuffix(fileName, ".flac"),
+		strings.HasSuffix(fileName, ".oga"):
+		return KindAudio
 	default:
 		return KindUnsupported
 	}

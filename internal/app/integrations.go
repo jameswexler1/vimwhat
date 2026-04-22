@@ -147,6 +147,60 @@ func openMedia(cfg config.Config, item store.MediaMetadata) tea.Cmd {
 	})
 }
 
+type startedAudioProcess struct {
+	cmd *exec.Cmd
+}
+
+func (p *startedAudioProcess) Wait() error {
+	return p.cmd.Wait()
+}
+
+func (p *startedAudioProcess) Stop() error {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return nil
+	}
+	return p.cmd.Process.Kill()
+}
+
+func startAudio(cfg config.Config, item store.MediaMetadata) (ui.AudioProcess, error) {
+	cmd, _, err := audioPlayerCommand(cfg, item)
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start audio player: %w", err)
+	}
+	return &startedAudioProcess{cmd: cmd}, nil
+}
+
+func audioPlayerCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, string, error) {
+	path := strings.TrimSpace(item.LocalPath)
+	if path == "" {
+		return nil, "", fmt.Errorf("audio is not downloaded")
+	}
+
+	template := strings.TrimSpace(cfg.AudioPlayerCommand)
+	if template == "" {
+		template = "mpv --no-video --no-terminal --really-quiet {path}"
+	}
+	hasPathPlaceholder := strings.Contains(template, "{path}")
+	template = strings.ReplaceAll(template, "{path}", path)
+	argv, err := splitCommandLine(template)
+	if err != nil {
+		return nil, path, err
+	}
+	if len(argv) == 0 {
+		return nil, path, fmt.Errorf("audio player command is empty")
+	}
+	if !hasPathPlaceholder {
+		argv = append(argv, path)
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return nil, path, fmt.Errorf("audio player %q not found", argv[0])
+	}
+	return exec.Command(argv[0], argv[1:]...), path, nil
+}
+
 func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, string, error) {
 	path := strings.TrimSpace(item.LocalPath)
 	if path == "" {
@@ -205,6 +259,8 @@ func autoOpenCommand(item store.MediaMetadata, path string) ([]string, error) {
 		candidates = []string{"nsxiv", "mpv", "xdg-open"}
 	case media.KindVideo:
 		candidates = []string{"mpv", "xdg-open", "nsxiv"}
+	case media.KindAudio:
+		candidates = []string{"mpv", "xdg-open"}
 	default:
 		candidates = []string{"xdg-open", "nsxiv", "mpv"}
 	}

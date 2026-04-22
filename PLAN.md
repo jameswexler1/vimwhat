@@ -11,7 +11,7 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
-- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, plus external open/save fallback paths.
+- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress

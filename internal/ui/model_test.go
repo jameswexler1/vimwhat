@@ -2009,6 +2009,232 @@ func TestOOpensLocalMediaDirectly(t *testing.T) {
 	}
 }
 
+func TestAudioMessageRendersCompactPlayerRow(t *testing.T) {
+	model := audioTestModel("/tmp/voice.ogg")
+
+	view := stripANSI(model.renderMessages(80, 12))
+	if !strings.Contains(view, "[aud] voice.ogg") || !strings.Contains(view, "enter play") {
+		t.Fatalf("audio row missing compact player state\n%s", view)
+	}
+}
+
+func TestEnterStartsAndStopsFocusedAudio(t *testing.T) {
+	var started []*fakeAudioProcess
+	model := audioTestModel("/tmp/voice.ogg")
+	model.startAudio = func(item store.MediaMetadata) (AudioProcess, error) {
+		process := &fakeAudioProcess{}
+		started = append(started, process)
+		return process, nil
+	}
+
+	starting, cmd := model.activateFocusedMediaPreview()
+	model = starting.(Model)
+	if cmd == nil {
+		t.Fatal("activateFocusedMediaPreview() command = nil, want audio start command")
+	}
+	msg := cmd()
+	startedMsg, ok := msg.(audioStartedMsg)
+	if !ok {
+		t.Fatalf("audio start command = %T, want audioStartedMsg", msg)
+	}
+	startedModel, waitCmd := model.handleAudioStarted(startedMsg)
+	model = startedModel.(Model)
+	if waitCmd == nil {
+		t.Fatal("handleAudioStarted() wait command = nil")
+	}
+	if len(started) != 1 || model.audioProcess == nil || !strings.Contains(model.status, "playing audio") {
+		t.Fatalf("audio state = process %v status %q started %d", model.audioProcess, model.status, len(started))
+	}
+	view := stripANSI(model.renderMessages(80, 12))
+	if !strings.Contains(view, "playing; enter stop") {
+		t.Fatalf("audio row missing playing state\n%s", view)
+	}
+
+	stopped, _ := model.activateFocusedMediaPreview()
+	model = stopped.(Model)
+	if !started[0].stopped {
+		t.Fatal("focused audio was not stopped")
+	}
+	if model.audioProcess != nil || !strings.Contains(model.status, "audio stopped") {
+		t.Fatalf("audio after stop = process %v status %q", model.audioProcess, model.status)
+	}
+
+	msg = waitCmd()
+	finished, ok := msg.(audioFinishedMsg)
+	if !ok {
+		t.Fatalf("wait command = %T, want audioFinishedMsg", msg)
+	}
+	handled, _ := model.handleAudioFinished(finished)
+	model = handled.(Model)
+	if !strings.Contains(model.status, "audio stopped") {
+		t.Fatalf("stale finish changed status to %q", model.status)
+	}
+}
+
+func TestStartingAnotherAudioStopsPreviousProcess(t *testing.T) {
+	firstPath := "/tmp/voice-1.ogg"
+	secondPath := "/tmp/voice-2.ogg"
+	var started []*fakeAudioProcess
+	model := audioTestModel(firstPath)
+	model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+		ID:     "m-2",
+		ChatID: "chat-1",
+		Sender: "Alice",
+		Media: []store.MediaMetadata{{
+			MessageID:     "m-2",
+			FileName:      "voice-2.ogg",
+			MIMEType:      "audio/ogg",
+			LocalPath:     secondPath,
+			DownloadState: "downloaded",
+		}},
+	})
+	model.startAudio = func(item store.MediaMetadata) (AudioProcess, error) {
+		process := &fakeAudioProcess{}
+		started = append(started, process)
+		return process, nil
+	}
+
+	starting, cmd := model.activateFocusedMediaPreview()
+	model = starting.(Model)
+	startedModel, _ := model.handleAudioStarted(cmd().(audioStartedMsg))
+	model = startedModel.(Model)
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+
+	starting, cmd = model.activateFocusedMediaPreview()
+	model = starting.(Model)
+	if len(started) != 1 || !started[0].stopped {
+		t.Fatalf("previous process stopped = %v started=%d", len(started) == 1 && started[0].stopped, len(started))
+	}
+	startedModel, _ = model.handleAudioStarted(cmd().(audioStartedMsg))
+	model = startedModel.(Model)
+	if len(started) != 2 || model.audioProcess != started[1] {
+		t.Fatalf("second audio state = process %v started %d", model.audioProcess, len(started))
+	}
+}
+
+func TestAudioCompletionClearsPlaybackState(t *testing.T) {
+	model := audioTestModel("/tmp/voice.ogg")
+	model.startAudio = func(item store.MediaMetadata) (AudioProcess, error) {
+		return &fakeAudioProcess{}, nil
+	}
+
+	starting, cmd := model.activateFocusedMediaPreview()
+	model = starting.(Model)
+	startedModel, waitCmd := model.handleAudioStarted(cmd().(audioStartedMsg))
+	model = startedModel.(Model)
+
+	msg := waitCmd()
+	finished, ok := msg.(audioFinishedMsg)
+	if !ok {
+		t.Fatalf("wait command = %T, want audioFinishedMsg", msg)
+	}
+	handled, _ := model.handleAudioFinished(finished)
+	model = handled.(Model)
+	if model.audioProcess != nil || model.audioMediaKey != "" || !strings.Contains(model.status, "audio finished") {
+		t.Fatalf("audio completion state = process %v key %q status %q", model.audioProcess, model.audioMediaKey, model.status)
+	}
+}
+
+func TestRemoteAudioEnterShowsDownloadLimitation(t *testing.T) {
+	model := audioTestModel("")
+
+	updated, cmd := model.activateFocusedMediaPreview()
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatalf("activateFocusedMediaPreview() command = %T, want nil", cmd)
+	}
+	if !strings.Contains(got.status, "not downloaded yet") || !strings.Contains(got.status, "not implemented") {
+		t.Fatalf("status = %q, want visible remote download limitation", got.status)
+	}
+}
+
+func TestRemoteAudioDownloadThenStartsPlayback(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(localPath, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var saved store.MediaMetadata
+	var startedPath string
+	model := audioTestModel("")
+	model.saveMedia = func(media store.MediaMetadata) error {
+		saved = media
+		return nil
+	}
+	model.downloadMedia = func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error) {
+		media.MessageID = message.ID
+		media.LocalPath = localPath
+		media.DownloadState = "downloaded"
+		return media, nil
+	}
+	model.startAudio = func(item store.MediaMetadata) (AudioProcess, error) {
+		startedPath = item.LocalPath
+		return &fakeAudioProcess{}, nil
+	}
+
+	starting, cmd := model.activateFocusedMediaPreview()
+	model = starting.(Model)
+	if cmd == nil {
+		t.Fatal("activateFocusedMediaPreview() command = nil, want download/start command")
+	}
+	startedModel, _ := model.handleAudioStarted(cmd().(audioStartedMsg))
+	model = startedModel.(Model)
+
+	if got := model.messagesByChat["chat-1"][0].Media[0].LocalPath; got != localPath {
+		t.Fatalf("loaded media local path = %q, want %q", got, localPath)
+	}
+	if saved.LocalPath != localPath {
+		t.Fatalf("saved media = %+v, want local path", saved)
+	}
+	if startedPath != localPath || model.audioProcess == nil {
+		t.Fatalf("started path = %q process=%v", startedPath, model.audioProcess)
+	}
+}
+
+func TestLeaderSavesFocusedAudioWithCollisionSafeName(t *testing.T) {
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "source.ogg")
+	if err := os.WriteFile(localPath, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloads) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(downloads, "voice.ogg"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("WriteFile(existing) error = %v", err)
+	}
+	model := audioTestModel(localPath)
+	model.config.DownloadsDir = downloads
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	saved, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	model = saved.(Model)
+	if cmd == nil {
+		t.Fatal("<leader>s command = nil, want save command")
+	}
+	msg := cmd()
+	savedMsg, ok := msg.(mediaSavedMsg)
+	if !ok {
+		t.Fatalf("save command = %T, want mediaSavedMsg", msg)
+	}
+	handled, _ := model.handleMediaSaved(savedMsg)
+	model = handled.(Model)
+
+	want := filepath.Join(downloads, "voice-1.ogg")
+	if savedMsg.Path != want {
+		t.Fatalf("saved path = %q, want %q", savedMsg.Path, want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("ReadFile(saved) error = %v", err)
+	}
+	if string(data) != "audio" || !strings.Contains(model.status, "saved media") {
+		t.Fatalf("saved data/status = %q/%q", data, model.status)
+	}
+}
+
 func TestLeaderSavesFocusedMediaWithCollisionSafeName(t *testing.T) {
 	dir := t.TempDir()
 	localPath := filepath.Join(dir, "source.jpg")
@@ -3054,6 +3280,64 @@ func mediaTestModel(localPath string, backend media.Backend) Model {
 	model.height = 30
 	model.focus = FocusMessages
 	return model
+}
+
+func audioTestModel(localPath string) Model {
+	downloadState := "downloaded"
+	if localPath == "" {
+		downloadState = "remote"
+	}
+	model := NewModel(Options{
+		Config: config.Config{
+			PreviewMaxWidth:  24,
+			PreviewMaxHeight: 6,
+			PreviewDelayMS:   0,
+			LeaderKey:        "space",
+		},
+		Paths: config.Paths{
+			PreviewCacheDir: filepath.Join(os.TempDir(), "maybewhats-test-preview"),
+		},
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "voice.ogg",
+						MIMEType:      "audio/ogg",
+						LocalPath:     localPath,
+						DownloadState: downloadState,
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 30
+	model.focus = FocusMessages
+	return model
+}
+
+type fakeAudioProcess struct {
+	stopped bool
+	waitErr error
+}
+
+func (p *fakeAudioProcess) Wait() error {
+	return p.waitErr
+}
+
+func (p *fakeAudioProcess) Stop() error {
+	p.stopped = true
+	return nil
 }
 
 func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
