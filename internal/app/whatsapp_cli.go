@@ -21,8 +21,8 @@ type WhatsAppSession interface {
 type WhatsAppSessionOpener func(context.Context, string) (WhatsAppSession, error)
 
 type WhatsAppSessionStatus struct {
-	Label    string
-	LoggedIn bool
+	Label  string
+	Paired bool
 }
 
 type WhatsAppSessionStatusChecker func(context.Context, string) (WhatsAppSessionStatus, error)
@@ -39,8 +39,8 @@ func defaultCheckWhatsAppSession(ctx context.Context, sessionPath string) (Whats
 		return WhatsAppSessionStatus{}, err
 	}
 	return WhatsAppSessionStatus{
-		Label:    status.String(),
-		LoggedIn: status.IsLoggedIn(),
+		Label:  status.String(),
+		Paired: status.HasCredentials(),
 	}, nil
 }
 
@@ -63,10 +63,14 @@ func runLogin(env Environment, stdout, stderr io.Writer) int {
 	}
 
 	var renderErr error
-	fmt.Fprintln(stdout, "vimwhat: scan this QR with WhatsApp Linked devices")
+	showedQRPrompt := false
 	err = session.Login(context.Background(), func(code string) {
 		if renderErr != nil {
 			return
+		}
+		if !showedQRPrompt {
+			fmt.Fprintln(stdout, "vimwhat: scan this QR with WhatsApp Linked devices")
+			showedQRPrompt = true
 		}
 		fmt.Fprintln(stdout)
 		renderErr = renderQR(stdout, code)
@@ -90,7 +94,7 @@ func runLogout(env Environment, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "vimwhat: check whatsapp session: %v\n", err)
 		return 1
 	}
-	if !status.LoggedIn {
+	if !status.Paired {
 		fmt.Fprintln(stdout, "vimwhat: not logged in")
 		return 0
 	}
@@ -102,10 +106,6 @@ func runLogout(env Environment, stdout, stderr io.Writer) int {
 	}
 	defer session.Close()
 
-	if !session.IsLoggedIn() {
-		fmt.Fprintln(stdout, "vimwhat: not logged in")
-		return 0
-	}
 	if err := session.Logout(context.Background()); err != nil {
 		fmt.Fprintf(stderr, "vimwhat: logout: %v\n", err)
 		return 1

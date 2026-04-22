@@ -118,7 +118,7 @@ func TestRunLogoutDoesNotOpenMissingSession(t *testing.T) {
 			return nil, errors.New("unexpected open")
 		},
 		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
-			return WhatsAppSessionStatus{Label: "not configured", LoggedIn: false}, nil
+			return WhatsAppSessionStatus{Label: "not configured", Paired: false}, nil
 		},
 	}
 
@@ -142,7 +142,7 @@ func TestRunLogoutLogsOutPairedSession(t *testing.T) {
 			return session, nil
 		},
 		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
-			return WhatsAppSessionStatus{Label: "logged in (123@s.whatsapp.net)", LoggedIn: true}, nil
+			return WhatsAppSessionStatus{Label: "paired locally (123@s.whatsapp.net)", Paired: true}, nil
 		},
 	}
 
@@ -178,14 +178,14 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 		},
 		Store: db,
 		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
-			return WhatsAppSessionStatus{Label: "logged in (123@s.whatsapp.net)", LoggedIn: true}, nil
+			return WhatsAppSessionStatus{Label: "paired locally (123@s.whatsapp.net)", Paired: true}, nil
 		},
 	}
 
 	var out bytes.Buffer
 	printDoctor(env, &out)
-	if !strings.Contains(out.String(), "session status: logged in (123@s.whatsapp.net)") {
-		t.Fatalf("doctor output = %q, want logged-in session status", out.String())
+	if !strings.Contains(out.String(), "session status: paired locally (123@s.whatsapp.net)") {
+		t.Fatalf("doctor output = %q, want paired-local session status", out.String())
 	}
 }
 

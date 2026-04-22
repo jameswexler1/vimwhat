@@ -12,12 +12,17 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types/events"
 
 	_ "modernc.org/sqlite"
 )
 
 var ErrNotImplemented = errors.New("whatsapp integration not implemented yet")
 var ErrClientNotOpen = errors.New("whatsapp client is not open")
+
+var errSessionRejected = errors.New("whatsapp session was rejected")
+
+const authTimeout = 45 * time.Second
 
 type QRHandler = func(code string)
 
@@ -49,7 +54,7 @@ type SessionStatus struct {
 	JID     string
 }
 
-func (s SessionStatus) IsLoggedIn() bool {
+func (s SessionStatus) HasCredentials() bool {
 	return s.State == SessionPaired
 }
 
@@ -58,12 +63,12 @@ func (s SessionStatus) String() string {
 	case SessionMissing:
 		return "not configured"
 	case SessionUnpaired:
-		return "not logged in"
+		return "not paired"
 	case SessionPaired:
 		if s.JID != "" {
-			return fmt.Sprintf("logged in (%s)", s.JID)
+			return fmt.Sprintf("paired locally (%s)", s.JID)
 		}
-		return "logged in"
+		return "paired locally"
 	default:
 		return "unknown"
 	}
@@ -172,14 +177,14 @@ func (c *Client) Connect(ctx context.Context) error {
 	if c == nil || c.client == nil {
 		return ErrClientNotOpen
 	}
-	if err := c.client.ConnectContext(ctx); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
-		return err
+	if !c.hasStoredCredentials() {
+		return fmt.Errorf("whatsapp session is not paired; run vimwhat login")
 	}
-	return nil
+	return c.connectAndWait(ctx, authTimeout)
 }
 
 func (c *Client) IsLoggedIn() bool {
-	return c != nil && c.client != nil && c.client.Store != nil && c.client.Store.ID != nil
+	return c != nil && c.client != nil && c.client.IsLoggedIn()
 }
 
 func (c *Client) Login(ctx context.Context, handleQR QRHandler) error {
@@ -189,12 +194,34 @@ func (c *Client) Login(ctx context.Context, handleQR QRHandler) error {
 	if c.IsLoggedIn() {
 		return nil
 	}
+	if c.hasStoredCredentials() {
+		if err := c.connectAndWait(ctx, authTimeout); err == nil {
+			return nil
+		} else if !errors.Is(err, errSessionRejected) {
+			return err
+		}
 
+		if c.hasStoredCredentials() {
+			if err := c.client.Store.Delete(ctx); err != nil {
+				return fmt.Errorf("delete rejected whatsapp session: %w", err)
+			}
+		}
+	}
+
+	return c.loginWithQR(ctx, handleQR)
+}
+
+func (c *Client) loginWithQR(ctx context.Context, handleQR QRHandler) error {
+	if c.client.IsConnected() {
+		c.client.Disconnect()
+	}
+	authWaiter := c.newAuthWaiter()
+	defer authWaiter.Close()
 	qrChan, err := c.client.GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare login QR channel: %w", err)
 	}
-	if err := c.client.ConnectContext(ctx); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+	if err := c.connectRaw(ctx); err != nil {
 		return fmt.Errorf("connect for login: %w", err)
 	}
 
@@ -210,7 +237,7 @@ func (c *Client) Login(ctx context.Context, handleQR QRHandler) error {
 					handleQR(item.Code)
 				}
 			case whatsmeow.QRChannelSuccess.Event:
-				return nil
+				return authWaiter.Wait(ctx, authTimeout)
 			case whatsmeow.QRChannelTimeout.Event:
 				return fmt.Errorf("login QR code timed out")
 			case whatsmeow.QRChannelClientOutdated.Event:
@@ -237,11 +264,14 @@ func (c *Client) Logout(ctx context.Context) error {
 	if c == nil || c.client == nil {
 		return ErrClientNotOpen
 	}
-	if !c.IsLoggedIn() {
+	if !c.hasStoredCredentials() {
 		return nil
 	}
-	if !c.client.IsConnected() {
-		if err := c.Connect(ctx); err != nil {
+	if !c.IsLoggedIn() {
+		if err := c.connectAndWait(ctx, authTimeout); err != nil {
+			if errors.Is(err, errSessionRejected) {
+				return nil
+			}
 			return fmt.Errorf("connect for logout: %w", err)
 		}
 	}
@@ -252,6 +282,94 @@ func (c *Client) Logout(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (c *Client) hasStoredCredentials() bool {
+	return c != nil && c.client != nil && c.client.Store != nil && c.client.Store.ID != nil
+}
+
+func (c *Client) connectRaw(ctx context.Context) error {
+	if err := c.client.ConnectContext(ctx); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) connectAndWait(ctx context.Context, timeout time.Duration) error {
+	authWaiter := c.newAuthWaiter()
+	defer authWaiter.Close()
+	if err := c.connectRaw(ctx); err != nil {
+		return err
+	}
+	return authWaiter.Wait(ctx, timeout)
+}
+
+type authWaiter struct {
+	client    *whatsmeow.Client
+	result    chan error
+	handlerID uint32
+}
+
+func (c *Client) newAuthWaiter() authWaiter {
+	waiter := authWaiter{
+		client: c.client,
+		result: make(chan error, 1),
+	}
+	sendResult := func(err error) {
+		select {
+		case waiter.result <- err:
+		default:
+		}
+	}
+	waiter.handlerID = c.client.AddEventHandler(func(evt any) {
+		switch event := evt.(type) {
+		case *events.Connected:
+			sendResult(nil)
+		case *events.LoggedOut:
+			sendResult(fmt.Errorf("%w: %s", errSessionRejected, event.Reason.String()))
+		case *events.ConnectFailure:
+			err := fmt.Errorf("whatsapp connect failure: %s", event.Reason.String())
+			if event.Reason.IsLoggedOut() {
+				err = fmt.Errorf("%w: %s", errSessionRejected, event.Reason.String())
+			}
+			sendResult(err)
+		case *events.ClientOutdated:
+			sendResult(fmt.Errorf("whatsapp client is outdated"))
+		case *events.TemporaryBan:
+			sendResult(fmt.Errorf("whatsapp temporary ban: %s", event.String()))
+		case *events.StreamReplaced:
+			sendResult(fmt.Errorf("whatsapp stream was replaced by another connection"))
+		case *events.ManualLoginReconnect:
+			sendResult(fmt.Errorf("whatsapp login requires a manual reconnect"))
+		}
+	})
+	return waiter
+}
+
+func (w authWaiter) Wait(ctx context.Context, timeout time.Duration) error {
+	if w.client.IsLoggedIn() {
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case err := <-w.result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		if w.client.IsLoggedIn() {
+			return nil
+		}
+		return fmt.Errorf("timed out waiting for WhatsApp authentication")
+	}
+}
+
+func (w authWaiter) Close() {
+	if w.client != nil && w.handlerID != 0 {
+		w.client.RemoveEventHandler(w.handlerID)
+	}
 }
 
 func (c *Client) Close() error {
