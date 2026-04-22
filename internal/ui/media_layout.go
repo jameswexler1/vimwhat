@@ -46,6 +46,15 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 	return media.Placement{}, false
 }
 
+func (m Model) visibleOverlayIdentifiers() map[string]bool {
+	placements := m.visibleMediaPlacements()
+	visible := make(map[string]bool, len(placements))
+	for _, placement := range placements {
+		visible[placement.Identifier] = true
+	}
+	return visible
+}
+
 func (m Model) visibleMediaPlacements() []media.Placement {
 	if m.width <= 0 || m.height <= 0 {
 		return nil
@@ -211,7 +220,7 @@ func (m Model) previewLineOffset(message store.Message, item store.MediaMetadata
 			return offset, true
 		}
 		if existing, ok := m.mediaPreview(message, candidate, preview.Width); ok {
-			offset += len(renderPreviewLines(existing, preview.Width))
+			offset += len(renderPreviewLines(existing, preview.Width, true))
 		} else {
 			offset++
 		}

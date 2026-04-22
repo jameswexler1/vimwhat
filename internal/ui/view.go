@@ -580,12 +580,13 @@ func (m Model) renderMessages(width, height int) string {
 
 	messages := m.currentMessages()
 	blocks := make([]messageBlock, 0, len(messages))
+	visibleOverlays := m.visibleOverlayIdentifiers()
 	var lastDate string
 	for i, message := range messages {
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
 		active := i == m.messageCursor
-		bubble := m.renderMessageBubble(message, width, active, selected)
+		bubble := m.renderMessageBubbleForViewport(message, width, active, selected, visibleOverlays)
 		lines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
 		if date != "" && date != lastDate {
 			lines = append([]string{renderDaySeparator(date, width)}, lines...)
@@ -686,6 +687,10 @@ func renderDaySeparator(date string, width int) string {
 }
 
 func (m Model) renderMessageBubble(message store.Message, availableWidth int, active, selected bool) string {
+	return m.renderMessageBubbleForViewport(message, availableWidth, active, selected, nil)
+}
+
+func (m Model) renderMessageBubbleForViewport(message store.Message, availableWidth int, active, selected bool, visibleOverlays map[string]bool) string {
 	border := incomingLine
 	fg := primaryFG
 	metaFG := softFG
@@ -737,7 +742,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	}
 	for _, item := range message.Media {
 		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
-			lines = append(lines, renderPreviewLines(preview, contentWidth)...)
+			lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
 		} else {
 			state := m.mediaAttachmentState(message, item)
 			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected, state))
@@ -771,9 +776,32 @@ func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, wid
 	return preview, true
 }
 
-func renderPreviewLines(preview media.Preview, width int) []string {
+func overlayPreviewVisible(preview media.Preview, visibleOverlays map[string]bool) bool {
+	if preview.Display != media.PreviewDisplayOverlay {
+		return false
+	}
+	if visibleOverlays == nil {
+		return true
+	}
+	return visibleOverlays[overlayIdentifier(preview.Key)]
+}
+
+func renderPreviewLines(preview media.Preview, width int, overlayVisible bool) []string {
 	if preview.Display != media.PreviewDisplayOverlay {
 		return preview.Lines
+	}
+	if !overlayVisible && len(preview.Lines) > 0 {
+		lines := append([]string{}, preview.Lines...)
+		height := max(1, preview.Height)
+		switch {
+		case len(lines) > height:
+			return lines[:height]
+		case len(lines) < height:
+			for len(lines) < height {
+				lines = append(lines, "")
+			}
+		}
+		return lines
 	}
 	height := max(1, preview.Height)
 	lineWidth := min(width, max(1, preview.Width))

@@ -186,6 +186,54 @@ func TestPreviewerReturnsOverlayPreviewForUeberzugPP(t *testing.T) {
 	}
 }
 
+func TestPreviewerProvidesFallbackLinesForUeberzugPP(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "chafa" {
+			return "/usr/bin/chafa", nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "chafa" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		return []byte("aa\nbb\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.Display != PreviewDisplayOverlay || preview.RenderedBackend != BackendUeberzugPP {
+		t.Fatalf("preview display/backend = %s/%s, want overlay/ueberzug++", preview.Display, preview.RenderedBackend)
+	}
+	if got := preview.Lines; len(got) != 2 || got[0] != "aa" || got[1] != "bb" {
+		t.Fatalf("preview lines = %+v, want chafa fallback lines", got)
+	}
+}
+
 func TestPreviewerPrefersFullImageOverThumbnail(t *testing.T) {
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "photo.jpg")

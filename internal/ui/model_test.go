@@ -2133,6 +2133,42 @@ func TestInfoPaneShowsOverlayDebugCommand(t *testing.T) {
 	}
 }
 
+func TestClippedOverlayPreviewFallsBackToInlineLines(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	model.height = 10
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	preview := model.previewCache[media.PreviewKey(request)]
+	preview.Lines = []string{
+		"fallback-1",
+		"fallback-2",
+		"fallback-3",
+		"fallback-4",
+		"fallback-5",
+		"fallback-6",
+	}
+	model.previewCache[media.PreviewKey(request)] = preview
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+
+	if placements := model.visibleMediaPlacements(); len(placements) != 0 {
+		t.Fatalf("visibleMediaPlacements() = %+v, want clipped overlay to drop out", placements)
+	}
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "fallback-3") {
+		t.Fatalf("View() missing fallback preview lines when overlay is clipped\n%s", view)
+	}
+}
+
 func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T) {
 	var deletedID string
 	model := NewModel(Options{

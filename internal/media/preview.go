@@ -257,12 +257,21 @@ func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source 
 		}
 		return p.renderChafaFallback(timeoutCtx, req, source)
 	case BackendUeberzugPP:
-		return nil, BackendUeberzugPP, PreviewDisplayOverlay, nil
+		return p.renderOverlayFallback(timeoutCtx, req, source), BackendUeberzugPP, PreviewDisplayOverlay, nil
 	case BackendChafa, BackendAuto:
 		return p.renderChafaFallback(timeoutCtx, req, source)
 	default:
 		return nil, BackendNone, "", fmt.Errorf("preview backend %s does not render inline", req.Backend)
 	}
+}
+
+func (p Previewer) renderOverlayFallback(ctx context.Context, req PreviewRequest, source string) []string {
+	if hasCommand("chafa") {
+		if lines, _, _, err := p.renderChafaFallback(ctx, req, source); err == nil && len(lines) > 0 {
+			return lines
+		}
+	}
+	return placeholderPreviewLines(req.Width, req.Height, MediaKind(req.MIMEType, req.FileName))
 }
 
 func (p Previewer) renderChafaFallback(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {
@@ -293,6 +302,35 @@ func runChafa(ctx context.Context, format string, width, height int, source stri
 		return nil, fmt.Errorf("chafa preview: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return splitPreviewOutput(output), nil
+}
+
+func placeholderPreviewLines(width, height int, kind Kind) []string {
+	width = maxInt(1, width)
+	height = maxInt(1, height)
+
+	label := "[preview]"
+	switch kind {
+	case KindImage:
+		label = "[image preview]"
+	case KindVideo:
+		label = "[video preview]"
+	}
+	if len(label) > width {
+		label = label[:width]
+	}
+
+	lines := make([]string, height)
+	padding := strings.Repeat(" ", width)
+	for i := range lines {
+		lines[i] = padding
+	}
+	row := height / 2
+	left := 0
+	if width > len(label) {
+		left = (width - len(label)) / 2
+	}
+	lines[row] = strings.Repeat(" ", left) + label + strings.Repeat(" ", maxInt(0, width-left-len(label)))
+	return lines
 }
 
 func runImg2Sixel(ctx context.Context, width, height int, source string) ([]string, error) {
