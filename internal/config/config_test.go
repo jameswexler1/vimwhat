@@ -46,7 +46,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	content := stringsJoin(
 		`editor = "nvim"`,
 		`preview_backend = "chafa"`,
-		`notification_command = "notify-send maybewhats"`,
+		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
 		`image_viewer_command = "imv {path}"`,
@@ -75,7 +75,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.PreviewBackend != "chafa" {
 		t.Fatalf("PreviewBackend = %q, want %q", cfg.PreviewBackend, "chafa")
 	}
-	if cfg.NotificationCommand != "notify-send maybewhats" {
+	if cfg.NotificationCommand != "notify-send vimwhat" {
 		t.Fatalf("NotificationCommand = %q", cfg.NotificationCommand)
 	}
 	if cfg.ClipboardCommand != "wl-copy" {

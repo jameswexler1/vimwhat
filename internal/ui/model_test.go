@@ -14,9 +14,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"maybewhats/internal/config"
-	"maybewhats/internal/media"
-	"maybewhats/internal/store"
+	"vimwhat/internal/config"
+	"vimwhat/internal/media"
+	"vimwhat/internal/store"
 )
 
 func TestInsertBackspacePreservesUTF8(t *testing.T) {
@@ -288,7 +288,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		t.Fatal("helpVisible = false, want true")
 	}
 	view := got.View()
-	for _, want := range []string{"maybewhats help", "normal:", "insert:", "command:"} {
+	for _, want := range []string{"vimwhat help", "normal:", "insert:", "command:"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing %q\n%s", want, view)
 		}
@@ -2294,6 +2294,13 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	message := model.messagesByChat["chat-1"][0]
 	item := message.Media[0]
 	model.previewRequested[mediaActivationKey(message, item)] = true
+	request, ok := model.previewRequestForMedia(message, item, 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	staleGeneration := model.previewGeneration
+	staleKey := media.PreviewKey(request)
+	model.previewInflight[staleKey] = true
 
 	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
 	model = leader.(Model)
@@ -2313,6 +2320,28 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	}
 	if !strings.Contains(model.status, "unloaded") {
 		t.Fatalf("status = %q, want unloaded status", model.status)
+	}
+
+	updated, _ := model.handleMediaPreviewReady(mediaPreviewReadyMsg{
+		Key:        staleKey,
+		Generation: staleGeneration,
+		Request:    request,
+		Preview: media.Preview{
+			Key:             staleKey,
+			MessageID:       "m-1",
+			Kind:            media.KindImage,
+			Backend:         media.BackendUeberzugPP,
+			RenderedBackend: media.BackendUeberzugPP,
+			Display:         media.PreviewDisplayOverlay,
+			SourceKind:      media.SourceLocal,
+			SourcePath:      localPath,
+			Width:           request.Width,
+			Height:          request.Height,
+		},
+	})
+	model = updated.(Model)
+	if len(model.previewCache) != 0 || strings.Contains(model.status, "preview ready") {
+		t.Fatalf("stale preview completion restored preview state: cache=%d status=%q", len(model.previewCache), model.status)
 	}
 }
 
@@ -2868,7 +2897,7 @@ func TestViewportDoesNotAllowBlankSpaceBelowNewestMessageWhenOverscrolled(t *tes
 }
 
 func TestDefaultRenderingAvoidsBackgroundFills(t *testing.T) {
-	t.Setenv("MAYBEWHATS_TRANSPARENT_BARS", "1")
+	t.Setenv("VIMWHAT_TRANSPARENT_BARS", "1")
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -3251,7 +3280,7 @@ func mediaTestModel(localPath string, backend media.Backend) Model {
 			LeaderKey:        "space",
 		},
 		Paths: config.Paths{
-			PreviewCacheDir: filepath.Join(os.TempDir(), "maybewhats-test-preview"),
+			PreviewCacheDir: filepath.Join(os.TempDir(), "vimwhat-test-preview"),
 		},
 		PreviewReport: media.Report{
 			Selected: backend,
@@ -3295,7 +3324,7 @@ func audioTestModel(localPath string) Model {
 			LeaderKey:        "space",
 		},
 		Paths: config.Paths{
-			PreviewCacheDir: filepath.Join(os.TempDir(), "maybewhats-test-preview"),
+			PreviewCacheDir: filepath.Join(os.TempDir(), "vimwhat-test-preview"),
 		},
 		PreviewReport: media.Report{
 			Selected: media.BackendChafa,

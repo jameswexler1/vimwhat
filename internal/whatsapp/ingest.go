@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"maybewhats/internal/store"
+	"vimwhat/internal/store"
 )
 
 type Ingestor struct {

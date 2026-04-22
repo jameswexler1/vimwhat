@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"maybewhats/internal/store"
+	"vimwhat/internal/store"
 )
 
 func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {

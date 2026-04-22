@@ -11,9 +11,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"maybewhats/internal/config"
-	"maybewhats/internal/media"
-	"maybewhats/internal/store"
+	"vimwhat/internal/config"
+	"vimwhat/internal/media"
+	"vimwhat/internal/store"
 )
 
 type Mode string
@@ -40,9 +40,10 @@ type clipboardCopiedMsg struct {
 }
 
 type mediaPreviewReadyMsg struct {
-	Key     string
-	Request media.PreviewRequest
-	Preview media.Preview
+	Key        string
+	Generation int
+	Request    media.PreviewRequest
+	Preview    media.Preview
 }
 
 type mediaDownloadedMsg struct {
@@ -108,70 +109,71 @@ type Options struct {
 }
 
 type Model struct {
-	width            int
-	height           int
-	mode             Mode
-	focus            Focus
-	allChats         []store.Chat
-	chats            []store.Chat
-	messagesByChat   map[string][]store.Message
-	draftsByChat     map[string]string
-	activeChat       int
-	chatScrollTop    int
-	messageCursor    int
-	messageScrollTop int
-	visualAnchor     int
-	previewReport    media.Report
-	previewCache     map[string]media.Preview
-	previewInflight  map[string]bool
-	previewRequested map[string]bool
-	overlay          *media.OverlayManager
-	suppressOverlay  bool
-	audioProcess     AudioProcess
-	audioSession     int
-	audioMessageID   string
-	audioMediaKey    string
-	audioDisplayName string
-	paths            config.Paths
-	config           config.Config
-	status           string
-	commandLine      string
-	searchLine       string
-	composer         string
-	attachments      []Attachment
-	lastSearch       string
-	lastSearchFocus  Focus
-	activeSearch     string
-	searchChatSource []store.Chat
-	searchMatches    []int
-	searchIndex      int
-	messageFilter    string
-	unfilteredByChat map[string][]store.Message
-	pendingCount     int
-	leaderPending    bool
-	leaderSequence   string
-	yankRegister     string
-	quitting         bool
-	compactLayout    bool
-	infoPaneVisible  bool
-	helpVisible      bool
-	unreadOnly       bool
-	pinnedFirst      bool
-	commandHistory   []string
-	searchHistory    []string
-	deleteConfirmID  string
-	persistMessage   func(chatID, body string, attachments []Attachment) (store.Message, error)
-	loadMessages     func(chatID string, limit int) ([]store.Message, error)
-	saveDraft        func(chatID, body string) error
-	searchChats      func(query string) ([]store.Chat, error)
-	searchMessages   func(chatID, query string, limit int) ([]store.Message, error)
-	copyToClipboard  func(text string) error
-	pickAttachment   func() tea.Cmd
-	openMedia        func(media store.MediaMetadata) tea.Cmd
-	startAudio       func(media store.MediaMetadata) (AudioProcess, error)
-	deleteMessage    func(messageID string) error
-	saveMedia        func(media store.MediaMetadata) error
-	downloadMedia    func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	width             int
+	height            int
+	mode              Mode
+	focus             Focus
+	allChats          []store.Chat
+	chats             []store.Chat
+	messagesByChat    map[string][]store.Message
+	draftsByChat      map[string]string
+	activeChat        int
+	chatScrollTop     int
+	messageCursor     int
+	messageScrollTop  int
+	visualAnchor      int
+	previewReport     media.Report
+	previewCache      map[string]media.Preview
+	previewInflight   map[string]bool
+	previewRequested  map[string]bool
+	previewGeneration int
+	overlay           *media.OverlayManager
+	suppressOverlay   bool
+	audioProcess      AudioProcess
+	audioSession      int
+	audioMessageID    string
+	audioMediaKey     string
+	audioDisplayName  string
+	paths             config.Paths
+	config            config.Config
+	status            string
+	commandLine       string
+	searchLine        string
+	composer          string
+	attachments       []Attachment
+	lastSearch        string
+	lastSearchFocus   Focus
+	activeSearch      string
+	searchChatSource  []store.Chat
+	searchMatches     []int
+	searchIndex       int
+	messageFilter     string
+	unfilteredByChat  map[string][]store.Message
+	pendingCount      int
+	leaderPending     bool
+	leaderSequence    string
+	yankRegister      string
+	quitting          bool
+	compactLayout     bool
+	infoPaneVisible   bool
+	helpVisible       bool
+	unreadOnly        bool
+	pinnedFirst       bool
+	commandHistory    []string
+	searchHistory     []string
+	deleteConfirmID   string
+	persistMessage    func(chatID, body string, attachments []Attachment) (store.Message, error)
+	loadMessages      func(chatID string, limit int) ([]store.Message, error)
+	saveDraft         func(chatID, body string) error
+	searchChats       func(query string) ([]store.Chat, error)
+	searchMessages    func(chatID, query string, limit int) ([]store.Message, error)
+	copyToClipboard   func(text string) error
+	pickAttachment    func() tea.Cmd
+	openMedia         func(media store.MediaMetadata) tea.Cmd
+	startAudio        func(media store.MediaMetadata) (AudioProcess, error)
+	deleteMessage     func(messageID string) error
+	saveMedia         func(media store.MediaMetadata) error
+	downloadMedia     func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 }
 
 const messageLoadLimit = 200
@@ -847,6 +849,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.previewCache = map[string]media.Preview{}
 		m.previewInflight = map[string]bool{}
 		m.previewRequested = map[string]bool{}
+		m.previewGeneration++
 		if m.previewReport.Selected == media.BackendUeberzugPP && m.overlay == nil {
 			m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 		}
@@ -1320,6 +1323,7 @@ func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
 		previewMaxWidth(m.config),
 		previewMaxHeight(m.config),
 	)
+	generation := m.previewGeneration
 	var cmds []tea.Cmd
 	for _, request := range requests {
 		key := media.PreviewKey(request)
@@ -1333,9 +1337,10 @@ func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
 				time.Sleep(delay)
 			}
 			return mediaPreviewReadyMsg{
-				Key:     media.PreviewKey(req),
-				Request: req,
-				Preview: previewer.Render(context.Background(), req),
+				Key:        media.PreviewKey(req),
+				Generation: generation,
+				Request:    req,
+				Preview:    previewer.Render(context.Background(), req),
 			}
 		})
 	}
@@ -1780,6 +1785,7 @@ func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {
 	m.previewCache = map[string]media.Preview{}
 	m.previewInflight = map[string]bool{}
 	m.previewRequested = map[string]bool{}
+	m.previewGeneration++
 	if strings.TrimSpace(status) == "" {
 		status = "media previews unloaded"
 	}
@@ -1835,6 +1841,9 @@ func (m Model) messagePaneContentWidth() int {
 }
 
 func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea.Cmd) {
+	if msg.Generation != m.previewGeneration {
+		return m, nil
+	}
 	if m.previewCache == nil {
 		m.previewCache = map[string]media.Preview{}
 	}

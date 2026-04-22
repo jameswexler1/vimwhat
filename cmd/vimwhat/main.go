@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"maybewhats/internal/app"
+	"vimwhat/internal/app"
 )
 
 func main() {

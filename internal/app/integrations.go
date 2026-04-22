@@ -11,10 +11,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"maybewhats/internal/config"
-	"maybewhats/internal/media"
-	"maybewhats/internal/store"
-	"maybewhats/internal/ui"
+	"vimwhat/internal/config"
+	"vimwhat/internal/media"
+	"vimwhat/internal/store"
+	"vimwhat/internal/ui"
 )
 
 func copyToClipboard(ctx context.Context, configuredCommand, text string) error {
@@ -87,7 +87,7 @@ func clipboardCommands(configuredCommand string) [][]string {
 }
 
 func pickAttachment(commandTemplate string) tea.Cmd {
-	chooser, err := os.CreateTemp("", "maybewhats-chooser-*")
+	chooser, err := os.CreateTemp("", "vimwhat-chooser-*")
 	if err != nil {
 		return attachmentPickerError(err)
 	}

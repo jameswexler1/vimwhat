@@ -26,7 +26,7 @@ func TestDetectExplicitAvailableBackend(t *testing.T) {
 
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
 
 	report := Detect("chafa")
 	if report.Selected != BackendChafa {
@@ -52,7 +52,7 @@ func TestDetectFallsBackInPriorityOrder(t *testing.T) {
 
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
 	t.Setenv("DISPLAY", ":0")
 
 	report := Detect("auto")
@@ -80,7 +80,7 @@ func TestDetectChafaExplicitBeatsAvailableUeberzugPP(t *testing.T) {
 
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
 	t.Setenv("DISPLAY", ":0")
 
 	report := Detect("chafa")
@@ -103,7 +103,7 @@ func TestDetectReportsNoneWhenNoBackendIsAvailable(t *testing.T) {
 
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
 
 	report := Detect("auto")
 	if report.Selected != BackendNone {

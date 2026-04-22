@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"maybewhats/internal/media"
-	"maybewhats/internal/store"
+	"vimwhat/internal/media"
+	"vimwhat/internal/store"
 )
 
 var (
@@ -672,7 +672,7 @@ func (m Model) renderMessages(width, height int) string {
 			header,
 			"",
 			lipgloss.NewStyle().Foreground(softFG).Width(width).Render("No active chat."),
-			lipgloss.NewStyle().Foreground(softFG).Width(width).Render("Use `maybewhats doctor` to confirm the database path and preview backend."),
+			lipgloss.NewStyle().Foreground(softFG).Width(width).Render("Use `vimwhat doctor` to confirm the database path and preview backend."),
 		}, height), "\n")
 	}
 
@@ -1469,7 +1469,7 @@ func (m Model) composerHeight() int {
 
 func (m Model) renderHelp(width int) string {
 	lines := []string{
-		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("maybewhats help"),
+		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("vimwhat help"),
 		"",
 		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
 		"         enter preview/open  o open media  <leader>s save  <leader>hf unload previews",

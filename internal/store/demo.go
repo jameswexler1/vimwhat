@@ -234,7 +234,7 @@ func (s *Store) ensureDemoImage() (string, int64, error) {
 		return "", 0, fmt.Errorf("create demo media dir: %w", err)
 	}
 
-	path := filepath.Join(dir, "maybewhats-demo.png")
+	path := filepath.Join(dir, "vimwhat-demo.png")
 	file, err := os.Create(path)
 	if err != nil {
 		return "", 0, fmt.Errorf("create demo image: %w", err)

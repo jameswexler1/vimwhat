@@ -100,7 +100,7 @@ func defaultTheme() theme {
 }
 
 func barsTransparent() bool {
-	switch os.Getenv("MAYBEWHATS_TRANSPARENT_BARS") {
+	switch os.Getenv("VIMWHAT_TRANSPARENT_BARS") {
 	case "0", "false", "FALSE", "no", "NO":
 		return false
 	default:

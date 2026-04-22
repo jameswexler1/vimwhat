@@ -1,4 +1,4 @@
-module maybewhats
+module vimwhat
 
 go 1.26
 

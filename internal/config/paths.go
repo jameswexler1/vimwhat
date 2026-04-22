@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-const appName = "maybewhats"
+const appName = "vimwhat"
 
 type Paths struct {
 	ConfigDir       string
@@ -52,7 +52,7 @@ func ResolvePaths() (Paths, error) {
 		ConfigFile:      filepath.Join(configDir, "config.toml"),
 		DatabaseFile:    filepath.Join(dataDir, "state.sqlite3"),
 		SessionFile:     filepath.Join(dataDir, "whatsapp-session.sqlite3"),
-		LogFile:         filepath.Join(cacheDir, "maybewhats.log"),
+		LogFile:         filepath.Join(cacheDir, "vimwhat.log"),
 		MediaDir:        filepath.Join(cacheDir, "media"),
 		PreviewCacheDir: filepath.Join(cacheDir, "preview"),
 	}, nil

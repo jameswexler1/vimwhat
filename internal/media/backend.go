@@ -110,7 +110,7 @@ func DetectUeberzugPPOutput() string {
 }
 
 func supportsSixel() bool {
-	if os.Getenv("MAYBEWHATS_FORCE_SIXEL") == "1" {
+	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
 		return true
 	}
 

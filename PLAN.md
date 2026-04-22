@@ -6,7 +6,7 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 
 ### Implemented now
 
-- Go CLI entrypoint with `maybewhats`, `doctor`, `demo seed`, and `demo clear`.
+- Go CLI entrypoint with `vimwhat`, `doctor`, `demo seed`, and `demo clear`.
 - XDG config/data/cache path resolution and config loading.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
@@ -51,17 +51,17 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 ### User-facing interface
 
-- Binary name: `maybewhats` unless renamed later.
+- Binary name: `vimwhat`.
 - CLI surface:
-  `maybewhats`
-  `maybewhats login`
-  `maybewhats logout`
-  `maybewhats doctor`
-  `maybewhats media open <message-id>`
-  `maybewhats export chat <jid>`
-- Config file: `$XDG_CONFIG_HOME/maybewhats/config.toml`.
-- Data dir: `$XDG_DATA_HOME/maybewhats/`.
-- Cache dir: `$XDG_CACHE_HOME/maybewhats/`.
+  `vimwhat`
+  `vimwhat login`
+  `vimwhat logout`
+  `vimwhat doctor`
+  `vimwhat media open <message-id>`
+  `vimwhat export chat <jid>`
+- Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml`.
+- Data dir: `$XDG_DATA_HOME/vimwhat/`.
+- Cache dir: `$XDG_CACHE_HOME/vimwhat/`.
 - State file groups:
   WhatsApp device/session store,
   app SQLite database,

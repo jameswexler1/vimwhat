@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"maybewhats/internal/config"
-	"maybewhats/internal/store"
+	"vimwhat/internal/config"
+	"vimwhat/internal/store"
 )
 
 func TestAudioPlayerCommandUsesConfiguredTemplate(t *testing.T) {
@@ -45,7 +45,7 @@ func TestAudioPlayerCommandAppendsPathWhenPlaceholderMissing(t *testing.T) {
 
 func TestAudioPlayerCommandReportsMissingExecutable(t *testing.T) {
 	_, _, err := audioPlayerCommand(config.Config{
-		AudioPlayerCommand: "maybewhats-missing-audio-player {path}",
+		AudioPlayerCommand: "vimwhat-missing-audio-player {path}",
 	}, store.MediaMetadata{
 		LocalPath: "/tmp/voice.ogg",
 		MIMEType:  "audio/ogg",

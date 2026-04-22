@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"maybewhats/internal/media"
-	"maybewhats/internal/store"
+	"vimwhat/internal/media"
+	"vimwhat/internal/store"
 )
 
 type messageLineRef struct {
@@ -319,5 +319,5 @@ func maxRenderedWidth(value string) int {
 
 func overlayIdentifier(key string) string {
 	sum := sha1.Sum([]byte(key))
-	return "maybewhats-" + hex.EncodeToString(sum[:8])
+	return "vimwhat-" + hex.EncodeToString(sum[:8])
 }

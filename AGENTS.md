@@ -4,7 +4,7 @@
 
 This repository is no longer plan-first: the local shell, SQLite store, and Bubble Tea TUI are implemented, while live WhatsApp protocol work is still pending. `PLAN.md` remains the canonical product and stage document. Keep the layout simple and Go-standard:
 
-- `cmd/maybewhats/`: CLI entrypoint and startup wiring
+- `cmd/vimwhat/`: CLI entrypoint and startup wiring
 - `internal/app/`: bootstrap, CLI subcommands, doctor output, environment wiring
 - `internal/config/`: XDG path resolution and config loading/defaults
 - `internal/`: application code that should not be imported externally
@@ -27,14 +27,14 @@ Use the existing `Makefile` for the common workflow:
 
 Equivalent direct Go commands:
 
-- `go run ./cmd/maybewhats`: run the app locally
-- `go build ./cmd/maybewhats`: build the binary
+- `go run ./cmd/vimwhat`: run the app locally
+- `go build ./cmd/vimwhat`: build the binary
 - `go test ./...`: run all tests
 - `go test ./... -cover`: run tests with coverage
 - `go fmt ./...`: format Go code
 - `go vet ./...`: catch common Go issues
 
-The `Makefile` defaults `GOCACHE` to `/tmp/maybewhats-go-build`; prefer that in this repo because some environments have a read-only default Go cache.
+The `Makefile` defaults `GOCACHE` to `/tmp/vimwhat-go-build`; prefer that in this repo because some environments have a read-only default Go cache.
 
 ## Coding Style & Naming Conventions
 
