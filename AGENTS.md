@@ -2,9 +2,11 @@
 
 ## Project Structure & Module Organization
 
-This repository is currently plan-first. The canonical product spec lives in `PLAN.md`. As implementation starts, keep the layout simple and Go-standard:
+This repository is no longer plan-first: the local shell, SQLite store, and Bubble Tea TUI are implemented, while live WhatsApp protocol work is still pending. `PLAN.md` remains the canonical product and stage document. Keep the layout simple and Go-standard:
 
 - `cmd/maybewhats/`: CLI entrypoint and startup wiring
+- `internal/app/`: bootstrap, CLI subcommands, doctor output, environment wiring
+- `internal/config/`: XDG path resolution and config loading/defaults
 - `internal/`: application code that should not be imported externally
 - `internal/ui/`: TUI models, panes, modal state, keymaps
 - `internal/whatsapp/`: `whatsmeow` integration, sync, session handling
@@ -16,7 +18,14 @@ Avoid adding top-level directories unless they clearly map to a subsystem in `PL
 
 ## Build, Test, and Development Commands
 
-Prefer a small `Makefile` once the codebase exists. Expected commands:
+Use the existing `Makefile` for the common workflow:
+
+- `make run`: run the app locally
+- `make build`: build the binary
+- `make test`: run all tests
+- `make lint`: run `go vet`
+
+Equivalent direct Go commands:
 
 - `go run ./cmd/maybewhats`: run the app locally
 - `go build ./cmd/maybewhats`: build the binary
@@ -25,7 +34,7 @@ Prefer a small `Makefile` once the codebase exists. Expected commands:
 - `go fmt ./...`: format Go code
 - `go vet ./...`: catch common Go issues
 
-If a `Makefile` is added, mirror these as `make run`, `make build`, `make test`, and `make lint`.
+The `Makefile` defaults `GOCACHE` to `/tmp/maybewhats-go-build`; prefer that in this repo because some environments have a read-only default Go cache.
 
 ## Coding Style & Naming Conventions
 
@@ -36,6 +45,8 @@ Favor small packages with explicit responsibilities. Keep protocol, storage, UI,
 ## Testing Guidelines
 
 Write table-driven Go tests with the standard `testing` package. Name files `*_test.go` and tests `TestXxx`. Add integration tests around SQLite, history sync, and event ingestion early; the lazy-loading and modal behavior are high-risk areas and should not rely only on manual testing.
+
+The current codebase already has meaningful coverage in `internal/ui/`, `internal/store/`, `internal/config/`, `internal/media/`, and `internal/whatsapp/`. Keep extending those tests as behavior changes, especially for viewport behavior, modal transitions, migrations, and preview backend fallbacks.
 
 ## Commit & Pull Request Guidelines
 
@@ -51,3 +62,5 @@ Pull requests should include:
 ## Security & Configuration Tips
 
 Do not commit WhatsApp session data, SQLite databases, logs, or media caches. Keep runtime state under XDG paths, not in the repo. Treat preview backend commands and external opener configuration as untrusted input surfaces.
+
+The live WhatsApp session DB path already exists in app wiring as a runtime artifact even though login/sync is not implemented yet; it must remain out of git.

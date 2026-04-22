@@ -402,8 +402,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("load messages failed: %v", err)
 				return m, nil
 			}
-			m.messageCursor = 0
-			m.messageScrollTop = 0
+			m.showCurrentChatLatest()
 		}
 	case "G":
 		if m.focus == FocusMessages {
@@ -427,8 +426,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("load messages failed: %v", err)
 					return m, nil
 				}
-				m.messageCursor = 0
-				m.messageScrollTop = 0
+				m.showCurrentChatLatest()
 			}
 		}
 	case "enter":
@@ -442,8 +440,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("load messages failed: %v", err)
 				return m, nil
 			}
-			m.messageCursor = max(0, len(m.currentMessages())-1)
-			m.messageScrollTop = m.messageCursor
+			m.showCurrentChatLatest()
 			m.status = fmt.Sprintf("opened %s", m.currentChat().Title)
 		} else if m.focus == FocusMessages || m.focus == FocusPreview {
 			return m.activateFocusedMediaPreview()
@@ -744,8 +741,7 @@ func (m *Model) moveCursor(delta int) {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return
 		}
-		m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
-		m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
+		m.showCurrentChatLatest()
 	case FocusMessages:
 		if len(m.currentMessages()) == 0 {
 			return
@@ -994,8 +990,7 @@ func (m *Model) advanceSearch(delta int) {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return
 		}
-		m.messageCursor = 0
-		m.messageScrollTop = 0
+		m.showCurrentChatLatest()
 	} else {
 		m.messageCursor = target
 		m.messageScrollTop = target
@@ -1189,9 +1184,11 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 		m.activeChat = 0
 	}
 	m.keepActiveChatVisible()
-	m.messageCursor = 0
-	m.messageScrollTop = 0
-	return m.ensureCurrentMessagesLoaded()
+	if err := m.ensureCurrentMessagesLoaded(); err != nil {
+		return err
+	}
+	m.showCurrentChatLatest()
+	return nil
 }
 
 func (m *Model) keepActiveChatVisible() {
@@ -1224,6 +1221,17 @@ func (m *Model) keepMessageCursorNearViewport(previous int) {
 	if m.messageCursor > previous && m.messageCursor > m.messageScrollTop+2 {
 		m.messageScrollTop = m.messageCursor - 2
 	}
+}
+
+func (m *Model) showCurrentChatLatest() {
+	messageCount := len(m.currentMessages())
+	if messageCount == 0 {
+		m.messageCursor = 0
+		m.messageScrollTop = 0
+		return
+	}
+	m.messageCursor = messageCount - 1
+	m.messageScrollTop = m.messageCursor
 }
 
 func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {

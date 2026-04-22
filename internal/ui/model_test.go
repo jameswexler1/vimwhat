@@ -2418,6 +2418,60 @@ func TestMessageNavigationTopAndBottomCommandsMoveViewport(t *testing.T) {
 	}
 }
 
+func TestSwitchingChatsShowsLatestMessages(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "a-0", ChatID: "chat-1", Sender: "Alice", Body: "alice oldest"},
+					{ID: "a-1", ChatID: "chat-1", Sender: "Alice", Body: "alice middle"},
+					{ID: "a-2", ChatID: "chat-1", Sender: "Alice", Body: "alice newest"},
+				},
+				"chat-2": {
+					{ID: "b-0", ChatID: "chat-2", Sender: "Bob", Body: "bob oldest"},
+					{ID: "b-1", ChatID: "chat-2", Sender: "Bob", Body: "bob middle"},
+					{ID: "b-2", ChatID: "chat-2", Sender: "Bob", Body: "bob newest"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusChats
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+
+	next, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = next.(Model)
+	if model.activeChat != 1 {
+		t.Fatalf("activeChat = %d, want 1", model.activeChat)
+	}
+	if model.messageCursor != 2 || model.messageScrollTop != 2 {
+		t.Fatalf("after switching to Bob cursor/scroll = %d/%d, want 2/2", model.messageCursor, model.messageScrollTop)
+	}
+	bobView := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(bobView, "bob newest") || strings.Contains(bobView, "bob oldest") {
+		t.Fatalf("switching to Bob did not show latest messages\n%s", bobView)
+	}
+
+	back, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	model = back.(Model)
+	if model.activeChat != 0 {
+		t.Fatalf("activeChat = %d, want 0", model.activeChat)
+	}
+	if model.messageCursor != 2 || model.messageScrollTop != 2 {
+		t.Fatalf("after switching back to Alice cursor/scroll = %d/%d, want 2/2", model.messageCursor, model.messageScrollTop)
+	}
+	aliceView := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(aliceView, "alice newest") || strings.Contains(aliceView, "alice oldest") {
+		t.Fatalf("switching back to Alice did not show latest messages\n%s", aliceView)
+	}
+}
+
 func TestShortChatStartsAtTopEvenWhenNewestSelected(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

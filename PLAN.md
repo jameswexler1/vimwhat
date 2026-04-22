@@ -1,5 +1,31 @@
 # Vim-Centric WhatsApp TUI for Linux
 
+## Current Stage
+
+Implementation is in the local-shell phase, not the protocol-complete phase.
+
+### Implemented now
+
+- Go CLI entrypoint with `maybewhats`, `doctor`, `demo seed`, and `demo clear`.
+- XDG config/data/cache path resolution and config loading.
+- SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
+- Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
+- Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
+- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, plus external open/save fallback paths.
+- Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
+
+### In progress
+
+- Tightening TUI behavior, viewport rules, preview behavior, and modal ergonomics.
+- Keeping architecture boundaries ready for live WhatsApp integration without coupling UI directly to protocol events.
+
+### Not implemented yet
+
+- Real `whatsmeow` login/logout/session lifecycle.
+- Live sync, reconnect handling, remote history fetch, read receipts, reactions, presence, and quote-jump backed by the protocol layer.
+- `media open <message-id>` and `export chat <jid>` CLI subcommands.
+- Remote media download/fetch pipeline from WhatsApp servers.
+
 ## Summary
 
 Build a personal, Linux-first WhatsApp TUI in `Go` using `whatsmeow` for protocol access, `Bubble Tea` for the event loop/UI runtime, `Lip Gloss` only for styling, and `SQLite + FTS5` for local state, indexing, and lazy history. The product is a fully modal client, not a terminal chat app with vi-flavored shortcuts.
@@ -122,6 +148,14 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   starred messages,
   community management.
 - If `whatsmeow` exposes revoke/edit primitives cleanly, keep internal architecture ready for them, but do not make them required for initial ship.
+
+## Near-Term Execution Order
+
+1. Finish the local TUI shell so message navigation, previews, composer behavior, and pane/layout rules feel stable.
+2. Implement session/login plumbing in `internal/whatsapp/` and wire it through the existing app bootstrap paths.
+3. Replace demo-only data flow with protocol-backed ingestion into SQLite while keeping the UI DB-first.
+4. Add on-demand remote history and media download paths on top of the existing local store and preview pipeline.
+5. Expose the remaining CLI surfaces (`login`, `logout`, `media open`, `export chat`) once the underlying behavior exists.
 
 ### Data model and lazy loading
 
