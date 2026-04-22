@@ -40,6 +40,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`notification_command = "notify-send maybewhats"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
+		`preview_max_width = 44`,
+		`preview_max_height = 10`,
+		`preview_delay_ms = 0`,
 		`downloads_dir = "~/Inbox"`,
 	)
 
@@ -66,6 +69,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.FilePickerCommand != "yazi --chooser-file {chooser}" {
 		t.Fatalf("FilePickerCommand = %q", cfg.FilePickerCommand)
+	}
+	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
+		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
 	}
 
 	wantDownloads := filepath.Join(os.Getenv("HOME"), "Inbox")

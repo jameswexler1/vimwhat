@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -14,6 +15,9 @@ type Config struct {
 	NotificationCommand string
 	ClipboardCommand    string
 	FilePickerCommand   string
+	PreviewMaxWidth     int
+	PreviewMaxHeight    int
+	PreviewDelayMS      int
 	DownloadsDir        string
 }
 
@@ -47,6 +51,9 @@ func Default(paths Paths) Config {
 		Editor:            editor,
 		PreviewBackend:    "auto",
 		FilePickerCommand: "yazi --chooser-file {chooser}",
+		PreviewMaxWidth:   48,
+		PreviewMaxHeight:  12,
+		PreviewDelayMS:    80,
 		DownloadsDir:      downloadsDir,
 	}
 }
@@ -97,6 +104,21 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.ClipboardCommand = parsed
 		case "file_picker_command":
 			cfg.FilePickerCommand = parsed
+		case "preview_max_width":
+			cfg.PreviewMaxWidth, err = parsePositiveInt(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: preview_max_width: %w", lineNo, err)
+			}
+		case "preview_max_height":
+			cfg.PreviewMaxHeight, err = parsePositiveInt(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: preview_max_height: %w", lineNo, err)
+			}
+		case "preview_delay_ms":
+			cfg.PreviewDelayMS, err = parsePositiveInt(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: preview_delay_ms: %w", lineNo, err)
+			}
 		case "downloads_dir":
 			cfg.DownloadsDir = expandPath(parsed)
 		default:
@@ -109,6 +131,17 @@ func parseSimpleTOML(input string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+func parsePositiveInt(value string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, err
+	}
+	if parsed < 0 {
+		return 0, fmt.Errorf("must be >= 0")
+	}
+	return parsed, nil
 }
 
 func stripComment(value string) string {

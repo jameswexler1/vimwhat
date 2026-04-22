@@ -12,6 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"maybewhats/internal/config"
+	"maybewhats/internal/media"
 	"maybewhats/internal/store"
 )
 
@@ -1390,6 +1392,165 @@ func TestMessageBubbleRendersAttachmentRows(t *testing.T) {
 	}
 }
 
+func TestVisibleMediaQueuesPreviewRequest(t *testing.T) {
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Body:   "photo",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     "/tmp/photo.jpg",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+
+	requests := model.visiblePreviewRequests()
+	if len(requests) != 1 {
+		t.Fatalf("visiblePreviewRequests() = %+v, want one request", requests)
+	}
+	if requests[0].Width != 24 || requests[0].Height != 6 || requests[0].Backend != media.BackendChafa {
+		t.Fatalf("request sizing/backend = %+v", requests[0])
+	}
+
+	queued, cmd := model.queueVisiblePreviewCmd()
+	if cmd == nil {
+		t.Fatal("queueVisiblePreviewCmd() returned nil command")
+	}
+	if !queued.previewInflight[media.PreviewKey(requests[0])] {
+		t.Fatalf("previewInflight = %+v, want request key marked", queued.previewInflight)
+	}
+}
+
+func TestCachedMediaPreviewRendersInsideBubble(t *testing.T) {
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Body:   "photo",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     "/tmp/photo.jpg",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	request := model.visiblePreviewRequests()[0]
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       "m-1",
+		Kind:            media.KindImage,
+		Backend:         media.BackendChafa,
+		RenderedBackend: media.BackendChafa,
+		Lines:           []string{"IMAGE PREVIEW"},
+	}
+
+	view := stripANSI(model.renderMessages(80, 12))
+	if !strings.Contains(view, "IMAGE PREVIEW") {
+		t.Fatalf("renderMessages missing cached preview\n%s", view)
+	}
+	if strings.Contains(view, "[img] photo.jpg") {
+		t.Fatalf("renderMessages kept attachment row despite cached preview\n%s", view)
+	}
+}
+
+func TestGeneratedVideoThumbnailUpdatesMessageMedia(t *testing.T) {
+	var saved store.MediaMetadata
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		SaveMedia: func(media store.MediaMetadata) error {
+			saved = media
+			return nil
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "clip.mp4",
+						MIMEType:      "video/mp4",
+						LocalPath:     "/tmp/clip.mp4",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	request := model.visiblePreviewRequests()[0]
+	updated, _ := model.handleMediaPreviewReady(mediaPreviewReadyMsg{
+		Key:     media.PreviewKey(request),
+		Request: request,
+		Preview: media.Preview{
+			Key:                media.PreviewKey(request),
+			MessageID:          "m-1",
+			Kind:               media.KindVideo,
+			Backend:            media.BackendChafa,
+			RenderedBackend:    media.BackendChafa,
+			ThumbnailPath:      "/tmp/thumb.jpg",
+			GeneratedThumbnail: true,
+			Lines:              []string{"VIDEO PREVIEW"},
+		},
+	})
+	got := updated.(Model)
+	if got.messagesByChat["chat-1"][0].Media[0].ThumbnailPath != "/tmp/thumb.jpg" {
+		t.Fatalf("thumbnail path not applied: %+v", got.messagesByChat["chat-1"][0].Media[0])
+	}
+	if saved.ThumbnailPath != "/tmp/thumb.jpg" {
+		t.Fatalf("saved media = %+v, want thumbnail path", saved)
+	}
+	view := stripANSI(got.renderMessages(80, 12))
+	if !strings.Contains(view, "VIDEO PREVIEW") {
+		t.Fatalf("renderMessages missing generated video preview\n%s", view)
+	}
+}
+
 func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T) {
 	var deletedID string
 	model := NewModel(Options{
@@ -1933,4 +2094,22 @@ func numberedChats(count int) []store.Chat {
 		})
 	}
 	return chats
+}
+
+func configWithPreview(width, height int) config.Config {
+	return config.Config{
+		PreviewMaxWidth:  width,
+		PreviewMaxHeight: height,
+		PreviewDelayMS:   0,
+	}
+}
+
+func testPaths(t *testing.T) config.Paths {
+	t.Helper()
+	dir := t.TempDir()
+	return config.Paths{
+		CacheDir:        dir,
+		MediaDir:        filepath.Join(dir, "media"),
+		PreviewCacheDir: filepath.Join(dir, "preview"),
+	}
 }

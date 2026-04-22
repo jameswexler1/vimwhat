@@ -67,7 +67,10 @@ func Detect(requested string) Report {
 func unavailableReason(backend Backend) string {
 	switch backend {
 	case BackendSixel:
-		return "terminal sixel support not detected"
+		if !supportsSixel() {
+			return "terminal sixel support not detected"
+		}
+		return "sixel renderer command not found"
 	case BackendUeberzugPP:
 		return "ueberzugpp not found in PATH"
 	case BackendChafa:
@@ -81,7 +84,7 @@ func unavailableReason(backend Backend) string {
 
 func detectAvailable() map[Backend]bool {
 	return map[Backend]bool{
-		BackendSixel:      supportsSixel(),
+		BackendSixel:      supportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
 		BackendUeberzugPP: hasCommand("ueberzugpp"),
 		BackendChafa:      hasCommand("chafa"),
 		BackendExternal:   hasCommand("xdg-open"),

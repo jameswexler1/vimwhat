@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -38,6 +39,12 @@ type clipboardCopiedMsg struct {
 	Err   error
 }
 
+type mediaPreviewReadyMsg struct {
+	Key     string
+	Request media.PreviewRequest
+	Preview media.Preview
+}
+
 type Options struct {
 	Paths           config.Paths
 	Config          config.Config
@@ -51,6 +58,7 @@ type Options struct {
 	CopyToClipboard func(text string) error
 	PickAttachment  func() tea.Cmd
 	DeleteMessage   func(messageID string) error
+	SaveMedia       func(media store.MediaMetadata) error
 }
 
 type Model struct {
@@ -68,6 +76,8 @@ type Model struct {
 	messageScrollTop int
 	visualAnchor     int
 	previewReport    media.Report
+	previewCache     map[string]media.Preview
+	previewInflight  map[string]bool
 	paths            config.Paths
 	config           config.Config
 	status           string
@@ -101,6 +111,7 @@ type Model struct {
 	copyToClipboard  func(text string) error
 	pickAttachment   func() tea.Cmd
 	deleteMessage    func(messageID string) error
+	saveMedia        func(media store.MediaMetadata) error
 }
 
 const messageLoadLimit = 200
@@ -131,6 +142,8 @@ func NewModel(opts Options) Model {
 		draftsByChat:     cloneDrafts(opts.Snapshot.DraftsByChat),
 		activeChat:       activeChat,
 		previewReport:    opts.PreviewReport,
+		previewCache:     map[string]media.Preview{},
+		previewInflight:  map[string]bool{},
 		paths:            opts.Paths,
 		config:           opts.Config,
 		status:           "ready",
@@ -143,6 +156,7 @@ func NewModel(opts Options) Model {
 		copyToClipboard:  opts.CopyToClipboard,
 		pickAttachment:   opts.PickAttachment,
 		deleteMessage:    opts.DeleteMessage,
+		saveMedia:        opts.SaveMedia,
 		unfilteredByChat: map[string][]store.Message{},
 	}
 }
@@ -177,7 +191,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = FocusMessages
 		}
 		m.keepActiveChatVisible()
-		return m, nil
+		return m.withPreviewCmd(nil)
 	case clipboardCopiedMsg:
 		if msg.Err != nil {
 			m.status = fmt.Sprintf("yanked %d message(s); clipboard failed: %v", msg.Count, msg.Err)
@@ -187,8 +201,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case AttachmentPickedMsg:
 		return m.handlePickedAttachment(msg)
+	case mediaPreviewReadyMsg:
+		return m.handleMediaPreviewReady(msg)
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		updated, cmd := m.handleKey(msg)
+		if next, ok := updated.(Model); ok {
+			return next.withPreviewCmd(cmd)
+		}
+		return updated, cmd
 	}
 
 	return m, nil
@@ -659,9 +679,16 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			m.focus = FocusMessages
 		}
 		m.status = "info pane: off"
-	case cmd == "preview-backend auto":
-		m.previewReport = media.Detect("auto")
+	case strings.HasPrefix(cmd, "preview-backend "):
+		backend := strings.TrimSpace(strings.TrimPrefix(cmd, "preview-backend "))
+		m.previewReport = media.Detect(backend)
+		m.previewCache = map[string]media.Preview{}
+		m.previewInflight = map[string]bool{}
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
+	case cmd == "preview-cache clear" || cmd == "clear-preview-cache":
+		m.previewCache = map[string]media.Preview{}
+		m.previewInflight = map[string]bool{}
+		m.status = "preview cache cleared"
 	case cmd == "clear-search" || cmd == "search clear":
 		m.clearSearch()
 		m.status = "search cleared"
@@ -1059,6 +1086,200 @@ func (m *Model) keepMessageCursorNearViewport(previous int) {
 	if m.messageCursor > previous && m.messageCursor > m.messageScrollTop+2 {
 		m.messageScrollTop = m.messageCursor - 2
 	}
+}
+
+func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	next, previewCmd := m.queueVisiblePreviewCmd()
+	if cmd == nil {
+		return next, previewCmd
+	}
+	if previewCmd == nil {
+		return next, cmd
+	}
+	return next, tea.Batch(cmd, previewCmd)
+}
+
+func (m Model) queueVisiblePreviewCmd() (Model, tea.Cmd) {
+	requests := m.visiblePreviewRequests()
+	if len(requests) == 0 {
+		return m, nil
+	}
+	if m.previewCache == nil {
+		m.previewCache = map[string]media.Preview{}
+	}
+	if m.previewInflight == nil {
+		m.previewInflight = map[string]bool{}
+	}
+
+	previewer := media.NewPreviewer(
+		m.previewReport,
+		m.paths.PreviewCacheDir,
+		previewMaxWidth(m.config),
+		previewMaxHeight(m.config),
+	)
+	var cmds []tea.Cmd
+	for _, request := range requests {
+		key := media.PreviewKey(request)
+		if _, ok := m.previewCache[key]; ok || m.previewInflight[key] {
+			continue
+		}
+		m.previewInflight[key] = true
+		req := request
+		cmds = append(cmds, func() tea.Msg {
+			if delay := previewDelay(m.config); delay > 0 {
+				time.Sleep(delay)
+			}
+			return mediaPreviewReadyMsg{
+				Key:     media.PreviewKey(req),
+				Request: req,
+				Preview: previewer.Render(context.Background(), req),
+			}
+		})
+	}
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
+}
+
+func (m Model) visiblePreviewRequests() []media.PreviewRequest {
+	if m.width <= 0 || m.height <= 0 || m.previewReport.Selected == media.BackendNone {
+		return nil
+	}
+
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return nil
+	}
+
+	width, height := m.previewDimensions()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+
+	start := clamp(m.messageScrollTop-1, 0, len(messages)-1)
+	end := min(len(messages), start+12)
+	requests := make([]media.PreviewRequest, 0, 4)
+	for i := start; i < end && len(requests) < 4; i++ {
+		for _, item := range messages[i].Media {
+			if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+				continue
+			}
+			request := media.PreviewRequest{
+				MessageID:     item.MessageID,
+				MIMEType:      item.MIMEType,
+				FileName:      item.FileName,
+				LocalPath:     item.LocalPath,
+				ThumbnailPath: item.ThumbnailPath,
+				CacheDir:      m.paths.PreviewCacheDir,
+				Backend:       m.previewReport.Selected,
+				Width:         width,
+				Height:        height,
+			}
+			if request.MessageID == "" {
+				request.MessageID = messages[i].ID
+			}
+			requests = append(requests, request)
+			break
+		}
+	}
+	return requests
+}
+
+func (m Model) previewDimensions() (int, int) {
+	contentWidth := m.messagePaneContentWidth()
+	if contentWidth <= 0 {
+		return 0, 0
+	}
+	width := min(previewMaxWidth(m.config), max(10, bubbleWidth(contentWidth)-4))
+	height := previewMaxHeight(m.config)
+	if m.compactLayout && m.width < 72 {
+		height = min(height, 8)
+	}
+	return width, height
+}
+
+func (m Model) messagePaneContentWidth() int {
+	if m.width <= 0 {
+		return 0
+	}
+
+	if m.compactLayout {
+		style := m.panelStyle(FocusMessages)
+		return panelContentWidth(style, m.width)
+	}
+
+	chatWidth := max(24, m.width/4)
+	previewWidth := max(26, m.width/4)
+	messageWidth := m.width - chatWidth
+	if m.infoPaneVisible {
+		messageWidth -= previewWidth
+	}
+	style := m.panelStyle(FocusMessages)
+	return panelContentWidth(style, messageWidth)
+}
+
+func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea.Cmd) {
+	if m.previewCache == nil {
+		m.previewCache = map[string]media.Preview{}
+	}
+	if m.previewInflight != nil {
+		delete(m.previewInflight, msg.Key)
+	}
+	m.previewCache[msg.Key] = msg.Preview
+	if msg.Preview.Err == nil && msg.Preview.GeneratedThumbnail && msg.Preview.ThumbnailPath != "" {
+		if err := m.applyGeneratedThumbnail(msg.Request.MessageID, msg.Preview.ThumbnailPath); err != nil {
+			m.status = fmt.Sprintf("preview metadata failed: %v", err)
+		}
+		updatedRequest := msg.Request
+		updatedRequest.ThumbnailPath = msg.Preview.ThumbnailPath
+		m.previewCache[media.PreviewKey(updatedRequest)] = msg.Preview
+	}
+	return m, nil
+}
+
+func (m *Model) applyGeneratedThumbnail(messageID, thumbnailPath string) error {
+	if messageID == "" || thumbnailPath == "" {
+		return nil
+	}
+	for chatID, messages := range m.messagesByChat {
+		for messageIndex := range messages {
+			for mediaIndex := range messages[messageIndex].Media {
+				if messages[messageIndex].Media[mediaIndex].MessageID != messageID {
+					continue
+				}
+				m.messagesByChat[chatID][messageIndex].Media[mediaIndex].ThumbnailPath = thumbnailPath
+				if m.saveMedia != nil {
+					if err := m.saveMedia(m.messagesByChat[chatID][messageIndex].Media[mediaIndex]); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func previewMaxWidth(cfg config.Config) int {
+	if cfg.PreviewMaxWidth <= 0 {
+		return 48
+	}
+	return cfg.PreviewMaxWidth
+}
+
+func previewMaxHeight(cfg config.Config) int {
+	if cfg.PreviewMaxHeight <= 0 {
+		return 12
+	}
+	return cfg.PreviewMaxHeight
+}
+
+func previewDelay(cfg config.Config) time.Duration {
+	if cfg.PreviewDelayMS <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.PreviewDelayMS) * time.Millisecond
 }
 
 func (m Model) handlePickedAttachment(msg AttachmentPickedMsg) (tea.Model, tea.Cmd) {

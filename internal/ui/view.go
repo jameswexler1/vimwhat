@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"maybewhats/internal/media"
 	"maybewhats/internal/store"
 )
 
@@ -720,7 +721,8 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		BorderForeground(border).
 		Padding(0, 1)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
-	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message.Media)
+	previewWidth, _ := m.previewDimensions()
+	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message.Media, previewWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
 	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
 		bodyStyle = bodyStyle.Foreground(warnFG)
@@ -730,8 +732,12 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	if sender != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
 	}
-	for _, media := range message.Media {
-		lines = append(lines, renderAttachmentLine(media, contentWidth, active || selected))
+	for _, item := range message.Media {
+		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
+			lines = append(lines, preview.Lines...)
+		} else {
+			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected))
+		}
 	}
 	if body != "" {
 		for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
@@ -746,6 +752,32 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
 }
 
+func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, width int) (media.Preview, bool) {
+	if len(m.previewCache) == 0 || width <= 0 {
+		return media.Preview{}, false
+	}
+	_, height := m.previewDimensions()
+	request := media.PreviewRequest{
+		MessageID:     item.MessageID,
+		MIMEType:      item.MIMEType,
+		FileName:      item.FileName,
+		LocalPath:     item.LocalPath,
+		ThumbnailPath: item.ThumbnailPath,
+		CacheDir:      m.paths.PreviewCacheDir,
+		Backend:       m.previewReport.Selected,
+		Width:         width,
+		Height:        height,
+	}
+	if request.MessageID == "" {
+		request.MessageID = message.ID
+	}
+	preview, ok := m.previewCache[media.PreviewKey(request)]
+	if !ok || preview.Err != nil || len(preview.Lines) == 0 {
+		return media.Preview{}, false
+	}
+	return preview, true
+}
+
 func bubbleWidth(available int) int {
 	if available < 28 {
 		return max(10, available-2)
@@ -753,7 +785,7 @@ func bubbleWidth(available int) int {
 	return min(max(22, available*46/100), available-2)
 }
 
-func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, mediaItems []store.MediaMetadata) int {
+func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, mediaItems []store.MediaMetadata, previewWidth int) int {
 	maxContentWidth := max(1, panelContentWidth(style, maxBubbleWidth))
 	widest := max(lipgloss.Width(meta), lipgloss.Width(sender))
 	for _, line := range strings.Split(body, "\n") {
@@ -771,8 +803,15 @@ func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, se
 	}
 	for _, media := range mediaItems {
 		widest = max(widest, lipgloss.Width(attachmentLabel(media)))
+		if previewWidth > 0 && mediaPreviewable(media) {
+			widest = max(widest, min(previewWidth, maxContentWidth))
+		}
 	}
 	return clamp(max(widest, 4), min(4, maxContentWidth), maxContentWidth)
+}
+
+func mediaPreviewable(mediaItem store.MediaMetadata) bool {
+	return media.MediaKind(mediaItem.MIMEType, mediaItem.FileName) != media.KindUnsupported
 }
 
 func renderAttachmentLine(media store.MediaMetadata, width int, active bool) string {
@@ -1150,7 +1189,8 @@ func (m Model) renderHelp(width int) string {
 		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
 		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
-		"         sort pinned/recent  preview  attach <path>  delete-message",
+		"         sort pinned/recent  preview  preview-backend <name>  clear-preview-cache",
+		"         attach <path>  delete-message",
 		"",
 		"state:",
 		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",

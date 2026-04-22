@@ -141,6 +141,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		DeleteMessage: func(messageID string) error {
 			return env.Store.DeleteMessage(context.Background(), messageID)
 		},
+		SaveMedia: func(media store.MediaMetadata) error {
+			return env.Store.UpsertMediaMetadata(context.Background(), media)
+		},
 	}
 
 	if err := ui.Run(opts); err != nil {
@@ -239,6 +242,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("session path: %s", env.Paths.SessionFile),
 		fmt.Sprintf("session status: %s", sessionStatus),
 		fmt.Sprintf("editor: %s", env.Config.Editor),
+		fmt.Sprintf("preview max: %dx%d delay=%dms", env.Config.PreviewMaxWidth, env.Config.PreviewMaxHeight, env.Config.PreviewDelayMS),
 		fmt.Sprintf("downloads dir: %s", env.Config.DownloadsDir),
 		fmt.Sprintf("chat rows: %d", stats.Chats),
 		fmt.Sprintf("message rows: %d", stats.Messages),

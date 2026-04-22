@@ -3,5 +3,5 @@ maybewhats
 *.sqlite3-*
 *.db
 *.log
-media/
-preview/
+/media/
+/preview/
