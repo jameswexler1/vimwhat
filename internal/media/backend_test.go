@@ -417,6 +417,49 @@ func TestOverlayManagerSyncKeepsMultipleVisiblePlacements(t *testing.T) {
 	}
 }
 
+func TestOverlayManagerSyncEpochIgnoresStalePlacements(t *testing.T) {
+	var buf bytes.Buffer
+	manager := NewOverlayManagerForWriter(&buf)
+	staleEpoch := manager.Epoch()
+	manager.Invalidate()
+
+	if err := manager.SyncEpoch(context.Background(), staleEpoch, []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/one.jpg"},
+	}); err != nil {
+		t.Fatalf("SyncEpoch(stale) error = %v", err)
+	}
+	if strings.TrimSpace(buf.String()) != "" {
+		t.Fatalf("stale SyncEpoch wrote overlay commands:\n%s", buf.String())
+	}
+
+	if err := manager.SyncEpoch(context.Background(), manager.Epoch(), []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/one.jpg"},
+	}); err != nil {
+		t.Fatalf("SyncEpoch(current) error = %v", err)
+	}
+	commands := parseOverlayCommands(t, buf.String())
+	if len(commands) != 1 || commands[0].Action != "add" || commands[0].Identifier != "media-1" {
+		t.Fatalf("commands = %+v, want current add", commands)
+	}
+}
+
+func parseOverlayCommands(t *testing.T, value string) []overlayCommand {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	var commands []overlayCommand
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var command overlayCommand
+		if err := json.Unmarshal([]byte(line), &command); err != nil {
+			t.Fatalf("Unmarshal(%q) error = %v", line, err)
+		}
+		commands = append(commands, command)
+	}
+	return commands
+}
+
 func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
 	if err := os.WriteFile(videoPath, []byte("fake"), 0o644); err != nil {

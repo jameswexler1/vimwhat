@@ -28,6 +28,7 @@ type OverlayManager struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	active map[string]Placement
+	epoch  int
 }
 
 type overlayCommand struct {
@@ -54,6 +55,26 @@ func (m *OverlayManager) Place(ctx context.Context, placement Placement) error {
 }
 
 func (m *OverlayManager) Sync(ctx context.Context, placements []Placement) error {
+	return m.sync(ctx, placements, 0, false)
+}
+
+func (m *OverlayManager) Epoch() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.epoch
+}
+
+func (m *OverlayManager) Invalidate() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.epoch++
+}
+
+func (m *OverlayManager) SyncEpoch(ctx context.Context, epoch int, placements []Placement) error {
+	return m.sync(ctx, placements, epoch, true)
+}
+
+func (m *OverlayManager) sync(ctx context.Context, placements []Placement, epoch int, checkEpoch bool) error {
 	next := make(map[string]Placement, len(placements))
 	for _, placement := range placements {
 		if placement.Identifier == "" {
@@ -74,6 +95,9 @@ func (m *OverlayManager) Sync(ctx context.Context, placements []Placement) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if checkEpoch && epoch != m.epoch {
+		return nil
+	}
 	if m.active == nil {
 		m.active = map[string]Placement{}
 	}

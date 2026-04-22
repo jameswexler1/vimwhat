@@ -1362,8 +1362,9 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 	}
 	manager := m.overlay
+	epoch := manager.Epoch()
 	return func() tea.Msg {
-		return mediaOverlayMsg{Err: manager.Sync(context.Background(), placements)}
+		return mediaOverlayMsg{Err: manager.SyncEpoch(context.Background(), epoch, placements)}
 	}
 }
 
@@ -1786,6 +1787,9 @@ func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {
 	m.previewInflight = map[string]bool{}
 	m.previewRequested = map[string]bool{}
 	m.previewGeneration++
+	if m.overlay != nil {
+		m.overlay.Invalidate()
+	}
 	if strings.TrimSpace(status) == "" {
 		status = "media previews unloaded"
 	}

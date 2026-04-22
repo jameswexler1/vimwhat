@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2291,6 +2292,12 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	}
 	model := mediaTestModel(localPath, media.BackendUeberzugPP)
 	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+	staleOverlayCmd := model.syncOverlayCmd()
+	if staleOverlayCmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want stale overlay add command")
+	}
 	message := model.messagesByChat["chat-1"][0]
 	item := message.Media[0]
 	model.previewRequested[mediaActivationKey(message, item)] = true
@@ -2342,6 +2349,13 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	model = updated.(Model)
 	if len(model.previewCache) != 0 || strings.Contains(model.status, "preview ready") {
 		t.Fatalf("stale preview completion restored preview state: cache=%d status=%q", len(model.previewCache), model.status)
+	}
+
+	if msg := staleOverlayCmd(); msg == nil {
+		t.Fatal("stale overlay command returned nil message")
+	}
+	if strings.Contains(overlay.String(), `"action":"add"`) {
+		t.Fatalf("stale overlay command re-added preview:\n%s", overlay.String())
 	}
 }
 
