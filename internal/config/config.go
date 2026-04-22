@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -15,6 +16,10 @@ type Config struct {
 	NotificationCommand string
 	ClipboardCommand    string
 	FilePickerCommand   string
+	ImageViewerCommand  string
+	VideoPlayerCommand  string
+	FileOpenerCommand   string
+	LeaderKey           string
 	PreviewMaxWidth     int
 	PreviewMaxHeight    int
 	PreviewDelayMS      int
@@ -48,13 +53,17 @@ func Default(paths Paths) Config {
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:            editor,
-		PreviewBackend:    "auto",
-		FilePickerCommand: "yazi --chooser-file {chooser}",
-		PreviewMaxWidth:   48,
-		PreviewMaxHeight:  12,
-		PreviewDelayMS:    80,
-		DownloadsDir:      downloadsDir,
+		Editor:             editor,
+		PreviewBackend:     "auto",
+		FilePickerCommand:  "yazi --chooser-file {chooser}",
+		ImageViewerCommand: "nsxiv {path}",
+		VideoPlayerCommand: "mpv {path}",
+		FileOpenerCommand:  "xdg-open {path}",
+		LeaderKey:          "space",
+		PreviewMaxWidth:    48,
+		PreviewMaxHeight:   12,
+		PreviewDelayMS:     80,
+		DownloadsDir:       downloadsDir,
 	}
 }
 
@@ -104,6 +113,17 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.ClipboardCommand = parsed
 		case "file_picker_command":
 			cfg.FilePickerCommand = parsed
+		case "image_viewer_command":
+			cfg.ImageViewerCommand = parsed
+		case "video_player_command":
+			cfg.VideoPlayerCommand = parsed
+		case "file_opener_command":
+			cfg.FileOpenerCommand = parsed
+		case "leader_key":
+			cfg.LeaderKey, err = parseLeaderKey(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: leader_key: %w", lineNo, err)
+			}
 		case "preview_max_width":
 			cfg.PreviewMaxWidth, err = parsePositiveInt(parsed)
 			if err != nil {
@@ -131,6 +151,16 @@ func parseSimpleTOML(input string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+func parseLeaderKey(value string) (string, error) {
+	if value == " " || strings.EqualFold(strings.TrimSpace(value), "space") {
+		return "space", nil
+	}
+	if utf8.RuneCountInString(value) != 1 || strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("must be \"space\" or a single key")
+	}
+	return value, nil
 }
 
 func parsePositiveInt(value string) (int, error) {

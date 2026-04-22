@@ -27,6 +27,12 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.PreviewBackend != "auto" {
 		t.Fatalf("PreviewBackend = %q, want %q", cfg.PreviewBackend, "auto")
 	}
+	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
+		t.Fatalf("media commands = image %q video %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.FileOpenerCommand)
+	}
+	if cfg.LeaderKey != "space" {
+		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
+	}
 }
 
 func TestLoadParsesSupportedKeys(t *testing.T) {
@@ -40,6 +46,10 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`notification_command = "notify-send maybewhats"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
+		`image_viewer_command = "imv {path}"`,
+		`video_player_command = "mpv --force-window {path}"`,
+		`file_opener_command = ""`,
+		`leader_key = ","`,
 		`preview_max_width = 44`,
 		`preview_max_height = 10`,
 		`preview_delay_ms = 0`,
@@ -70,6 +80,18 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.FilePickerCommand != "yazi --chooser-file {chooser}" {
 		t.Fatalf("FilePickerCommand = %q", cfg.FilePickerCommand)
 	}
+	if cfg.ImageViewerCommand != "imv {path}" {
+		t.Fatalf("ImageViewerCommand = %q", cfg.ImageViewerCommand)
+	}
+	if cfg.VideoPlayerCommand != "mpv --force-window {path}" {
+		t.Fatalf("VideoPlayerCommand = %q", cfg.VideoPlayerCommand)
+	}
+	if cfg.FileOpenerCommand != "" {
+		t.Fatalf("FileOpenerCommand = %q", cfg.FileOpenerCommand)
+	}
+	if cfg.LeaderKey != "," {
+		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
+	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
 	}
@@ -91,6 +113,20 @@ func TestLoadRejectsUnknownKey(t *testing.T) {
 	_, err := Load(Paths{ConfigFile: path})
 	if err == nil {
 		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadRejectsInvalidLeaderKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`leader_key = "spacebar"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid leader error")
 	}
 }
 

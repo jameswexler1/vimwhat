@@ -1,0 +1,275 @@
+package ui
+
+import (
+	"crypto/sha1"
+	"encoding/hex"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"maybewhats/internal/media"
+	"maybewhats/internal/store"
+)
+
+type messageLineRef struct {
+	target bool
+	row    int
+}
+
+type messageLayoutBlock struct {
+	lines []string
+	refs  []messageLineRef
+}
+
+func (m Model) activeMediaPlacement() (media.Placement, bool) {
+	if m.width <= 0 || m.height <= 0 {
+		return media.Placement{}, false
+	}
+	if m.focus != FocusMessages {
+		return media.Placement{}, false
+	}
+
+	message, item, ok := m.focusedMedia()
+	if !ok {
+		return media.Placement{}, false
+	}
+	preview, ok := m.mediaPreview(message, item, m.messagePaneContentWidth())
+	if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+		return media.Placement{}, false
+	}
+
+	geometry, ok := m.messagePaneGeometry()
+	if !ok {
+		return media.Placement{}, false
+	}
+	xOffset, yOffset, ok := m.activeMediaOffset(geometry.width, geometry.height, message, item, preview)
+	if !ok {
+		return media.Placement{}, false
+	}
+	return media.Placement{
+		Identifier: overlayIdentifier(preview.Key),
+		X:          geometry.x + xOffset,
+		Y:          geometry.y + yOffset,
+		MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
+		MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+		Path:       preview.SourcePath,
+	}, true
+}
+
+type paneGeometry struct {
+	x      int
+	y      int
+	width  int
+	height int
+}
+
+func (m Model) messagePaneGeometry() (paneGeometry, bool) {
+	inputHeight := m.inputHeight()
+	bodyHeight := m.height - 1 - inputHeight
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	style := m.panelStyle(FocusMessages)
+	panelX := 0
+	panelWidth := m.width
+	if !m.compactLayout {
+		chatWidth := max(24, m.width/4)
+		previewWidth := max(26, m.width/4)
+		panelX = chatWidth
+		panelWidth = m.width - chatWidth
+		if m.infoPaneVisible {
+			panelWidth -= previewWidth
+		}
+	}
+	if panelWidth <= 0 {
+		return paneGeometry{}, false
+	}
+	return paneGeometry{
+		x:      panelX + 1 + style.GetPaddingLeft(),
+		y:      1,
+		width:  panelContentWidth(style, panelWidth),
+		height: panelContentHeight(style, bodyHeight),
+	}, true
+}
+
+func (m Model) activeMediaOffset(width, height int, focused store.Message, item store.MediaMetadata, preview media.Preview) (int, int, bool) {
+	if width <= 0 || height <= 1 {
+		return 0, 0, false
+	}
+
+	blocks := make([]messageLayoutBlock, 0, len(m.currentMessages()))
+	var lastDate string
+	for i, message := range m.currentMessages() {
+		date := messageDate(message)
+		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
+		active := i == m.messageCursor
+		bubble := m.renderMessageBubble(message, width, active, selected)
+		bubbleLines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
+		refs := make([]messageLineRef, len(bubbleLines))
+
+		if message.ID == focused.ID {
+			lineOffset, ok := m.previewLineOffset(message, item, preview)
+			if ok {
+				for row := 0; row < preview.Height && lineOffset+row < len(refs); row++ {
+					refs[lineOffset+row] = messageLineRef{target: true, row: row}
+				}
+			}
+		}
+
+		lines := bubbleLines
+		if date != "" && date != lastDate {
+			lines = append([]string{renderDaySeparator(date, width)}, lines...)
+			refs = append([]messageLineRef{{}}, refs...)
+			lastDate = date
+		}
+		blocks = append(blocks, messageLayoutBlock{lines: lines, refs: refs})
+	}
+
+	bodyHeight := max(1, height-1)
+	footer := m.renderMessageFooter(max(1, width-2))
+	footerHeight := min(countLines(footer), bodyHeight)
+	messageHeight := max(1, bodyHeight-footerHeight)
+	viewportRefs := messageViewportRefs(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)
+
+	rows := make(map[int]int, preview.Height)
+	firstRow := -1
+	for y, ref := range viewportRefs {
+		if !ref.target {
+			continue
+		}
+		rows[ref.row] = y
+		if ref.row == 0 {
+			firstRow = y
+		}
+	}
+	if firstRow == -1 || len(rows) < preview.Height {
+		return 0, 0, false
+	}
+
+	xOffset := m.activeMediaXOffset(width, focused)
+	return xOffset, 1 + firstRow, true
+}
+
+func (m Model) activeMediaXOffset(width int, message store.Message) int {
+	bubble := m.renderMessageBubble(message, width, true, false)
+	bubbleWidth := maxRenderedWidth(bubble)
+	indent := 0
+	if message.IsOutgoing {
+		indent = max(0, width-bubbleWidth-3)
+	}
+	return indent + 2
+}
+
+func (m Model) previewLineOffset(message store.Message, item store.MediaMetadata, preview media.Preview) (int, bool) {
+	senderLines := 0
+	if shouldShowMessageSender(m.currentChat(), message) {
+		senderLines = 1
+	}
+	offset := 1 + senderLines
+	for _, candidate := range message.Media {
+		if mediaActivationKey(message, candidate) == mediaActivationKey(message, item) {
+			return offset, true
+		}
+		if existing, ok := m.mediaPreview(message, candidate, preview.Width); ok {
+			offset += len(renderPreviewLines(existing, preview.Width))
+		} else {
+			offset++
+		}
+	}
+	return 0, false
+}
+
+func messageViewportRefs(blocks []messageLayoutBlock, scrollTop, cursor, height int) []messageLineRef {
+	height = max(1, height)
+	if len(blocks) == 0 {
+		return nil
+	}
+
+	selected := clamp(cursor, 0, len(blocks)-1)
+	if selected == len(blocks)-1 {
+		return bottomMessageViewportRefs(blocks, height)
+	}
+	plainBlocks := make([]messageBlock, len(blocks))
+	for i, block := range blocks {
+		plainBlocks[i] = messageBlock{lines: block.lines}
+	}
+	scrollTop = adjustedMessageScrollTop(plainBlocks, scrollTop, selected, height)
+	scrollTop = clampMessageScrollTop(plainBlocks, scrollTop, height)
+	var out []messageLineRef
+	used := 0
+
+	for i := scrollTop; i < len(blocks) && used < height; i++ {
+		block := blocks[i]
+		if used+len(block.lines) > height {
+			remaining := height - used
+			if remaining > 0 {
+				if i == selected || i == len(blocks)-1 {
+					out = append(out, tailRefs(block.refs, remaining)...)
+				} else {
+					out = append(out, block.refs[:remaining]...)
+				}
+			}
+			break
+		}
+		out = append(out, block.refs...)
+		used += len(block.lines)
+	}
+
+	if len(out) > height {
+		return tailRefs(out, height)
+	}
+	return out
+}
+
+func bottomMessageViewportRefs(blocks []messageLayoutBlock, height int) []messageLineRef {
+	height = max(1, height)
+	plainBlocks := make([]messageBlock, len(blocks))
+	for i, block := range blocks {
+		plainBlocks[i] = messageBlock{lines: block.lines}
+	}
+	if messageBlocksHeight(plainBlocks) <= height {
+		var out []messageLineRef
+		for _, block := range blocks {
+			out = append(out, block.refs...)
+		}
+		return out
+	}
+
+	var out []messageLineRef
+	used := 0
+	for i := len(blocks) - 1; i >= 0; i-- {
+		block := blocks[i]
+		if used+len(block.lines) > height {
+			remaining := height - used
+			if remaining > 0 {
+				out = append(tailRefs(block.refs, remaining), out...)
+			}
+			break
+		}
+		out = append(block.refs, out...)
+		used += len(block.lines)
+	}
+	return out
+}
+
+func tailRefs(refs []messageLineRef, height int) []messageLineRef {
+	height = max(1, height)
+	if len(refs) <= height {
+		return refs
+	}
+	return refs[len(refs)-height:]
+}
+
+func maxRenderedWidth(value string) int {
+	width := 0
+	for _, line := range strings.Split(value, "\n") {
+		width = max(width, lipgloss.Width(line))
+	}
+	return width
+}
+
+func overlayIdentifier(key string) string {
+	sum := sha1.Sum([]byte(key))
+	return "maybewhats-" + hex.EncodeToString(sum[:8])
+}

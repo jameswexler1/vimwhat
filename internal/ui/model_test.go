@@ -1726,6 +1726,196 @@ func TestGeneratedVideoThumbnailUpdatesMessageMedia(t *testing.T) {
 	}
 }
 
+func TestEnterPreviewsThenOpensFocusedMedia(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var openedPath string
+	model := mediaTestModel(localPath, media.BackendChafa)
+	model.openMedia = func(item store.MediaMetadata) tea.Cmd {
+		return func() tea.Msg {
+			openedPath = item.LocalPath
+			return MediaOpenFinishedMsg{Path: item.LocalPath}
+		}
+	}
+
+	previewing, cmd := model.activateFocusedMediaPreview()
+	model = previewing.(Model)
+	if cmd != nil {
+		t.Fatalf("first Enter command = %T, want nil preview queue through model state", cmd)
+	}
+	requests := model.requestedPreviewRequests()
+	if len(requests) != 1 {
+		t.Fatalf("requestedPreviewRequests() = %+v, want one preview", requests)
+	}
+	model.previewCache[media.PreviewKey(requests[0])] = media.Preview{
+		Key:             media.PreviewKey(requests[0]),
+		MessageID:       "m-1",
+		Kind:            media.KindImage,
+		Backend:         media.BackendChafa,
+		RenderedBackend: media.BackendChafa,
+		Display:         media.PreviewDisplayText,
+		SourcePath:      localPath,
+		Width:           requests[0].Width,
+		Height:          requests[0].Height,
+		Lines:           []string{"preview"},
+	}
+
+	opened, cmd := model.activateFocusedMediaPreview()
+	model = opened.(Model)
+	if cmd == nil {
+		t.Fatal("second Enter command = nil, want open command")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("open command returned nil message")
+	}
+	if openedPath != localPath {
+		t.Fatalf("openedPath = %q, want %q", openedPath, localPath)
+	}
+}
+
+func TestOOpensLocalMediaDirectly(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var openedPath string
+	model := mediaTestModel(localPath, media.BackendChafa)
+	model.openMedia = func(item store.MediaMetadata) tea.Cmd {
+		return func() tea.Msg {
+			openedPath = item.LocalPath
+			return MediaOpenFinishedMsg{Path: item.LocalPath}
+		}
+	}
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("o command = nil, want open command")
+	}
+	_ = cmd()
+	if openedPath != localPath {
+		t.Fatalf("openedPath = %q, want %q", openedPath, localPath)
+	}
+}
+
+func TestLeaderSavesFocusedMediaWithCollisionSafeName(t *testing.T) {
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "source.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloads) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(downloads, "photo.jpg"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("WriteFile(existing) error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendChafa)
+	model.config.DownloadsDir = downloads
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	if !model.leaderPending || !strings.Contains(model.status, "leader") {
+		t.Fatalf("leader state = pending %v status %q", model.leaderPending, model.status)
+	}
+	saved, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	model = saved.(Model)
+	if cmd == nil {
+		t.Fatal("<leader>s command = nil, want save command")
+	}
+	msg, ok := cmd().(mediaSavedMsg)
+	if !ok {
+		t.Fatalf("save cmd message = %T, want mediaSavedMsg", cmd())
+	}
+	handled, _ := model.handleMediaSaved(msg)
+	model = handled.(Model)
+
+	want := filepath.Join(downloads, "photo-1.jpg")
+	if msg.Path != want {
+		t.Fatalf("saved path = %q, want %q", msg.Path, want)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("ReadFile(saved) error = %v", err)
+	}
+	if string(data) != "image" {
+		t.Fatalf("saved data = %q, want image", data)
+	}
+	if !strings.Contains(model.status, "saved media") {
+		t.Fatalf("status = %q, want saved media", model.status)
+	}
+}
+
+func TestRemoteOpenAndSaveShowDownloadNotImplemented(t *testing.T) {
+	model := mediaTestModel("", media.BackendChafa)
+
+	opened, _ := model.openFocusedMedia()
+	got := opened.(Model)
+	if !strings.Contains(got.status, "not downloaded yet") || !strings.Contains(got.status, "not implemented") {
+		t.Fatalf("open status = %q, want remote download limitation", got.status)
+	}
+	saved, _ := model.saveFocusedMedia()
+	got = saved.(Model)
+	if !strings.Contains(got.status, "not downloaded yet") || !strings.Contains(got.status, "not implemented") {
+		t.Fatalf("save status = %q, want remote download limitation", got.status)
+	}
+}
+
+func TestActiveMediaPlacementAccountsForAlignmentAndCompactLayout(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	incoming := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &incoming, localPath)
+
+	incomingPlacement, ok := incoming.activeMediaPlacement()
+	if !ok {
+		t.Fatal("incoming activeMediaPlacement() returned false")
+	}
+	if incomingPlacement.X != 34 || incomingPlacement.Y != 3 || incomingPlacement.MaxWidth != 24 || incomingPlacement.MaxHeight != 6 {
+		t.Fatalf("incoming placement = %+v, want x=34 y=3 size=24x6", incomingPlacement)
+	}
+
+	outgoing := mediaTestModel(localPath, media.BackendUeberzugPP)
+	outgoing.messagesByChat["chat-1"][0].IsOutgoing = true
+	cacheOverlayPreview(t, &outgoing, localPath)
+	outgoingPlacement, ok := outgoing.activeMediaPlacement()
+	if !ok {
+		t.Fatal("outgoing activeMediaPlacement() returned false")
+	}
+	if outgoingPlacement.X <= incomingPlacement.X {
+		t.Fatalf("outgoing X = %d, incoming X = %d, want outgoing to the right", outgoingPlacement.X, incomingPlacement.X)
+	}
+
+	compact := mediaTestModel(localPath, media.BackendUeberzugPP)
+	compact.width = 70
+	compact.height = 20
+	compact.compactLayout = true
+	cacheOverlayPreview(t, &compact, localPath)
+	compactPlacement, ok := compact.activeMediaPlacement()
+	if !ok {
+		t.Fatal("compact activeMediaPlacement() returned false")
+	}
+	if compactPlacement.X != 4 || compactPlacement.Y != 3 {
+		t.Fatalf("compact placement = %+v, want x=4 y=3", compactPlacement)
+	}
+
+	resized := compact
+	resized.width = 90
+	cacheOverlayPreview(t, &resized, localPath)
+	resizedPlacement, ok := resized.activeMediaPlacement()
+	if !ok {
+		t.Fatal("resized activeMediaPlacement() returned false")
+	}
+	if resizedPlacement.X != compactPlacement.X || resizedPlacement.MaxWidth != compactPlacement.MaxWidth {
+		t.Fatalf("resized placement = %+v, compact = %+v, want stable incoming placement", resizedPlacement, compactPlacement)
+	}
+}
+
 func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T) {
 	var deletedID string
 	model := NewModel(Options{
@@ -2276,6 +2466,7 @@ func configWithPreview(width, height int) config.Config {
 		PreviewMaxWidth:  width,
 		PreviewMaxHeight: height,
 		PreviewDelayMS:   0,
+		LeaderKey:        "space",
 	}
 }
 
@@ -2286,5 +2477,69 @@ func testPaths(t *testing.T) config.Paths {
 		CacheDir:        dir,
 		MediaDir:        filepath.Join(dir, "media"),
 		PreviewCacheDir: filepath.Join(dir, "preview"),
+	}
+}
+
+func mediaTestModel(localPath string, backend media.Backend) Model {
+	downloadState := "downloaded"
+	if localPath == "" {
+		downloadState = "remote"
+	}
+	model := NewModel(Options{
+		Config: config.Config{
+			PreviewMaxWidth:  24,
+			PreviewMaxHeight: 6,
+			PreviewDelayMS:   0,
+			LeaderKey:        "space",
+		},
+		Paths: config.Paths{
+			PreviewCacheDir: filepath.Join(os.TempDir(), "maybewhats-test-preview"),
+		},
+		PreviewReport: media.Report{
+			Selected: backend,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     localPath,
+						DownloadState: downloadState,
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 30
+	model.focus = FocusMessages
+	return model
+}
+
+func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
+	t.Helper()
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       "m-1",
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourcePath:      sourcePath,
+		Width:           request.Width,
+		Height:          request.Height,
 	}
 }

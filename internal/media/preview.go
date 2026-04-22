@@ -13,11 +13,15 @@ import (
 )
 
 type Kind string
+type PreviewDisplay string
 
 const (
 	KindUnsupported Kind = "unsupported"
 	KindImage       Kind = "image"
 	KindVideo       Kind = "video"
+
+	PreviewDisplayText    PreviewDisplay = "text"
+	PreviewDisplayOverlay PreviewDisplay = "overlay"
 )
 
 type PreviewRequest struct {
@@ -38,9 +42,12 @@ type Preview struct {
 	Kind               Kind
 	Backend            Backend
 	RenderedBackend    Backend
+	Display            PreviewDisplay
 	SourcePath         string
 	ThumbnailPath      string
 	GeneratedThumbnail bool
+	Width              int
+	Height             int
 	Lines              []string
 	Err                error
 }
@@ -51,6 +58,16 @@ type Previewer struct {
 	MaxWidth  int
 	MaxHeight int
 	Timeout   time.Duration
+}
+
+func (p Preview) Ready() bool {
+	if p.Err != nil {
+		return false
+	}
+	if p.Display == PreviewDisplayOverlay {
+		return p.SourcePath != "" && p.Width > 0 && p.Height > 0
+	}
+	return len(p.Lines) > 0
 }
 
 var runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -82,6 +99,8 @@ func (p Previewer) Render(ctx context.Context, req PreviewRequest) Preview {
 		MessageID: req.MessageID,
 		Kind:      MediaKind(req.MIMEType, req.FileName),
 		Backend:   req.Backend,
+		Width:     req.Width,
+		Height:    req.Height,
 	}
 
 	if preview.Kind == KindUnsupported {
@@ -103,13 +122,14 @@ func (p Previewer) Render(ctx context.Context, req PreviewRequest) Preview {
 		preview.GeneratedThumbnail = true
 	}
 
-	lines, renderedBackend, err := p.renderSource(ctx, req, source)
+	lines, renderedBackend, display, err := p.renderSource(ctx, req, source)
 	if err != nil {
 		preview.Err = err
 		return preview
 	}
 	preview.Lines = lines
 	preview.RenderedBackend = renderedBackend
+	preview.Display = display
 	return preview
 }
 
@@ -188,7 +208,7 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	return thumbnailPath, true, nil
 }
 
-func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, error) {
+func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, p.timeout())
 	defer cancel()
 
@@ -197,34 +217,34 @@ func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source 
 		if hasCommand("chafa") {
 			lines, err := runChafa(timeoutCtx, "sixels", req.Width, req.Height, source)
 			if err == nil {
-				return lines, BackendSixel, nil
+				return lines, BackendSixel, PreviewDisplayText, nil
 			}
 		}
 		if hasCommand("img2sixel") {
 			lines, err := runImg2Sixel(timeoutCtx, req.Width, req.Height, source)
 			if err == nil {
-				return lines, BackendSixel, nil
+				return lines, BackendSixel, PreviewDisplayText, nil
 			}
 		}
 		return p.renderChafaFallback(timeoutCtx, req, source)
 	case BackendUeberzugPP:
-		return p.renderChafaFallback(timeoutCtx, req, source)
+		return nil, BackendUeberzugPP, PreviewDisplayOverlay, nil
 	case BackendChafa, BackendAuto:
 		return p.renderChafaFallback(timeoutCtx, req, source)
 	default:
-		return nil, BackendNone, fmt.Errorf("preview backend %s does not render inline", req.Backend)
+		return nil, BackendNone, "", fmt.Errorf("preview backend %s does not render inline", req.Backend)
 	}
 }
 
-func (p Previewer) renderChafaFallback(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, error) {
+func (p Previewer) renderChafaFallback(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {
 	if !hasCommand("chafa") {
-		return nil, BackendNone, fmt.Errorf("chafa not found")
+		return nil, BackendNone, "", fmt.Errorf("chafa not found")
 	}
 	lines, err := runChafa(ctx, "symbols", req.Width, req.Height, source)
 	if err != nil {
-		return nil, BackendChafa, err
+		return nil, BackendChafa, "", err
 	}
-	return lines, BackendChafa, nil
+	return lines, BackendChafa, PreviewDisplayText, nil
 }
 
 func runChafa(ctx context.Context, format string, width, height int, source string) ([]string, error) {

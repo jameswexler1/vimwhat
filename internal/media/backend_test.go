@@ -1,7 +1,9 @@
 package media
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,10 +53,39 @@ func TestDetectFallsBackInPriorityOrder(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("TERM_PROGRAM", "")
 	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("DISPLAY", ":0")
 
 	report := Detect("auto")
 	if report.Selected != BackendUeberzugPP {
 		t.Fatalf("Selected = %q, want %q", report.Selected, BackendUeberzugPP)
+	}
+	if report.UeberzugPPOutput != "x11" {
+		t.Fatalf("UeberzugPPOutput = %q, want x11", report.UeberzugPPOutput)
+	}
+}
+
+func TestDetectChafaExplicitBeatsAvailableUeberzugPP(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "chafa", "ueberzugpp", "xdg-open":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("MAYBEWHATS_FORCE_SIXEL", "0")
+	t.Setenv("DISPLAY", ":0")
+
+	report := Detect("chafa")
+	if report.Selected != BackendChafa {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendChafa)
 	}
 }
 
@@ -123,6 +154,70 @@ func TestPreviewerRendersImageWithChafaSymbols(t *testing.T) {
 	}
 	if got := preview.Lines; len(got) != 2 || got[0] != "aa" || got[1] != "bb" {
 		t.Fatalf("preview lines = %+v", preview.Lines)
+	}
+}
+
+func TestPreviewerReturnsOverlayPreviewForUeberzugPP(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.Display != PreviewDisplayOverlay || preview.RenderedBackend != BackendUeberzugPP {
+		t.Fatalf("preview display/backend = %s/%s, want overlay/ueberzug++", preview.Display, preview.RenderedBackend)
+	}
+	if preview.SourcePath != imagePath || preview.Width != 10 || preview.Height != 4 || !preview.Ready() {
+		t.Fatalf("overlay preview metadata = %+v", preview)
+	}
+}
+
+func TestOverlayManagerSendsAddAndRemoveJSON(t *testing.T) {
+	var buf bytes.Buffer
+	manager := NewOverlayManagerForWriter(&buf)
+
+	if err := manager.Place(context.Background(), Placement{
+		Identifier: "media-1",
+		X:          4,
+		Y:          5,
+		MaxWidth:   20,
+		MaxHeight:  8,
+		Path:       "/tmp/photo.jpg",
+	}); err != nil {
+		t.Fatalf("Place() error = %v", err)
+	}
+	if err := manager.Remove(context.Background()); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("overlay commands = %q, want add and remove", buf.String())
+	}
+	var add overlayCommand
+	if err := json.Unmarshal([]byte(lines[0]), &add); err != nil {
+		t.Fatalf("unmarshal add: %v", err)
+	}
+	if add.Action != "add" || add.Identifier != "media-1" || add.X != 4 || add.Y != 5 || add.MaxWidth != 20 || add.MaxHeight != 8 || add.Path != "/tmp/photo.jpg" {
+		t.Fatalf("add command = %+v", add)
+	}
+	var remove overlayCommand
+	if err := json.Unmarshal([]byte(lines[1]), &remove); err != nil {
+		t.Fatalf("unmarshal remove: %v", err)
+	}
+	if remove.Action != "remove" || remove.Identifier != "media-1" {
+		t.Fatalf("remove command = %+v", remove)
 	}
 }
 
@@ -198,5 +293,40 @@ func TestMediaKindFallsBackFromFileExtension(t *testing.T) {
 	}
 	if got := MediaKind("application/pdf", "doc.pdf"); got != KindUnsupported {
 		t.Fatalf("MediaKind(pdf) = %s, want unsupported", got)
+	}
+}
+
+func TestSaveLocalFileUsesCollisionSafeNames(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.jpg")
+	if err := os.WriteFile(source, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	downloads := filepath.Join(dir, "downloads")
+	if err := os.MkdirAll(downloads, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloads) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(downloads, "photo.jpg"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("WriteFile(existing) error = %v", err)
+	}
+
+	saved, err := SaveLocalFile(SaveRequest{
+		SourcePath:   source,
+		FileName:     "photo.jpg",
+		MIMEType:     "image/jpeg",
+		DownloadsDir: downloads,
+	})
+	if err != nil {
+		t.Fatalf("SaveLocalFile() error = %v", err)
+	}
+	if filepath.Base(saved) != "photo-1.jpg" {
+		t.Fatalf("saved path = %q, want photo-1.jpg", saved)
+	}
+	data, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatalf("ReadFile(saved) error = %v", err)
+	}
+	if string(data) != "image" {
+		t.Fatalf("saved data = %q, want image", data)
 	}
 }

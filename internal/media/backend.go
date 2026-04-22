@@ -19,9 +19,10 @@ const (
 )
 
 type Report struct {
-	Requested Backend
-	Selected  Backend
-	Reasons   map[Backend]string
+	Requested        Backend
+	Selected         Backend
+	Reasons          map[Backend]string
+	UeberzugPPOutput string
 }
 
 var lookPath = exec.LookPath
@@ -29,8 +30,9 @@ var lookPath = exec.LookPath
 func Detect(requested string) Report {
 	normalized := normalize(requested)
 	report := Report{
-		Requested: normalized,
-		Reasons:   make(map[Backend]string),
+		Requested:        normalized,
+		Reasons:          make(map[Backend]string),
+		UeberzugPPOutput: DetectUeberzugPPOutput(),
 	}
 	if normalized == BackendNone {
 		report.Selected = BackendNone
@@ -72,7 +74,13 @@ func unavailableReason(backend Backend) string {
 		}
 		return "sixel renderer command not found"
 	case BackendUeberzugPP:
-		return "ueberzugpp not found in PATH"
+		if !hasCommand("ueberzugpp") {
+			return "ueberzugpp not found in PATH"
+		}
+		if DetectUeberzugPPOutput() == "" {
+			return "DISPLAY/WAYLAND_DISPLAY not set"
+		}
+		return "ueberzugpp not available"
 	case BackendChafa:
 		return "chafa not found in PATH"
 	case BackendExternal:
@@ -85,10 +93,20 @@ func unavailableReason(backend Backend) string {
 func detectAvailable() map[Backend]bool {
 	return map[Backend]bool{
 		BackendSixel:      supportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
-		BackendUeberzugPP: hasCommand("ueberzugpp"),
+		BackendUeberzugPP: hasCommand("ueberzugpp") && DetectUeberzugPPOutput() != "",
 		BackendChafa:      hasCommand("chafa"),
 		BackendExternal:   hasCommand("xdg-open"),
 	}
+}
+
+func DetectUeberzugPPOutput() string {
+	if os.Getenv("DISPLAY") != "" {
+		return "x11"
+	}
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		return "wayland"
+	}
+	return ""
 }
 
 func supportsSixel() bool {
@@ -131,10 +149,24 @@ func (r Report) Lines() []string {
 		fmt.Sprintf("requested preview backend: %s", r.Requested),
 		fmt.Sprintf("selected preview backend: %s", r.Selected),
 	}
+	adapter := r.UeberzugPPOutput
+	if adapter == "" {
+		adapter = "none"
+	}
+	lines = append(lines, fmt.Sprintf("ueberzug++ adapter: %s", adapter))
 
 	for _, backend := range []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal} {
 		lines = append(lines, fmt.Sprintf("%s: %s", backend, r.Reasons[backend]))
 	}
+	chafaRole := "unavailable"
+	if r.Reasons[BackendChafa] == "available" {
+		if r.Selected == BackendChafa {
+			chafaRole = "selected renderer"
+		} else {
+			chafaRole = "fallback only"
+		}
+	}
+	lines = append(lines, fmt.Sprintf("chafa role: %s", chafaRole))
 
 	return lines
 }

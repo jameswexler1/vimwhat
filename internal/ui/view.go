@@ -734,7 +734,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	}
 	for _, item := range message.Media {
 		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
-			lines = append(lines, preview.Lines...)
+			lines = append(lines, renderPreviewLines(preview, contentWidth)...)
 		} else {
 			state := m.mediaAttachmentState(message, item)
 			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected, state))
@@ -762,10 +762,23 @@ func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, wid
 		return media.Preview{}, false
 	}
 	preview, ok := m.previewCache[media.PreviewKey(request)]
-	if !ok || preview.Err != nil || len(preview.Lines) == 0 {
+	if !ok || !preview.Ready() {
 		return media.Preview{}, false
 	}
 	return preview, true
+}
+
+func renderPreviewLines(preview media.Preview, width int) []string {
+	if preview.Display != media.PreviewDisplayOverlay {
+		return preview.Lines
+	}
+	height := max(1, preview.Height)
+	lineWidth := min(width, max(1, preview.Width))
+	lines := make([]string, height)
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", lineWidth)
+	}
+	return lines
 }
 
 func bubbleWidth(available int) int {
@@ -814,7 +827,7 @@ func (m Model) mediaPreviewShouldReserve(message store.Message, item store.Media
 		return true
 	}
 	preview, ok := m.previewCache[key]
-	return ok && preview.Err == nil && len(preview.Lines) > 0
+	return ok && preview.Ready()
 }
 
 func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetadata) string {
@@ -833,7 +846,7 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 		if preview.Err != nil {
 			return "preview failed"
 		}
-		if len(preview.Lines) > 0 {
+		if preview.Ready() {
 			return ""
 		}
 	}
@@ -1255,12 +1268,13 @@ func (m Model) renderHelp(width int) string {
 		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("maybewhats help"),
 		"",
 		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
-		"         enter open/preview        i insert    v visual          / search    : command",
+		"         enter preview/open  o open media  <leader>s save  i insert  v visual  / search  : command",
 		"         u unread    p sort      n/N next search   ? help      q quit",
 		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
 		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
-		"         sort pinned/recent  preview  media-preview  preview-backend <name>  clear-preview-cache",
+		"         sort pinned/recent  preview  media-preview  media-open  media-save",
+		"         preview-backend <name>  clear-preview-cache",
 		"         attach <path>  delete-message",
 		"",
 		"state:",

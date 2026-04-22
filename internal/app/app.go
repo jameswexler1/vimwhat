@@ -138,6 +138,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		PickAttachment: func() tea.Cmd {
 			return pickAttachment(env.Config.FilePickerCommand)
 		},
+		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
+			return openMedia(env.Config, media)
+		},
 		DeleteMessage: func(messageID string) error {
 			return env.Store.DeleteMessage(context.Background(), messageID)
 		},
@@ -244,6 +247,10 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("editor: %s", env.Config.Editor),
 		fmt.Sprintf("preview max: %dx%d delay=%dms", env.Config.PreviewMaxWidth, env.Config.PreviewMaxHeight, env.Config.PreviewDelayMS),
 		fmt.Sprintf("downloads dir: %s", env.Config.DownloadsDir),
+		fmt.Sprintf("leader key: %s", env.Config.LeaderKey),
+		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
+		fmt.Sprintf("video player command: %s", emptyAsAuto(env.Config.VideoPlayerCommand)),
+		fmt.Sprintf("file opener command: %s", emptyAsAuto(env.Config.FileOpenerCommand)),
 		fmt.Sprintf("chat rows: %d", stats.Chats),
 		fmt.Sprintf("message rows: %d", stats.Messages),
 		fmt.Sprintf("draft rows: %d", stats.Drafts),
@@ -262,6 +269,13 @@ func printDoctor(env Environment, w io.Writer) {
 	lines = append(lines, env.PreviewReport.Lines()...)
 
 	fmt.Fprintln(w, strings.Join(lines, "\n"))
+}
+
+func emptyAsAuto(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "auto"
+	}
+	return value
 }
 
 func noneIfEmpty(values []string) string {

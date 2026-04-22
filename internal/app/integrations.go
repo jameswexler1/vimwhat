@@ -11,6 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"maybewhats/internal/config"
+	"maybewhats/internal/media"
 	"maybewhats/internal/store"
 	"maybewhats/internal/ui"
 )
@@ -131,6 +133,87 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 		attachment, err := ui.AttachmentFromPath(path)
 		return ui.AttachmentPickedMsg{Attachment: attachment, Err: err}
 	})
+}
+
+func openMedia(cfg config.Config, item store.MediaMetadata) tea.Cmd {
+	cmd, path, err := mediaOpenCommand(cfg, item)
+	if err != nil {
+		return func() tea.Msg {
+			return ui.MediaOpenFinishedMsg{Path: path, Err: err}
+		}
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return ui.MediaOpenFinishedMsg{Path: path, Err: err}
+	})
+}
+
+func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, string, error) {
+	path := strings.TrimSpace(item.LocalPath)
+	if path == "" {
+		return nil, "", fmt.Errorf("media is not downloaded")
+	}
+
+	template, configured := mediaOpenTemplate(cfg, item)
+	if !configured {
+		argv, err := autoOpenCommand(item, path)
+		if err != nil {
+			return nil, path, err
+		}
+		return exec.Command(argv[0], argv[1:]...), path, nil
+	}
+
+	hasPathPlaceholder := strings.Contains(template, "{path}")
+	template = strings.ReplaceAll(template, "{path}", path)
+	argv, err := splitCommandLine(template)
+	if err != nil {
+		return nil, path, err
+	}
+	if len(argv) == 0 {
+		return nil, path, fmt.Errorf("media opener command is empty")
+	}
+	if !hasPathPlaceholder {
+		argv = append(argv, path)
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return nil, path, fmt.Errorf("media opener %q not found", argv[0])
+	}
+	return exec.Command(argv[0], argv[1:]...), path, nil
+}
+
+func mediaOpenTemplate(cfg config.Config, item store.MediaMetadata) (string, bool) {
+	kind := media.MediaKind(item.MIMEType, item.FileName)
+	switch kind {
+	case media.KindImage:
+		if strings.TrimSpace(cfg.ImageViewerCommand) != "" {
+			return strings.TrimSpace(cfg.ImageViewerCommand), true
+		}
+	case media.KindVideo:
+		if strings.TrimSpace(cfg.VideoPlayerCommand) != "" {
+			return strings.TrimSpace(cfg.VideoPlayerCommand), true
+		}
+	}
+	if strings.TrimSpace(cfg.FileOpenerCommand) != "" {
+		return strings.TrimSpace(cfg.FileOpenerCommand), true
+	}
+	return "", false
+}
+
+func autoOpenCommand(item store.MediaMetadata, path string) ([]string, error) {
+	var candidates []string
+	switch media.MediaKind(item.MIMEType, item.FileName) {
+	case media.KindImage:
+		candidates = []string{"nsxiv", "mpv", "xdg-open"}
+	case media.KindVideo:
+		candidates = []string{"mpv", "xdg-open", "nsxiv"}
+	default:
+		candidates = []string{"xdg-open", "nsxiv", "mpv"}
+	}
+	for _, name := range candidates {
+		if _, err := exec.LookPath(name); err == nil {
+			return []string{name, path}, nil
+		}
+	}
+	return nil, fmt.Errorf("no media opener found")
 }
 
 func attachmentPickerError(err error) tea.Cmd {
