@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 )
@@ -26,7 +27,7 @@ type OverlayManager struct {
 	mu     sync.Mutex
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
-	active string
+	active map[string]Placement
 }
 
 type overlayCommand struct {
@@ -49,44 +50,74 @@ func NewOverlayManagerForWriter(w io.Writer) *OverlayManager {
 }
 
 func (m *OverlayManager) Place(ctx context.Context, placement Placement) error {
-	if placement.Identifier == "" {
-		return fmt.Errorf("overlay identifier is empty")
-	}
-	if placement.Path == "" {
-		return fmt.Errorf("overlay path is empty")
-	}
-	if placement.MaxWidth <= 0 || placement.MaxHeight <= 0 {
-		return fmt.Errorf("overlay size must be positive")
-	}
-	if placement.Scaler == "" {
-		placement.Scaler = "fit_contain"
+	return m.Sync(ctx, []Placement{placement})
+}
+
+func (m *OverlayManager) Sync(ctx context.Context, placements []Placement) error {
+	next := make(map[string]Placement, len(placements))
+	for _, placement := range placements {
+		if placement.Identifier == "" {
+			return fmt.Errorf("overlay identifier is empty")
+		}
+		if placement.Path == "" {
+			return fmt.Errorf("overlay path is empty")
+		}
+		if placement.MaxWidth <= 0 || placement.MaxHeight <= 0 {
+			return fmt.Errorf("overlay size must be positive")
+		}
+		if placement.Scaler == "" {
+			placement.Scaler = "fit_contain"
+		}
+		next[placement.Identifier] = placement
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.active == nil {
+		m.active = map[string]Placement{}
+	}
+	if len(next) == 0 && len(m.active) == 0 {
+		return nil
+	}
 	if err := m.ensureStarted(ctx); err != nil {
 		return err
 	}
-	if m.active != "" {
-		if err := m.send(overlayCommand{Action: "remove", Identifier: m.active}); err != nil {
+
+	for _, identifier := range sortedPlacementKeys(m.active) {
+		if _, ok := next[identifier]; ok {
+			continue
+		}
+		if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
 			return err
 		}
-		m.active = ""
+		delete(m.active, identifier)
 	}
-	if err := m.send(overlayCommand{
-		Action:     "add",
-		Identifier: placement.Identifier,
-		X:          placement.X,
-		Y:          placement.Y,
-		MaxWidth:   placement.MaxWidth,
-		MaxHeight:  placement.MaxHeight,
-		Path:       placement.Path,
-		Scaler:     placement.Scaler,
-	}); err != nil {
-		return err
+
+	for _, identifier := range sortedPlacementKeys(next) {
+		placement := next[identifier]
+		if samePlacement(m.active[identifier], placement) {
+			continue
+		}
+		if _, ok := m.active[identifier]; ok {
+			if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
+				return err
+			}
+		}
+		if err := m.send(overlayCommand{
+			Action:     "add",
+			Identifier: placement.Identifier,
+			X:          placement.X,
+			Y:          placement.Y,
+			MaxWidth:   placement.MaxWidth,
+			MaxHeight:  placement.MaxHeight,
+			Path:       placement.Path,
+			Scaler:     placement.Scaler,
+		}); err != nil {
+			return err
+		}
+		m.active[identifier] = placement
 	}
-	m.active = placement.Identifier
 	return nil
 }
 
@@ -114,16 +145,18 @@ func (m *OverlayManager) Remove(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.active == "" {
+	if len(m.active) == 0 {
 		return nil
 	}
 	if err := m.ensureStarted(ctx); err != nil {
 		return err
 	}
-	if err := m.send(overlayCommand{Action: "remove", Identifier: m.active}); err != nil {
-		return err
+	for _, identifier := range sortedPlacementKeys(m.active) {
+		if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
+			return err
+		}
+		delete(m.active, identifier)
 	}
-	m.active = ""
 	return nil
 }
 
@@ -132,9 +165,13 @@ func (m *OverlayManager) Close() error {
 	defer m.mu.Unlock()
 
 	var err error
-	if m.active != "" && m.stdin != nil {
-		err = m.send(overlayCommand{Action: "remove", Identifier: m.active})
-		m.active = ""
+	if len(m.active) > 0 && m.stdin != nil {
+		for _, identifier := range sortedPlacementKeys(m.active) {
+			if removeErr := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err == nil {
+				err = removeErr
+			}
+			delete(m.active, identifier)
+		}
 	}
 	if m.stdin != nil {
 		if closeErr := m.stdin.Close(); err == nil {
@@ -163,6 +200,9 @@ func (m *OverlayManager) Close() error {
 func (m *OverlayManager) ensureStarted(ctx context.Context) error {
 	if m.stdin != nil {
 		return nil
+	}
+	if m.active == nil {
+		m.active = map[string]Placement{}
 	}
 	output := m.output
 	if output == "" {
@@ -198,6 +238,25 @@ func (m *OverlayManager) send(command overlayCommand) error {
 		return fmt.Errorf("write ueberzug++ command: %w", err)
 	}
 	return nil
+}
+
+func samePlacement(left, right Placement) bool {
+	return left.Identifier == right.Identifier &&
+		left.X == right.X &&
+		left.Y == right.Y &&
+		left.MaxWidth == right.MaxWidth &&
+		left.MaxHeight == right.MaxHeight &&
+		left.Path == right.Path &&
+		left.Scaler == right.Scaler
+}
+
+func sortedPlacementKeys(values map[string]Placement) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 type nopWriteCloser struct {

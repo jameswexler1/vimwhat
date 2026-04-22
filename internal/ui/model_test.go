@@ -1937,6 +1937,38 @@ func TestLeaderSavesFocusedMediaWithCollisionSafeName(t *testing.T) {
 	}
 }
 
+func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	item := message.Media[0]
+	model.previewRequested[mediaActivationKey(message, item)] = true
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	prefix, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	model = prefix.(Model)
+	if !model.leaderPending || model.leaderSequence != "h" {
+		t.Fatalf("leader prefix = pending %v sequence %q", model.leaderPending, model.leaderSequence)
+	}
+	cleared, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = cleared.(Model)
+
+	if model.leaderPending || model.leaderSequence != "" {
+		t.Fatalf("leader after clear = pending %v sequence %q", model.leaderPending, model.leaderSequence)
+	}
+	if len(model.previewCache) != 0 || len(model.previewInflight) != 0 || len(model.previewRequested) != 0 {
+		t.Fatalf("preview state after <leader>hf = cache %d inflight %d requested %d, want empty", len(model.previewCache), len(model.previewInflight), len(model.previewRequested))
+	}
+	if !strings.Contains(model.status, "unloaded") {
+		t.Fatalf("status = %q, want unloaded status", model.status)
+	}
+}
+
 func TestRemoteOpenAndSaveShowDownloadNotImplemented(t *testing.T) {
 	model := mediaTestModel("", media.BackendChafa)
 
@@ -2004,6 +2036,65 @@ func TestActiveMediaPlacementAccountsForAlignmentAndCompactLayout(t *testing.T) 
 	}
 }
 
+func TestLoadedOverlayPreviewsStayVisibleWhenFocusMoves(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.jpg")
+	secondPath := filepath.Join(dir, "second.jpg")
+	if err := os.WriteFile(firstPath, []byte("first"), 0o644); err != nil {
+		t.Fatalf("WriteFile(first) error = %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("second"), 0o644); err != nil {
+		t.Fatalf("WriteFile(second) error = %v", err)
+	}
+
+	model := mediaTestModel(firstPath, media.BackendUeberzugPP)
+	model.height = 36
+	model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+		ID:     "m-2",
+		ChatID: "chat-1",
+		Sender: "Alice",
+		Media: []store.MediaMetadata{{
+			MessageID:     "m-2",
+			FileName:      "second.jpg",
+			MIMEType:      "image/jpeg",
+			LocalPath:     secondPath,
+			DownloadState: "downloaded",
+		}},
+	})
+	model.messageCursor = 1
+	for messageIndex := range model.messagesByChat["chat-1"] {
+		message := model.messagesByChat["chat-1"][messageIndex]
+		request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+		if !ok {
+			t.Fatalf("previewRequestForMedia(%s) returned false", message.ID)
+		}
+		model.previewCache[media.PreviewKey(request)] = media.Preview{
+			Key:             media.PreviewKey(request),
+			MessageID:       message.ID,
+			Kind:            media.KindImage,
+			Backend:         media.BackendUeberzugPP,
+			RenderedBackend: media.BackendUeberzugPP,
+			Display:         media.PreviewDisplayOverlay,
+			SourceKind:      media.SourceLocal,
+			SourcePath:      message.Media[0].LocalPath,
+			Width:           request.Width,
+			Height:          request.Height,
+		}
+	}
+
+	placements := model.visibleMediaPlacements()
+	if len(placements) != 2 {
+		t.Fatalf("visibleMediaPlacements() = %+v, want both loaded previews visible", placements)
+	}
+	paths := map[string]bool{}
+	for _, placement := range placements {
+		paths[placement.Path] = true
+	}
+	if !paths[firstPath] || !paths[secondPath] {
+		t.Fatalf("visible placement paths = %+v, want first and second preview paths", paths)
+	}
+}
+
 func TestMediaPreviewUsesWiderBubbleBoundsThanText(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
@@ -2021,8 +2112,8 @@ func TestMediaPreviewUsesWiderBubbleBoundsThanText(t *testing.T) {
 	if width != 67 {
 		t.Fatalf("preview width = %d, want configured/Yazi-like width 67", width)
 	}
-	if height <= 6 {
-		t.Fatalf("preview height = %d, want roomier media preview", height)
+	if height <= 6 || height > 18 {
+		t.Fatalf("preview height = %d, want reasonable media preview height in 7..18", height)
 	}
 }
 

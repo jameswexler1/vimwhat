@@ -61,7 +61,7 @@ func Default(paths Paths) Config {
 		FileOpenerCommand:  "xdg-open {path}",
 		LeaderKey:          "space",
 		PreviewMaxWidth:    67,
-		PreviewMaxHeight:   40,
+		PreviewMaxHeight:   18,
 		PreviewDelayMS:     80,
 		DownloadsDir:       downloadsDir,
 	}

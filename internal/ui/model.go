@@ -122,6 +122,7 @@ type Model struct {
 	unfilteredByChat map[string][]store.Message
 	pendingCount     int
 	leaderPending    bool
+	leaderSequence   string
 	yankRegister     string
 	quitting         bool
 	compactLayout    bool
@@ -335,6 +336,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if keyMatchesLeader(msg, m.config.LeaderKey) {
 		m.leaderPending = true
+		m.leaderSequence = ""
 		m.pendingCount = 0
 		m.status = fmt.Sprintf("leader: %s", leaderDisplay(m.config.LeaderKey))
 		return m, nil
@@ -470,16 +472,31 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleLeaderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	m.leaderPending = false
 	if msg.Type == tea.KeyEsc {
+		m.leaderPending = false
+		m.leaderSequence = ""
 		m.status = "leader cancelled"
 		return m, nil
 	}
-	switch msg.String() {
+	key := msg.String()
+	sequence := m.leaderSequence + key
+	switch sequence {
 	case "s":
+		m.leaderPending = false
+		m.leaderSequence = ""
 		return m.saveFocusedMedia()
+	case "h":
+		m.leaderSequence = "h"
+		m.status = "leader: h"
+		return m, nil
+	case "hf":
+		m.leaderPending = false
+		m.leaderSequence = ""
+		return m.clearMediaPreviews("media previews unloaded")
 	default:
-		m.status = fmt.Sprintf("unknown leader key: %s", msg.String())
+		m.leaderPending = false
+		m.leaderSequence = ""
+		m.status = fmt.Sprintf("unknown leader key: %s", sequence)
 		return m, nil
 	}
 }
@@ -801,11 +818,9 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
 		return m, m.clearOverlayCmd()
 	case cmd == "preview-cache clear" || cmd == "clear-preview-cache":
-		m.previewCache = map[string]media.Preview{}
-		m.previewInflight = map[string]bool{}
-		m.previewRequested = map[string]bool{}
-		m.status = "preview cache cleared"
-		return m, m.clearOverlayCmd()
+		return m.clearMediaPreviews("preview cache cleared")
+	case cmd == "media-hide" || cmd == "media hide" || cmd == "media-previews hide" || cmd == "media previews hide":
+		return m.clearMediaPreviews("media previews unloaded")
 	case cmd == "media-preview" || cmd == "preview-media" || cmd == "media preview":
 		return m.activateFocusedMediaPreview()
 	case cmd == "media-open" || cmd == "media open":
@@ -1287,16 +1302,16 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.previewReport.Selected != media.BackendUeberzugPP {
 		return m.clearOverlayCmd()
 	}
-	placement, ok := m.activeMediaPlacement()
-	if !ok {
+	if m.helpVisible {
 		return m.clearOverlayCmd()
 	}
+	placements := m.visibleMediaPlacements()
 	if m.overlay == nil {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 	}
 	manager := m.overlay
 	return func() tea.Msg {
-		return mediaOverlayMsg{Err: manager.Place(context.Background(), placement)}
+		return mediaOverlayMsg{Err: manager.Sync(context.Background(), placements)}
 	}
 }
 
@@ -1523,6 +1538,17 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {
+	m.previewCache = map[string]media.Preview{}
+	m.previewInflight = map[string]bool{}
+	m.previewRequested = map[string]bool{}
+	if strings.TrimSpace(status) == "" {
+		status = "media previews unloaded"
+	}
+	m.status = status
+	return m, m.clearOverlayCmd()
+}
+
 func saveMediaToDownloads(item store.MediaMetadata, downloadsDir string) (string, error) {
 	return media.SaveLocalFile(media.SaveRequest{
 		SourcePath:   item.LocalPath,
@@ -1538,14 +1564,16 @@ func (m Model) previewDimensions() (int, int) {
 		return 0, 0
 	}
 	width := min(previewMaxWidth(m.config), max(10, mediaBubbleWidth(contentWidth)-4))
-	height := previewMaxHeight(m.config)
+	height := min(previewMaxHeight(m.config), 18)
 	if geometry, ok := m.messagePaneGeometry(); ok {
-		height = min(height, max(6, geometry.height-5))
+		available := max(4, geometry.height-6)
+		viewportLimit := max(4, geometry.height*45/100)
+		height = min(height, min(available, viewportLimit))
 	}
 	if m.compactLayout && m.width < 72 {
-		height = min(height, 12)
+		height = min(height, 10)
 	}
-	return width, height
+	return width, max(4, height)
 }
 
 func (m Model) messagePaneContentWidth() int {
@@ -1717,7 +1745,7 @@ func previewMaxWidth(cfg config.Config) int {
 
 func previewMaxHeight(cfg config.Config) int {
 	if cfg.PreviewMaxHeight <= 0 {
-		return 40
+		return 18
 	}
 	return cfg.PreviewMaxHeight
 }

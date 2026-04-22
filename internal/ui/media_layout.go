@@ -12,7 +12,7 @@ import (
 )
 
 type messageLineRef struct {
-	target bool
+	target string
 	row    int
 }
 
@@ -21,14 +21,14 @@ type messageLayoutBlock struct {
 	refs  []messageLineRef
 }
 
-func (m Model) activeMediaPlacement() (media.Placement, bool) {
-	if m.width <= 0 || m.height <= 0 {
-		return media.Placement{}, false
-	}
-	if m.focus != FocusMessages {
-		return media.Placement{}, false
-	}
+type mediaPlacementCandidate struct {
+	message  store.Message
+	preview  media.Preview
+	active   bool
+	selected bool
+}
 
+func (m Model) activeMediaPlacement() (media.Placement, bool) {
 	message, item, ok := m.focusedMedia()
 	if !ok {
 		return media.Placement{}, false
@@ -37,24 +37,66 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 	if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
 		return media.Placement{}, false
 	}
+	identifier := overlayIdentifier(preview.Key)
+	for _, placement := range m.visibleMediaPlacements() {
+		if placement.Identifier == identifier {
+			return placement, true
+		}
+	}
+	return media.Placement{}, false
+}
 
+func (m Model) visibleMediaPlacements() []media.Placement {
+	if m.width <= 0 || m.height <= 0 {
+		return nil
+	}
 	geometry, ok := m.messagePaneGeometry()
 	if !ok {
-		return media.Placement{}, false
+		return nil
 	}
-	xOffset, yOffset, ok := m.activeMediaOffset(geometry.width, geometry.height, message, item, preview)
-	if !ok {
-		return media.Placement{}, false
+	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height)
+	if len(candidates) == 0 || len(viewportRefs) == 0 {
+		return nil
 	}
-	return media.Placement{
-		Identifier: overlayIdentifier(preview.Key),
-		X:          geometry.x + xOffset,
-		Y:          geometry.y + yOffset,
-		MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
-		MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
-		Path:       preview.SourcePath,
-		Scaler:     "fit_contain",
-	}, true
+
+	rowsByTarget := make(map[string]map[int]int, len(candidates))
+	firstRows := make(map[string]int, len(candidates))
+	for identifier := range candidates {
+		firstRows[identifier] = -1
+	}
+	for y, ref := range viewportRefs {
+		if ref.target == "" {
+			continue
+		}
+		if rowsByTarget[ref.target] == nil {
+			rowsByTarget[ref.target] = map[int]int{}
+		}
+		rowsByTarget[ref.target][ref.row] = y
+		if ref.row == 0 {
+			firstRows[ref.target] = y
+		}
+	}
+
+	placements := make([]media.Placement, 0, len(candidates))
+	for identifier, candidate := range candidates {
+		preview := candidate.preview
+		firstRow := firstRows[identifier]
+		if firstRow == -1 || len(rowsByTarget[identifier]) < preview.Height {
+			continue
+		}
+		xOffset := m.mediaXOffset(geometry.width, candidate)
+		yOffset := 1 + firstRow
+		placements = append(placements, media.Placement{
+			Identifier: identifier,
+			X:          geometry.x + xOffset,
+			Y:          geometry.y + yOffset,
+			MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
+			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+			Path:       preview.SourcePath,
+			Scaler:     "fit_contain",
+		})
+	}
+	return placements
 }
 
 type paneGeometry struct {
@@ -94,12 +136,13 @@ func (m Model) messagePaneGeometry() (paneGeometry, bool) {
 	}, true
 }
 
-func (m Model) activeMediaOffset(width, height int, focused store.Message, item store.MediaMetadata, preview media.Preview) (int, int, bool) {
+func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementCandidate, []messageLineRef) {
 	if width <= 0 || height <= 1 {
-		return 0, 0, false
+		return nil, nil
 	}
 
 	blocks := make([]messageLayoutBlock, 0, len(m.currentMessages()))
+	candidates := map[string]mediaPlacementCandidate{}
 	var lastDate string
 	for i, message := range m.currentMessages() {
 		date := messageDate(message)
@@ -109,12 +152,24 @@ func (m Model) activeMediaOffset(width, height int, focused store.Message, item 
 		bubbleLines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
 		refs := make([]messageLineRef, len(bubbleLines))
 
-		if message.ID == focused.ID {
+		for _, item := range message.Media {
+			preview, ok := m.mediaPreview(message, item, width)
+			if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+				continue
+			}
 			lineOffset, ok := m.previewLineOffset(message, item, preview)
-			if ok {
-				for row := 0; row < preview.Height && lineOffset+row < len(refs); row++ {
-					refs[lineOffset+row] = messageLineRef{target: true, row: row}
-				}
+			if !ok {
+				continue
+			}
+			identifier := overlayIdentifier(preview.Key)
+			candidates[identifier] = mediaPlacementCandidate{
+				message:  message,
+				preview:  preview,
+				active:   active,
+				selected: selected,
+			}
+			for row := 0; row < preview.Height && lineOffset+row < len(refs); row++ {
+				refs[lineOffset+row] = messageLineRef{target: identifier, row: row}
 			}
 		}
 
@@ -132,31 +187,14 @@ func (m Model) activeMediaOffset(width, height int, focused store.Message, item 
 	footerHeight := min(countLines(footer), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
 	viewportRefs := messageViewportRefs(blocks, m.messageScrollTop, clamp(m.messageCursor, 0, len(blocks)-1), messageHeight)
-
-	rows := make(map[int]int, preview.Height)
-	firstRow := -1
-	for y, ref := range viewportRefs {
-		if !ref.target {
-			continue
-		}
-		rows[ref.row] = y
-		if ref.row == 0 {
-			firstRow = y
-		}
-	}
-	if firstRow == -1 || len(rows) < preview.Height {
-		return 0, 0, false
-	}
-
-	xOffset := m.activeMediaXOffset(width, focused)
-	return xOffset, 1 + firstRow, true
+	return candidates, viewportRefs
 }
 
-func (m Model) activeMediaXOffset(width int, message store.Message) int {
-	bubble := m.renderMessageBubble(message, width, true, false)
+func (m Model) mediaXOffset(width int, candidate mediaPlacementCandidate) int {
+	bubble := m.renderMessageBubble(candidate.message, width, candidate.active, candidate.selected)
 	bubbleWidth := maxRenderedWidth(bubble)
 	indent := 0
-	if message.IsOutgoing {
+	if candidate.message.IsOutgoing {
 		indent = max(0, width-bubbleWidth-3)
 	}
 	return indent + 2

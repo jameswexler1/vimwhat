@@ -324,6 +324,51 @@ func TestOverlayManagerSendsAddAndRemoveJSON(t *testing.T) {
 	}
 }
 
+func TestOverlayManagerSyncKeepsMultipleVisiblePlacements(t *testing.T) {
+	var buf bytes.Buffer
+	manager := NewOverlayManagerForWriter(&buf)
+
+	if err := manager.Sync(context.Background(), []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/one.jpg"},
+		{Identifier: "media-2", X: 4, Y: 6, MaxWidth: 12, MaxHeight: 5, Path: "/tmp/two.jpg"},
+	}); err != nil {
+		t.Fatalf("Sync(add) error = %v", err)
+	}
+	if err := manager.Sync(context.Background(), []Placement{
+		{Identifier: "media-2", X: 4, Y: 7, MaxWidth: 12, MaxHeight: 5, Path: "/tmp/two.jpg"},
+	}); err != nil {
+		t.Fatalf("Sync(update) error = %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("commands = %q, want 5 add/remove commands", buf.String())
+	}
+	var commands []overlayCommand
+	for _, line := range lines {
+		var command overlayCommand
+		if err := json.Unmarshal([]byte(line), &command); err != nil {
+			t.Fatalf("Unmarshal(%q) error = %v", line, err)
+		}
+		commands = append(commands, command)
+	}
+	if commands[0].Action != "add" || commands[0].Identifier != "media-1" {
+		t.Fatalf("first command = %+v, want add media-1", commands[0])
+	}
+	if commands[1].Action != "add" || commands[1].Identifier != "media-2" {
+		t.Fatalf("second command = %+v, want add media-2", commands[1])
+	}
+	if commands[2].Action != "remove" || commands[2].Identifier != "media-1" {
+		t.Fatalf("third command = %+v, want remove media-1", commands[2])
+	}
+	if commands[3].Action != "remove" || commands[3].Identifier != "media-2" {
+		t.Fatalf("fourth command = %+v, want remove changed media-2", commands[3])
+	}
+	if commands[4].Action != "add" || commands[4].Identifier != "media-2" || commands[4].Y != 7 {
+		t.Fatalf("fifth command = %+v, want updated media-2", commands[4])
+	}
+}
+
 func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	videoPath := filepath.Join(t.TempDir(), "clip.mp4")
 	if err := os.WriteFile(videoPath, []byte("fake"), 0o644); err != nil {
