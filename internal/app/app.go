@@ -17,10 +17,13 @@ import (
 )
 
 type Environment struct {
-	Paths         config.Paths
-	Config        config.Config
-	PreviewReport media.Report
-	Store         *store.Store
+	Paths                config.Paths
+	Config               config.Config
+	PreviewReport        media.Report
+	Store                *store.Store
+	OpenWhatsAppSession  WhatsAppSessionOpener
+	CheckWhatsAppSession WhatsAppSessionStatusChecker
+	RenderQR             QRRenderer
 }
 
 func Main(args []string) int {
@@ -58,10 +61,13 @@ func Bootstrap() (Environment, error) {
 	}
 
 	return Environment{
-		Paths:         paths,
-		Config:        cfg,
-		PreviewReport: media.Detect(cfg.PreviewBackend),
-		Store:         db,
+		Paths:                paths,
+		Config:               cfg,
+		PreviewReport:        media.Detect(cfg.PreviewBackend),
+		Store:                db,
+		OpenWhatsAppSession:  defaultOpenWhatsAppSession,
+		CheckWhatsAppSession: defaultCheckWhatsAppSession,
+		RenderQR:             renderTerminalQR,
 	}, nil
 }
 
@@ -86,9 +92,10 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "demo":
 		return runDemo(env, args[1:], stdout, stderr)
-	case "login", "logout":
-		fmt.Fprintf(stderr, "vimwhat: %s is not implemented yet\n", args[0])
-		return 1
+	case "login":
+		return runLogin(env, stdout, stderr)
+	case "logout":
+		return runLogout(env, stdout, stderr)
 	case "media":
 		return runMedia(args[1:], stderr)
 	case "export":
@@ -230,12 +237,7 @@ func printDoctor(env Environment, w io.Writer) {
 		stats = store.Stats{}
 	}
 	appliedMigrations, pendingMigrations, migrationErr := env.Store.MigrationStatus(context.Background())
-	sessionStatus := "not configured"
-	if _, err := os.Stat(env.Paths.SessionFile); err == nil {
-		sessionStatus = "present"
-	} else if err != nil && !os.IsNotExist(err) {
-		sessionStatus = fmt.Sprintf("check failed: %v", err)
-	}
+	sessionStatus := sessionStatusLine(env, context.Background())
 
 	lines := []string{
 		"vimwhat doctor",

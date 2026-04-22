@@ -341,6 +341,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	}
+	if m.leaderPending {
+		return m.handleLeaderKey(msg)
+	}
 
 	switch m.mode {
 	case ModeInsert:

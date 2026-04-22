@@ -2359,6 +2359,29 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	}
 }
 
+func TestLeaderPrefixConsumesHWithoutMovingFocus(t *testing.T) {
+	model := mediaTestModel(filepath.Join(t.TempDir(), "photo.jpg"), media.BackendChafa)
+	model.focus = FocusMessages
+
+	leaderModel, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = leaderModel.(Model)
+	prefixModel, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	model = prefixModel.(Model)
+
+	if model.focus != FocusMessages {
+		t.Fatalf("focus = %s, want messages after <leader>h", model.focus)
+	}
+	if !model.leaderPending || model.leaderSequence != "h" {
+		t.Fatalf("leader after h = pending %v sequence %q, want pending h", model.leaderPending, model.leaderSequence)
+	}
+
+	cancelled, _ := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = cancelled.(Model)
+	if model.leaderPending || model.leaderSequence != "" || !strings.Contains(model.status, "cancelled") {
+		t.Fatalf("leader after esc = pending %v sequence %q status %q", model.leaderPending, model.leaderSequence, model.status)
+	}
+}
+
 func TestRemoteOpenAndSaveShowDownloadNotImplemented(t *testing.T) {
 	model := mediaTestModel("", media.BackendChafa)
 
