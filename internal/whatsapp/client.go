@@ -201,10 +201,8 @@ func (c *Client) Login(ctx context.Context, handleQR QRHandler) error {
 			return err
 		}
 
-		if c.hasStoredCredentials() {
-			if err := c.client.Store.Delete(ctx); err != nil {
-				return fmt.Errorf("delete rejected whatsapp session: %w", err)
-			}
+		if err := c.resetSession(ctx); err != nil {
+			return err
 		}
 	}
 
@@ -270,6 +268,9 @@ func (c *Client) Logout(ctx context.Context) error {
 	if !c.IsLoggedIn() {
 		if err := c.connectAndWait(ctx, authTimeout); err != nil {
 			if errors.Is(err, errSessionRejected) {
+				if resetErr := c.resetSession(ctx); resetErr != nil {
+					return resetErr
+				}
 				return nil
 			}
 			return fmt.Errorf("connect for logout: %w", err)
@@ -281,6 +282,37 @@ func (c *Client) Logout(ctx context.Context) error {
 		}
 		return err
 	}
+	return nil
+}
+
+func (c *Client) resetSession(ctx context.Context) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	if c.hasStoredCredentials() {
+		if err := c.client.Store.Delete(ctx); err != nil && !errors.Is(err, sqlstore.ErrDeviceIDMustBeSet) {
+			return fmt.Errorf("delete rejected whatsapp session: %w", err)
+		}
+	}
+	if err := c.reloadDevice(ctx); err != nil {
+		return fmt.Errorf("reload whatsapp session: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) reloadDevice(ctx context.Context) error {
+	if c.container == nil {
+		return fmt.Errorf("whatsapp session container is not open")
+	}
+	if c.client != nil {
+		c.client.Disconnect()
+	}
+
+	deviceStore, err := c.container.GetFirstDevice(ctx)
+	if err != nil {
+		return fmt.Errorf("open whatsapp device store: %w", err)
+	}
+	c.client = whatsmeow.NewClient(deviceStore, nil)
 	return nil
 }
 
