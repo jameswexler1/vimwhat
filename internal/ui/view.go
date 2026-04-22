@@ -12,17 +12,20 @@ import (
 )
 
 var (
-	softFG       = uiTheme.SoftFG
-	primaryFG    = uiTheme.PrimaryFG
-	accentFG     = uiTheme.AccentFG
-	warnFG       = uiTheme.WarnFG
-	borderColor  = uiTheme.Border
-	activeBorder = uiTheme.ActiveBorder
-	outgoingFG   = uiTheme.OutgoingFG
-	incomingLine = uiTheme.IncomingLine
-	outgoingLine = uiTheme.OutgoingLine
-	selectedLine = uiTheme.SelectedLine
-	focusedLine  = uiTheme.FocusedLine
+	softFG               = uiTheme.SoftFG
+	primaryFG            = uiTheme.PrimaryFG
+	accentFG             = uiTheme.AccentFG
+	warnFG               = uiTheme.WarnFG
+	searchMatchFG        = uiTheme.SearchMatchFG
+	searchCurrentMatchFG = uiTheme.SearchCurrentMatchFG
+	searchCurrentMatchBG = uiTheme.SearchCurrentMatchBG
+	borderColor          = uiTheme.Border
+	activeBorder         = uiTheme.ActiveBorder
+	outgoingFG           = uiTheme.OutgoingFG
+	incomingLine         = uiTheme.IncomingLine
+	outgoingLine         = uiTheme.OutgoingLine
+	selectedLine         = uiTheme.SelectedLine
+	focusedLine          = uiTheme.FocusedLine
 )
 
 const (
@@ -380,6 +383,80 @@ func truncateDisplay(value string, width int) string {
 	return head + "~"
 }
 
+type searchSegment struct {
+	text  string
+	match bool
+}
+
+func splitSearchSegments(value, query string) []searchSegment {
+	query = strings.TrimSpace(query)
+	if value == "" || query == "" {
+		return []searchSegment{{text: value}}
+	}
+
+	valueRunes := []rune(value)
+	queryRunes := []rune(query)
+	if len(queryRunes) == 0 || len(valueRunes) < len(queryRunes) {
+		return []searchSegment{{text: value}}
+	}
+
+	var segments []searchSegment
+	start := 0
+	for i := 0; i <= len(valueRunes)-len(queryRunes); {
+		candidate := string(valueRunes[i : i+len(queryRunes)])
+		if strings.EqualFold(candidate, query) {
+			if start < i {
+				segments = append(segments, searchSegment{text: string(valueRunes[start:i])})
+			}
+			segments = append(segments, searchSegment{text: candidate, match: true})
+			i += len(queryRunes)
+			start = i
+			continue
+		}
+		i++
+	}
+	if start < len(valueRunes) {
+		segments = append(segments, searchSegment{text: string(valueRunes[start:])})
+	}
+	if len(segments) == 0 {
+		return []searchSegment{{text: value}}
+	}
+	return segments
+}
+
+func containsSearchMatch(value, query string) bool {
+	for _, segment := range splitSearchSegments(value, query) {
+		if segment.match {
+			return true
+		}
+	}
+	return false
+}
+
+func renderSearchHighlightedText(value, query string, baseStyle lipgloss.Style, current bool) string {
+	segments := splitSearchSegments(value, query)
+	if len(segments) == 1 && !segments[0].match {
+		return baseStyle.Render(value)
+	}
+
+	matchStyle := baseStyle.Italic(true).Underline(true).Foreground(searchMatchFG)
+	currentMatchStyle := baseStyle.Italic(true).Underline(true).Foreground(searchCurrentMatchFG).Background(searchCurrentMatchBG)
+
+	var out strings.Builder
+	for _, segment := range segments {
+		style := baseStyle
+		if segment.match {
+			if current {
+				style = currentMatchStyle
+			} else {
+				style = matchStyle
+			}
+		}
+		out.WriteString(style.Render(segment.text))
+	}
+	return out.String()
+}
+
 func (m Model) renderChats(width, height int) string {
 	var lines []string
 	headerText := "Chats"
@@ -415,11 +492,9 @@ func (m Model) renderChats(width, height int) string {
 
 func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	border := borderColor
-	titleFG := softFG
 	previewFG := softFG
 	if active {
 		border = activeBorder
-		titleFG = primaryFG
 		previewFG = accentFG
 	}
 
@@ -435,18 +510,41 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	}
 	avatar := chatAvatarBadge(title, chat.Kind)
 	textWidth := max(1, contentWidth-lipgloss.Width(avatar)-1)
-	titleLine := chatTitleLine(title, chatSuffix(chat), textWidth)
+	chatSearchQuery := m.chatSearchQuery()
+	titleLine := renderChatTitleLine(title, chatSuffix(chat), textWidth, chatSearchQuery, active)
 	previewLine := truncateDisplay(m.chatPreview(chat), textWidth)
 
 	avatarStyle := lipgloss.NewStyle().Foreground(border)
-	titleStyle := lipgloss.NewStyle().Foreground(titleFG).Bold(active)
 	previewStyle := lipgloss.NewStyle().Foreground(previewFG)
 	content := strings.Join([]string{
-		avatarStyle.Render(avatar) + " " + titleStyle.Render(titleLine),
+		avatarStyle.Render(avatar) + " " + titleLine,
 		avatarStyle.Render(strings.Repeat(" ", lipgloss.Width(avatar))) + " " + previewStyle.Render(previewLine),
 	}, "\n")
 
 	return style.Width(panelBoxWidth(style, width)).Render(content)
+}
+
+func renderChatTitleLine(title, suffix string, width int, query string, current bool) string {
+	width = max(1, width)
+	titleStyle := lipgloss.NewStyle().Foreground(softFG)
+	if current {
+		titleStyle = titleStyle.Foreground(primaryFG).Bold(true)
+	}
+	suffixStyle := titleStyle
+	if suffix == "" {
+		title = truncateDisplay(title, width)
+		return renderSearchHighlightedText(title, query, titleStyle, current && containsSearchMatch(title, query))
+	}
+
+	suffixWidth := lipgloss.Width(suffix)
+	if suffixWidth >= width {
+		return suffixStyle.Render(truncateDisplay(suffix, width))
+	}
+
+	title = truncateDisplay(title, max(1, width-suffixWidth-1))
+	gap := max(1, width-lipgloss.Width(title)-suffixWidth)
+	highlightedTitle := renderSearchHighlightedText(title, query, titleStyle, current && containsSearchMatch(title, query))
+	return highlightedTitle + strings.Repeat(" ", gap) + suffixStyle.Render(suffix)
 }
 
 func chatAvatarBadge(title, kind string) string {
@@ -732,9 +830,7 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	previewWidth, _ := m.previewDimensions()
 	contentWidth := m.bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message, previewWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
-	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
-		bodyStyle = bodyStyle.Foreground(warnFG)
-	}
+	messageSearchQuery := m.messageSearchQuery()
 
 	var lines []string
 	if sender != "" {
@@ -750,7 +846,8 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 	if body != "" {
 		for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
-			lines = append(lines, bodyStyle.Render(truncateDisplay(line, contentWidth)))
+			line = truncateDisplay(line, contentWidth)
+			lines = append(lines, renderSearchHighlightedText(line, messageSearchQuery, bodyStyle, active && containsSearchMatch(body, messageSearchQuery)))
 		}
 	}
 	if meta != "" {
@@ -774,6 +871,23 @@ func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, wid
 		return media.Preview{}, false
 	}
 	return preview, true
+}
+
+func (m Model) chatSearchQuery() string {
+	if strings.TrimSpace(m.activeSearch) == "" || m.lastSearchFocus != FocusChats {
+		return ""
+	}
+	return m.activeSearch
+}
+
+func (m Model) messageSearchQuery() string {
+	if strings.TrimSpace(m.activeSearch) == "" {
+		return ""
+	}
+	if m.lastSearchFocus != FocusMessages && m.lastSearchFocus != FocusPreview {
+		return ""
+	}
+	return m.activeSearch
 }
 
 func overlayPreviewVisible(preview media.Preview, visibleOverlays map[string]bool) bool {

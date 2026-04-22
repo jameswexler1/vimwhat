@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"maybewhats/internal/config"
 	"maybewhats/internal/media"
@@ -142,6 +144,45 @@ func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	}
 	if got.activeSearch != "needle" || len(got.searchMatches) != 1 {
 		t.Fatalf("search state = active %q matches %v, want needle and one match", got.activeSearch, got.searchMatches)
+	}
+}
+
+func TestSplitSearchSegmentsCaseInsensitiveAndNonOverlapping(t *testing.T) {
+	segments := splitSearchSegments("bAnAnAna", "ana")
+	want := []searchSegment{
+		{text: "b"},
+		{text: "AnA", match: true},
+		{text: "n"},
+		{text: "Ana", match: true},
+	}
+	if len(segments) != len(want) {
+		t.Fatalf("segments = %+v, want %+v", segments, want)
+	}
+	for i := range want {
+		if segments[i] != want[i] {
+			t.Fatalf("segments[%d] = %+v, want %+v", i, segments[i], want[i])
+		}
+	}
+}
+
+func TestRenderSearchHighlightedTextUsesMatchAndCurrentStyles(t *testing.T) {
+	withANSIStyles(t)
+
+	base := lipgloss.NewStyle().Foreground(primaryFG).Bold(true)
+
+	normal := renderSearchHighlightedText("needle", "needle", base, false)
+	normalCodes := sgrCodesBeforeNth(normal, "needle", 0)
+	if !hasSGRCode(normalCodes, "3") || !hasSGRCode(normalCodes, "4") {
+		t.Fatalf("normal match codes = %v, want italic and underline", normalCodes)
+	}
+	if hasSGRCode(normalCodes, "48") {
+		t.Fatalf("normal match codes = %v, want no background highlight", normalCodes)
+	}
+
+	current := renderSearchHighlightedText("needle", "needle", base, true)
+	currentCodes := sgrCodesBeforeNth(current, "needle", 0)
+	if !hasSGRCode(currentCodes, "3") || !hasSGRCode(currentCodes, "4") || !hasSGRCode(currentCodes, "48") {
+		t.Fatalf("current match codes = %v, want italic underline and background highlight", currentCodes)
 	}
 }
 
@@ -625,6 +666,86 @@ func TestChatSearchKeepsMatchedCellVisible(t *testing.T) {
 	view := stripANSI(got.renderChats(30, 11))
 	if !strings.Contains(view, "Needle Team") {
 		t.Fatalf("matched chat cell is not visible\n%s", view)
+	}
+}
+
+func TestChatSearchHighlightsTitlesOnlyAndHoveredChat(t *testing.T) {
+	withANSIStyles(t)
+
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "needle alpha", LastPreview: "needle preview"},
+				{ID: "chat-2", Title: "needle beta", LastPreview: "needle preview"},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-2",
+		},
+	})
+	model.width = 120
+	model.height = 14
+	model.focus = FocusChats
+	model.activeChat = 1
+	model.activeSearch = "needle"
+	model.lastSearchFocus = FocusChats
+
+	inactiveView := model.renderChatCell(model.chats[0], false, 40)
+	inactiveTitleCodes := sgrCodesBeforeNth(inactiveView, "needle", 0)
+	inactivePreviewCodes := sgrCodesBeforeNth(inactiveView, "needle", 1)
+	if !hasSGRCode(inactiveTitleCodes, "3") || !hasSGRCode(inactiveTitleCodes, "4") || hasSGRCode(inactiveTitleCodes, "48") {
+		t.Fatalf("inactive title codes = %v, want italic underline without current highlight", inactiveTitleCodes)
+	}
+	if hasSGRCode(inactivePreviewCodes, "3") || hasSGRCode(inactivePreviewCodes, "4") || hasSGRCode(inactivePreviewCodes, "48") {
+		t.Fatalf("inactive preview codes = %v, want no search styling", inactivePreviewCodes)
+	}
+
+	activeView := model.renderChatCell(model.chats[1], true, 40)
+	activeTitleCodes := sgrCodesBeforeNth(activeView, "needle", 0)
+	activePreviewCodes := sgrCodesBeforeNth(activeView, "needle", 1)
+	if !hasSGRCode(activeTitleCodes, "3") || !hasSGRCode(activeTitleCodes, "4") || !hasSGRCode(activeTitleCodes, "48") {
+		t.Fatalf("active title codes = %v, want current match highlight", activeTitleCodes)
+	}
+	if hasSGRCode(activePreviewCodes, "3") || hasSGRCode(activePreviewCodes, "4") || hasSGRCode(activePreviewCodes, "48") {
+		t.Fatalf("active preview codes = %v, want no search styling", activePreviewCodes)
+	}
+}
+
+func TestMessageSearchHighlightsBodiesOnlyAndHoveredMessage(t *testing.T) {
+	withANSIStyles(t)
+
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", ChatID: "chat-1", ChatJID: "group@g.us", Sender: "Alice", Body: "needle first"},
+					{ID: "m-2", ChatID: "chat-1", ChatJID: "group@g.us", Sender: "needle sender", Body: "needle second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+	model.activeSearch = "needle"
+	model.lastSearchFocus = FocusMessages
+
+	inactiveBubble := model.renderMessageBubbleForViewport(model.currentMessages()[0], 70, false, false, nil)
+	inactiveBodyCodes := sgrCodesBeforeNth(inactiveBubble, "needle", 0)
+	if !hasSGRCode(inactiveBodyCodes, "3") || !hasSGRCode(inactiveBodyCodes, "4") || hasSGRCode(inactiveBodyCodes, "48") {
+		t.Fatalf("inactive body codes = %v, want italic underline without current highlight", inactiveBodyCodes)
+	}
+
+	activeBubble := model.renderMessageBubbleForViewport(model.currentMessages()[1], 70, true, false, nil)
+	senderCodes := sgrCodesBeforeNth(activeBubble, "needle", 0)
+	activeBodyCodes := sgrCodesBeforeNth(activeBubble, "needle", 1)
+	if hasSGRCode(senderCodes, "3") || hasSGRCode(senderCodes, "4") || hasSGRCode(senderCodes, "48") {
+		t.Fatalf("sender codes = %v, want no search styling", senderCodes)
+	}
+	if !hasSGRCode(activeBodyCodes, "3") || !hasSGRCode(activeBodyCodes, "4") || !hasSGRCode(activeBodyCodes, "48") {
+		t.Fatalf("active body codes = %v, want current match highlight", activeBodyCodes)
 	}
 }
 
@@ -2644,10 +2765,114 @@ func TestMessagesViewportDoesNotGrowPastPanelHeight(t *testing.T) {
 	}
 }
 
-var ansiRE = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+var (
+	ansiRE     = regexp.MustCompile(`\x1b\[[0-9;:]*m`)
+	ansiCodeRE = regexp.MustCompile(`\x1b\[([0-9;:]*)m`)
+)
 
 func stripANSI(value string) string {
 	return ansiRE.ReplaceAllString(value, "")
+}
+
+type styledRune struct {
+	value string
+	codes []string
+}
+
+func sgrCodesBeforeNth(value, needle string, occurrence int) []string {
+	if occurrence < 0 {
+		return nil
+	}
+
+	styled := visibleStyledRunes(value)
+	visible := make([]rune, 0, len(styled))
+	for _, item := range styled {
+		r, _ := utf8.DecodeRuneInString(item.value)
+		visible = append(visible, r)
+	}
+
+	query := []rune(needle)
+	if len(query) == 0 || len(visible) < len(query) {
+		return nil
+	}
+
+	found := -1
+	count := 0
+	for i := 0; i <= len(visible)-len(query); {
+		if equalFoldRuneSlice(visible[i:i+len(query)], query) {
+			if count == occurrence {
+				found = i
+				break
+			}
+			count++
+			i += len(query)
+			continue
+		}
+		i++
+	}
+	if found == -1 {
+		return nil
+	}
+	return styled[found].codes
+}
+
+func visibleStyledRunes(value string) []styledRune {
+	var out []styledRune
+	var currentCodes []string
+	for i := 0; i < len(value); {
+		if value[i] == '\x1b' {
+			if loc := ansiCodeRE.FindStringSubmatchIndex(value[i:]); loc != nil && loc[0] == 0 {
+				currentCodes = strings.FieldsFunc(value[i+loc[2]:i+loc[3]], func(r rune) bool {
+					return r == ';' || r == ':'
+				})
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(value[i:])
+		if r == utf8.RuneError && size == 1 {
+			return nil
+		}
+		codes := append([]string(nil), currentCodes...)
+		out = append(out, styledRune{value: value[i : i+size], codes: codes})
+		i += size
+	}
+	return out
+}
+
+func hasSGRCode(codes []string, want string) bool {
+	for _, code := range codes {
+		if code == want {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFoldRuneSlice(left, right []rune) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !strings.EqualFold(string(left[i]), string(right[i])) {
+			return false
+		}
+	}
+	return true
+}
+
+func withANSIStyles(t *testing.T) {
+	t.Helper()
+
+	renderer := lipgloss.DefaultRenderer()
+	previousProfile := renderer.ColorProfile()
+	previousBackground := renderer.HasDarkBackground()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(previousProfile)
+		lipgloss.SetHasDarkBackground(previousBackground)
+	})
 }
 
 func plainLineContaining(view, needle string) string {
