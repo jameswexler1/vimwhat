@@ -75,7 +75,7 @@ func TestInsertSendClearsDraft(t *testing.T) {
 			DraftsByChat:   map[string]string{"chat-1": "old draft"},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(chatID, body string) (store.Message, error) {
+		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
 			return store.Message{ID: "local-1", ChatID: chatID, Sender: "me", Body: body, IsOutgoing: true}, nil
 		},
 		SaveDraft: func(chatID, body string) error {
@@ -1232,6 +1232,206 @@ func TestVisualFooterIsMinimal(t *testing.T) {
 	}
 }
 
+func TestVisualYankCopiesSelectionToClipboard(t *testing.T) {
+	var copied string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		CopyToClipboard: func(text string) error {
+			copied = text
+			return nil
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 1
+
+	updated, cmd := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := updated.(Model)
+	if got.yankRegister != "first\nsecond" {
+		t.Fatalf("yankRegister = %q", got.yankRegister)
+	}
+	if cmd == nil {
+		t.Fatal("visual yank did not return clipboard command")
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if copied != "first\nsecond" {
+		t.Fatalf("copied = %q", copied)
+	}
+	if !strings.Contains(got.status, "clipboard") {
+		t.Fatalf("status = %q, want clipboard copy result", got.status)
+	}
+}
+
+func TestAttachmentPickerStagesAttachmentInComposer(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PickAttachment: func() tea.Cmd {
+			return func() tea.Msg {
+				return AttachmentPickedMsg{Attachment: Attachment{
+					LocalPath:     "/tmp/photo.jpg",
+					FileName:      "photo.jpg",
+					MIMEType:      "image/jpeg",
+					SizeBytes:     2048,
+					DownloadState: "local_pending",
+				}}
+			}
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlF})
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatal("ctrl+f did not start picker")
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if len(got.attachments) != 1 || got.attachments[0].FileName != "photo.jpg" {
+		t.Fatalf("attachments = %+v", got.attachments)
+	}
+	view := stripANSI(got.renderMessages(70, 10))
+	if !strings.Contains(view, "[img] photo.jpg 2.0KB local_pending") {
+		t.Fatalf("composer did not render staged attachment\n%s", view)
+	}
+}
+
+func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
+	var sentAttachments []Attachment
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
+			sentAttachments = attachments
+			return store.Message{
+				ID:         "local-1",
+				ChatID:     chatID,
+				Sender:     "me",
+				Body:       body,
+				IsOutgoing: true,
+				Media: []store.MediaMetadata{{
+					MessageID:     "local-1",
+					FileName:      attachments[0].FileName,
+					MIMEType:      attachments[0].MIMEType,
+					SizeBytes:     attachments[0].SizeBytes,
+					DownloadState: attachments[0].DownloadState,
+				}},
+			}, nil
+		},
+		SaveDraft: func(chatID, body string) error { return nil },
+	})
+	model.mode = ModeInsert
+	model.attachments = []Attachment{{
+		LocalPath:     "/tmp/report.pdf",
+		FileName:      "report.pdf",
+		MIMEType:      "application/pdf",
+		SizeBytes:     1024,
+		DownloadState: "local_pending",
+	}}
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if len(sentAttachments) != 1 || sentAttachments[0].FileName != "report.pdf" {
+		t.Fatalf("sentAttachments = %+v", sentAttachments)
+	}
+	if len(got.attachments) != 0 {
+		t.Fatalf("attachments were not cleared: %+v", got.attachments)
+	}
+	if messages := got.messagesByChat["chat-1"]; len(messages) != 1 || len(messages[0].Media) != 1 {
+		t.Fatalf("messages after send = %+v", messages)
+	}
+}
+
+func TestMessageBubbleRendersAttachmentRows(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+
+	bubble := stripANSI(model.renderMessageBubble(store.Message{
+		ID:     "m-1",
+		ChatID: "chat-1",
+		Body:   "see attached",
+		Media: []store.MediaMetadata{{
+			MessageID:     "m-1",
+			FileName:      "report.pdf",
+			MIMEType:      "application/pdf",
+			SizeBytes:     2048,
+			DownloadState: "downloaded",
+		}},
+	}, 80, false, false))
+	if !strings.Contains(bubble, "[pdf] report.pdf 2.0KB") || !strings.Contains(bubble, "see attached") {
+		t.Fatalf("bubble did not render media row and caption\n%s", bubble)
+	}
+}
+
+func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T) {
+	var deletedID string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "keep"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "delete me"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		DeleteMessage: func(messageID string) error {
+			deletedID = messageID
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+
+	armed, _ := model.executeCommand("delete-message")
+	got := armed.(Model)
+	if deletedID != "" {
+		t.Fatal("delete-message deleted without confirmation")
+	}
+	if got.deleteConfirmID != "m-2" {
+		t.Fatalf("deleteConfirmID = %q, want m-2", got.deleteConfirmID)
+	}
+
+	deleted, _ := got.executeCommand("delete-message confirm")
+	got = deleted.(Model)
+	if deletedID != "m-2" {
+		t.Fatalf("deletedID = %q, want m-2", deletedID)
+	}
+	messages := got.messagesByChat["chat-1"]
+	if len(messages) != 1 || messages[0].ID != "m-1" {
+		t.Fatalf("messages after delete = %+v", messages)
+	}
+}
+
 func TestCompactInsertComposerVisibleAt80ColumnsWithDatedMessages(t *testing.T) {
 	now := time.Date(2026, 4, 21, 20, 0, 0, 0, time.UTC)
 	messages := []store.Message{
@@ -1349,7 +1549,7 @@ func TestSendingMessageScrollsConversationToNewestMessage(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(chatID, body string) (store.Message, error) {
+		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
 			return store.Message{ID: "local-1", ChatID: chatID, Sender: "me", Body: body, IsOutgoing: true}, nil
 		},
 	})
@@ -1523,6 +1723,7 @@ func TestLoadThemeReadsPywalColors(t *testing.T) {
 			"color3": "#333333",
 			"color4": "#444444",
 			"color5": "#555555",
+			"color6": "#666666",
 			"color8": "#888888",
 			"color10": "#aaaaaa"
 		}
@@ -1540,6 +1741,9 @@ func TestLoadThemeReadsPywalColors(t *testing.T) {
 	}
 	if theme.InsertModeBG != lipgloss.Color("#555555") {
 		t.Fatalf("InsertModeBG = %q, want #555555", theme.InsertModeBG)
+	}
+	if theme.FocusedLine != lipgloss.Color("#666666") {
+		t.Fatalf("FocusedLine = %q, want #666666", theme.FocusedLine)
 	}
 }
 

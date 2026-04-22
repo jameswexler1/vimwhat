@@ -21,6 +21,7 @@ var (
 	incomingLine = uiTheme.IncomingLine
 	outgoingLine = uiTheme.OutgoingLine
 	selectedLine = uiTheme.SelectedLine
+	focusedLine  = uiTheme.FocusedLine
 )
 
 const (
@@ -431,17 +432,52 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	if title == "" {
 		title = "unknown"
 	}
-	titleLine := chatTitleLine(title, chatSuffix(chat), contentWidth)
-	previewLine := truncateDisplay(m.chatPreview(chat), contentWidth)
+	avatar := chatAvatarBadge(title, chat.Kind)
+	textWidth := max(1, contentWidth-lipgloss.Width(avatar)-1)
+	titleLine := chatTitleLine(title, chatSuffix(chat), textWidth)
+	previewLine := truncateDisplay(m.chatPreview(chat), textWidth)
 
+	avatarStyle := lipgloss.NewStyle().Foreground(border)
 	titleStyle := lipgloss.NewStyle().Foreground(titleFG).Bold(active)
 	previewStyle := lipgloss.NewStyle().Foreground(previewFG)
 	content := strings.Join([]string{
-		titleStyle.Render(titleLine),
-		previewStyle.Render(previewLine),
+		avatarStyle.Render(avatar) + " " + titleStyle.Render(titleLine),
+		avatarStyle.Render(strings.Repeat(" ", lipgloss.Width(avatar))) + " " + previewStyle.Render(previewLine),
 	}, "\n")
 
 	return style.Width(panelBoxWidth(style, width)).Render(content)
+}
+
+func chatAvatarBadge(title, kind string) string {
+	initials := chatInitials(title)
+	if kind == "group" && initials == "" {
+		initials = "#"
+	}
+	if initials == "" {
+		initials = "?"
+	}
+	return "[" + truncateDisplay(initials, 2) + "]"
+}
+
+func chatInitials(title string) string {
+	words := strings.Fields(title)
+	if len(words) == 0 {
+		return ""
+	}
+	var initials []rune
+	for _, word := range words {
+		for _, r := range word {
+			if r == '[' || r == '(' {
+				continue
+			}
+			initials = append(initials, []rune(strings.ToUpper(string(r)))[0])
+			break
+		}
+		if len(initials) == 2 {
+			break
+		}
+	}
+	return string(initials)
 }
 
 func (m Model) chatPreview(chat store.Chat) string {
@@ -662,12 +698,12 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		metaFG = warnFG
 	}
 	if active {
-		border = activeBorder
+		border = focusedLine
 		metaFG = primaryFG
 	}
 
 	body := strings.TrimSpace(message.Body)
-	if body == "" {
+	if body == "" && len(message.Media) == 0 {
 		body = "(empty)"
 	}
 	meta := messageBubbleMeta(message)
@@ -684,7 +720,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 		BorderForeground(border).
 		Padding(0, 1)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
-	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender)
+	contentWidth := bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message.Media)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
 	if m.activeSearch != "" && strings.Contains(strings.ToLower(body), strings.ToLower(m.activeSearch)) {
 		bodyStyle = bodyStyle.Foreground(warnFG)
@@ -694,8 +730,13 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 	if sender != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
 	}
-	for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
-		lines = append(lines, bodyStyle.Render(truncateDisplay(line, contentWidth)))
+	for _, media := range message.Media {
+		lines = append(lines, renderAttachmentLine(media, contentWidth, active || selected))
+	}
+	if body != "" {
+		for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
+			lines = append(lines, bodyStyle.Render(truncateDisplay(line, contentWidth)))
+		}
 	}
 	if meta != "" {
 		meta = truncateDisplay(meta, contentWidth)
@@ -712,7 +753,7 @@ func bubbleWidth(available int) int {
 	return min(max(22, available*46/100), available-2)
 }
 
-func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string) int {
+func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, mediaItems []store.MediaMetadata) int {
 	maxContentWidth := max(1, panelContentWidth(style, maxBubbleWidth))
 	widest := max(lipgloss.Width(meta), lipgloss.Width(sender))
 	for _, line := range strings.Split(body, "\n") {
@@ -728,7 +769,77 @@ func bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, se
 			widest = max(widest, lineWidth)
 		}
 	}
+	for _, media := range mediaItems {
+		widest = max(widest, lipgloss.Width(attachmentLabel(media)))
+	}
 	return clamp(max(widest, 4), min(4, maxContentWidth), maxContentWidth)
+}
+
+func renderAttachmentLine(media store.MediaMetadata, width int, active bool) string {
+	label := attachmentLabel(media)
+	style := lipgloss.NewStyle().Foreground(softFG)
+	if active {
+		style = style.Foreground(primaryFG)
+	}
+	return style.Render(truncateDisplay(label, width))
+}
+
+func attachmentLabel(media store.MediaMetadata) string {
+	name := strings.TrimSpace(media.FileName)
+	if name == "" {
+		name = strings.TrimSpace(media.LocalPath)
+	}
+	if name == "" {
+		name = "attachment"
+	}
+
+	kind := attachmentKind(media.MIMEType, name)
+	size := humanSize(media.SizeBytes)
+	state := strings.TrimSpace(media.DownloadState)
+	var parts []string
+	parts = append(parts, kind, name)
+	if size != "" {
+		parts = append(parts, size)
+	}
+	if state != "" && state != "downloaded" {
+		parts = append(parts, state)
+	}
+	return strings.Join(parts, " ")
+}
+
+func attachmentKind(mimeType, name string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.HasPrefix(mimeType, "image/"):
+		return "[img]"
+	case strings.HasPrefix(mimeType, "video/"):
+		return "[vid]"
+	case strings.HasPrefix(mimeType, "audio/"):
+		return "[aud]"
+	case strings.Contains(mimeType, "pdf") || strings.HasSuffix(strings.ToLower(name), ".pdf"):
+		return "[pdf]"
+	default:
+		return "[file]"
+	}
+}
+
+func humanSize(size int64) string {
+	if size <= 0 {
+		return ""
+	}
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%dB", size)
+	}
+	value := float64(size)
+	units := []string{"KB", "MB", "GB"}
+	for _, suffix := range units {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f%s", value, suffix)
+		}
+	}
+	return fmt.Sprintf("%.1fTB", value/unit)
 }
 
 func bubbleBoxWidth(style lipgloss.Style, contentWidth int) int {
@@ -922,8 +1033,11 @@ func (m Model) renderPrompt(label, content, hint string) string {
 func (m Model) renderComposer(width int) string {
 	lines := []string{renderFooterHelpLine(width)}
 
+	attachmentLines := m.composerAttachmentLines(width)
+	lines = append(lines, attachmentLines...)
+
 	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.composerHeight()-1)
+	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines))
 	if len(bodyLines) > maxBodyLines {
 		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
 	}
@@ -939,6 +1053,30 @@ func (m Model) renderComposer(width int) string {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) composerAttachmentLines(width int) []string {
+	if len(m.attachments) == 0 {
+		return nil
+	}
+
+	maxLines := min(len(m.attachments), 2)
+	start := len(m.attachments) - maxLines
+	lines := make([]string, 0, maxLines+1)
+	if start > 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay(fmt.Sprintf("+%d more attachment(s)", start), width)))
+	}
+	for _, attachment := range m.attachments[start:] {
+		media := store.MediaMetadata{
+			MIMEType:      attachment.MIMEType,
+			FileName:      attachment.FileName,
+			SizeBytes:     attachment.SizeBytes,
+			LocalPath:     attachment.LocalPath,
+			DownloadState: attachment.DownloadState,
+		}
+		lines = append(lines, renderAttachmentLine(media, width, true))
+	}
+	return lines
 }
 
 func (m Model) renderMessageFooter(width int) string {
@@ -999,7 +1137,7 @@ func (m Model) composerHeight() int {
 	if m.mode != ModeInsert {
 		return 0
 	}
-	return min(5, max(3, len(composerLines(m.composer))+2))
+	return min(7, max(3, len(composerLines(m.composer))+len(m.attachments)+2))
 }
 
 func (m Model) renderHelp(width int) string {
@@ -1009,10 +1147,10 @@ func (m Model) renderHelp(width int) string {
 		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
 		"         enter open  i insert    v visual          / search    : command",
 		"         u unread    p sort      n/N next search   ? help      q quit",
-		"insert:  enter send  ctrl+j newline  esc save draft",
-		"visual:  j/k extend  y yank          esc normal",
+		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
+		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
-		"         sort pinned/recent  preview",
+		"         sort pinned/recent  preview  attach <path>  delete-message",
 		"",
 		"state:",
 		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",

@@ -13,6 +13,7 @@ type Config struct {
 	PreviewBackend      string
 	NotificationCommand string
 	ClipboardCommand    string
+	FilePickerCommand   string
 	DownloadsDir        string
 }
 
@@ -43,9 +44,10 @@ func Default(paths Paths) Config {
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:         editor,
-		PreviewBackend: "auto",
-		DownloadsDir:   downloadsDir,
+		Editor:            editor,
+		PreviewBackend:    "auto",
+		FilePickerCommand: "yazi --chooser-file {chooser}",
+		DownloadsDir:      downloadsDir,
 	}
 }
 
@@ -93,6 +95,8 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.NotificationCommand = parsed
 		case "clipboard_command":
 			cfg.ClipboardCommand = parsed
+		case "file_picker_command":
+			cfg.FilePickerCommand = parsed
 		case "downloads_dir":
 			cfg.DownloadsDir = expandPath(parsed)
 		default:

@@ -28,14 +28,20 @@ type Message struct {
 	Status          string
 	QuotedMessageID string
 	QuotedRemoteID  string
+	DeletedAt       time.Time
+	DeletedReason   string
+	Media           []MediaMetadata
 }
 
 type Contact struct {
-	JID         string
-	DisplayName string
-	NotifyName  string
-	Phone       string
-	UpdatedAt   time.Time
+	JID             string
+	DisplayName     string
+	NotifyName      string
+	Phone           string
+	AvatarPath      string
+	AvatarThumbPath string
+	AvatarUpdatedAt time.Time
+	UpdatedAt       time.Time
 }
 
 type MediaMetadata struct {

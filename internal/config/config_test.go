@@ -39,6 +39,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`preview_backend = "chafa"`,
 		`notification_command = "notify-send maybewhats"`,
 		`clipboard_command = "wl-copy"`,
+		`file_picker_command = "yazi --chooser-file {chooser}"`,
 		`downloads_dir = "~/Inbox"`,
 	)
 
@@ -62,6 +63,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.ClipboardCommand != "wl-copy" {
 		t.Fatalf("ClipboardCommand = %q", cfg.ClipboardCommand)
+	}
+	if cfg.FilePickerCommand != "yazi --chooser-file {chooser}" {
+		t.Fatalf("FilePickerCommand = %q", cfg.FilePickerCommand)
 	}
 
 	wantDownloads := filepath.Join(os.Getenv("HOME"), "Inbox")

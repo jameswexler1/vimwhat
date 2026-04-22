@@ -33,16 +33,24 @@ const (
 	FocusPreview  Focus = "preview"
 )
 
+type clipboardCopiedMsg struct {
+	Count int
+	Err   error
+}
+
 type Options struct {
-	Paths          config.Paths
-	Config         config.Config
-	PreviewReport  media.Report
-	Snapshot       store.Snapshot
-	PersistMessage func(chatID, body string) (store.Message, error)
-	LoadMessages   func(chatID string, limit int) ([]store.Message, error)
-	SaveDraft      func(chatID, body string) error
-	SearchChats    func(query string) ([]store.Chat, error)
-	SearchMessages func(chatID, query string, limit int) ([]store.Message, error)
+	Paths           config.Paths
+	Config          config.Config
+	PreviewReport   media.Report
+	Snapshot        store.Snapshot
+	PersistMessage  func(chatID, body string, attachments []Attachment) (store.Message, error)
+	LoadMessages    func(chatID string, limit int) ([]store.Message, error)
+	SaveDraft       func(chatID, body string) error
+	SearchChats     func(query string) ([]store.Chat, error)
+	SearchMessages  func(chatID, query string, limit int) ([]store.Message, error)
+	CopyToClipboard func(text string) error
+	PickAttachment  func() tea.Cmd
+	DeleteMessage   func(messageID string) error
 }
 
 type Model struct {
@@ -66,6 +74,7 @@ type Model struct {
 	commandLine      string
 	searchLine       string
 	composer         string
+	attachments      []Attachment
 	lastSearch       string
 	lastSearchFocus  Focus
 	activeSearch     string
@@ -83,11 +92,15 @@ type Model struct {
 	pinnedFirst      bool
 	commandHistory   []string
 	searchHistory    []string
-	persistMessage   func(chatID, body string) (store.Message, error)
+	deleteConfirmID  string
+	persistMessage   func(chatID, body string, attachments []Attachment) (store.Message, error)
 	loadMessages     func(chatID string, limit int) ([]store.Message, error)
 	saveDraft        func(chatID, body string) error
 	searchChats      func(query string) ([]store.Chat, error)
 	searchMessages   func(chatID, query string, limit int) ([]store.Message, error)
+	copyToClipboard  func(text string) error
+	pickAttachment   func() tea.Cmd
+	deleteMessage    func(messageID string) error
 }
 
 const messageLoadLimit = 200
@@ -127,6 +140,9 @@ func NewModel(opts Options) Model {
 		saveDraft:        opts.SaveDraft,
 		searchChats:      opts.SearchChats,
 		searchMessages:   opts.SearchMessages,
+		copyToClipboard:  opts.CopyToClipboard,
+		pickAttachment:   opts.PickAttachment,
+		deleteMessage:    opts.DeleteMessage,
 		unfilteredByChat: map[string][]store.Message{},
 	}
 }
@@ -162,6 +178,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.keepActiveChatVisible()
 		return m, nil
+	case clipboardCopiedMsg:
+		if msg.Err != nil {
+			m.status = fmt.Sprintf("yanked %d message(s); clipboard failed: %v", msg.Count, msg.Err)
+		} else {
+			m.status = fmt.Sprintf("yanked %d message(s) to clipboard", msg.Count)
+		}
+		return m, nil
+	case AttachmentPickedMsg:
+		return m.handlePickedAttachment(msg)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -330,6 +355,19 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+f" {
+		return m.startAttachmentPicker()
+	}
+	if msg.String() == "ctrl+x" {
+		if len(m.attachments) == 0 {
+			m.status = "no staged attachments"
+			return m, nil
+		}
+		removed := m.attachments[len(m.attachments)-1]
+		m.attachments = m.attachments[:len(m.attachments)-1]
+		m.status = fmt.Sprintf("removed attachment: %s", removed.FileName)
+		return m, nil
+	}
 	if msg.String() == "alt+enter" || msg.String() == "ctrl+j" {
 		m.composer += "\n"
 		return m, nil
@@ -345,7 +383,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "normal mode"
 	case tea.KeyEnter:
 		body := strings.TrimSpace(m.composer)
-		if body == "" {
+		if body == "" && len(m.attachments) == 0 {
 			m.status = "empty message"
 			m.composer = ""
 			return m, nil
@@ -365,13 +403,17 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Timestamp:  time.Now(),
 			IsOutgoing: true,
 		}
+		message.Media = m.mediaForLocalMessage(message.ID, m.attachments)
 		if m.persistMessage != nil {
-			persisted, err := m.persistMessage(chatID, body)
+			persisted, err := m.persistMessage(chatID, body, slices.Clone(m.attachments))
 			if err != nil {
 				m.status = fmt.Sprintf("send failed: %v", err)
 				return m, nil
 			}
 			message = persisted
+		}
+		if len(message.Media) == 0 && len(m.attachments) > 0 {
+			message.Media = m.mediaForLocalMessage(message.ID, m.attachments)
 		}
 		m.messagesByChat[chatID] = append(m.messagesByChat[chatID], message)
 		if base, ok := m.unfilteredByChat[chatID]; ok {
@@ -380,6 +422,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messageCursor = len(m.messagesByChat[chatID]) - 1
 		m.messageScrollTop = m.messageCursor
 		m.composer = ""
+		m.attachments = nil
 		if err := m.setDraft(chatID, ""); err != nil {
 			m.status = fmt.Sprintf("clear draft failed: %v", err)
 			return m, nil
@@ -477,7 +520,16 @@ func (m Model) updateVisual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.yankRegister = strings.Join(parts, "\n")
 			m.mode = ModeNormal
-			m.status = fmt.Sprintf("yanked %d message(s)", len(selected))
+			if m.copyToClipboard == nil {
+				m.status = fmt.Sprintf("yanked %d message(s) to register", len(selected))
+				return m, nil
+			}
+			count := len(selected)
+			text := m.yankRegister
+			m.status = fmt.Sprintf("yanked %d message(s); copying clipboard", count)
+			return m, func() tea.Msg {
+				return clipboardCopiedMsg{Count: count, Err: m.copyToClipboard(text)}
+			}
 		}
 	}
 
@@ -648,6 +700,27 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 	case cmd == "sort recent":
 		if err := m.setPinnedFirst(false); err != nil {
 			m.status = fmt.Sprintf("sort failed: %v", err)
+			break
+		}
+	case cmd == "attach":
+		return m.startAttachmentPicker()
+	case strings.HasPrefix(cmd, "attach "):
+		path := strings.TrimSpace(strings.TrimPrefix(cmd, "attach "))
+		if err := m.stageAttachmentPath(path); err != nil {
+			m.status = fmt.Sprintf("attach failed: %v", err)
+			break
+		}
+	case cmd == "delete-message" || cmd == "delete message":
+		m.armDeleteFocusedMessage()
+	case cmd == "delete-message confirm" || cmd == "delete message confirm":
+		if err := m.deleteConfirmedMessage(); err != nil {
+			m.status = fmt.Sprintf("delete failed: %v", err)
+			break
+		}
+	case cmd == "delete-message!" || cmd == "delete message!":
+		m.armDeleteFocusedMessage()
+		if err := m.deleteConfirmedMessage(); err != nil {
+			m.status = fmt.Sprintf("delete failed: %v", err)
 			break
 		}
 	default:
@@ -986,6 +1059,144 @@ func (m *Model) keepMessageCursorNearViewport(previous int) {
 	if m.messageCursor > previous && m.messageCursor > m.messageScrollTop+2 {
 		m.messageScrollTop = m.messageCursor - 2
 	}
+}
+
+func (m Model) handlePickedAttachment(msg AttachmentPickedMsg) (tea.Model, tea.Cmd) {
+	if msg.Cancelled {
+		m.mode = ModeInsert
+		m.focus = FocusMessages
+		m.status = "attachment picker cancelled"
+		return m, nil
+	}
+	if msg.Err != nil {
+		m.mode = ModeInsert
+		m.focus = FocusMessages
+		m.status = fmt.Sprintf("attach failed: %v", msg.Err)
+		return m, nil
+	}
+
+	m.stageAttachment(msg.Attachment)
+	return m, nil
+}
+
+func (m Model) startAttachmentPicker() (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	if m.pickAttachment == nil {
+		m.status = "attachment picker unavailable; use :attach /path"
+		return m, nil
+	}
+
+	m.status = "opening attachment picker"
+	return m, m.pickAttachment()
+}
+
+func (m *Model) stageAttachmentPath(path string) error {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		return fmt.Errorf("no chat selected")
+	}
+	attachment, err := AttachmentFromPath(path)
+	if err != nil {
+		return err
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	m.stageAttachment(attachment)
+	return nil
+}
+
+func (m *Model) stageAttachment(attachment Attachment) {
+	if attachment.FileName == "" {
+		attachment.FileName = attachment.LocalPath
+	}
+	if attachment.DownloadState == "" {
+		attachment.DownloadState = "local_pending"
+	}
+	if len(m.attachments) > 0 {
+		m.attachments = []Attachment{attachment}
+		m.status = fmt.Sprintf("replaced attachment with %s", attachment.FileName)
+		return
+	}
+	m.attachments = []Attachment{attachment}
+	m.status = fmt.Sprintf("attached %s", attachment.FileName)
+}
+
+func (m Model) mediaForLocalMessage(messageID string, attachments []Attachment) []store.MediaMetadata {
+	mediaItems := make([]store.MediaMetadata, 0, len(attachments))
+	for _, attachment := range attachments {
+		mediaItems = append(mediaItems, store.MediaMetadata{
+			MessageID:     messageID,
+			MIMEType:      attachment.MIMEType,
+			FileName:      attachment.FileName,
+			SizeBytes:     attachment.SizeBytes,
+			LocalPath:     attachment.LocalPath,
+			ThumbnailPath: attachment.ThumbnailPath,
+			DownloadState: attachment.DownloadState,
+			UpdatedAt:     time.Now(),
+		})
+	}
+	return mediaItems
+}
+
+func (m *Model) armDeleteFocusedMessage() {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return
+	}
+	m.deleteConfirmID = message.ID
+	m.status = "run :delete-message confirm to delete locally"
+}
+
+func (m *Model) deleteConfirmedMessage() error {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.deleteConfirmID = ""
+		return fmt.Errorf("no message selected")
+	}
+	if m.deleteConfirmID != message.ID {
+		m.deleteConfirmID = ""
+		return fmt.Errorf("delete confirmation expired")
+	}
+	if m.deleteMessage != nil {
+		if err := m.deleteMessage(message.ID); err != nil {
+			return err
+		}
+	}
+
+	chatID := m.currentChat().ID
+	m.messagesByChat[chatID] = removeMessageByID(m.messagesByChat[chatID], message.ID)
+	if base, ok := m.unfilteredByChat[chatID]; ok {
+		m.unfilteredByChat[chatID] = removeMessageByID(base, message.ID)
+	}
+	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
+	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
+	m.deleteConfirmID = ""
+	m.rebuildSearchMatches()
+	m.status = "deleted message locally"
+	return nil
+}
+
+func (m Model) focusedMessage() (store.Message, bool) {
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return store.Message{}, false
+	}
+	return messages[clamp(m.messageCursor, 0, len(messages)-1)], true
+}
+
+func removeMessageByID(messages []store.Message, id string) []store.Message {
+	out := messages[:0]
+	for _, message := range messages {
+		if message.ID != id {
+			out = append(out, message)
+		}
+	}
+	return out
 }
 
 func filterUnread(chats []store.Chat) []store.Chat {

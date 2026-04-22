@@ -103,6 +103,18 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		name: "0003_local_delete_and_profile_media",
+		sql: []string{
+			`ALTER TABLE messages ADD COLUMN deleted_at INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE messages ADD COLUMN deleted_reason TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE contacts ADD COLUMN avatar_path TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE contacts ADD COLUMN avatar_thumb_path TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE contacts ADD COLUMN avatar_updated_at INTEGER NOT NULL DEFAULT 0`,
+			`CREATE INDEX IF NOT EXISTS messages_visible_chat_time_idx
+				ON messages (chat_id, deleted_at, timestamp_unix ASC, id ASC)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

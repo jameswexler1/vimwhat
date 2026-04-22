@@ -88,8 +88,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 2 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=2", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 3 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=3", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -194,6 +194,74 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if messages[1].Status != "server_ack" {
 		t.Fatalf("updated message status = %q, want server_ack", messages[1].Status)
+	}
+}
+
+func TestMessageMediaAndLocalDelete(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	if err := store.AddMessageWithMedia(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "",
+		Timestamp: now,
+	}, []MediaMetadata{{
+		FileName:      "report.pdf",
+		MIMEType:      "application/pdf",
+		SizeBytes:     2048,
+		DownloadState: "downloaded",
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 1 || len(messages[0].Media) != 1 {
+		t.Fatalf("messages with media = %+v", messages)
+	}
+	if messages[0].Media[0].MessageID != "m-1" {
+		t.Fatalf("media MessageID = %q, want m-1", messages[0].Media[0].MessageID)
+	}
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "report.pdf" {
+		t.Fatalf("chat preview = %+v, want report.pdf", chats)
+	}
+
+	if err := store.DeleteMessage(ctx, "m-1"); err != nil {
+		t.Fatalf("DeleteMessage() error = %v", err)
+	}
+	messages, err = store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() after delete error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("messages after delete = %+v, want none", messages)
+	}
+	results, err := store.SearchMessages(ctx, "chat-1", "report", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages() after delete error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("search results after delete = %+v, want none", results)
 	}
 }
 
@@ -356,8 +424,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 2 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want two applied and none pending", applied, pending)
+	if len(applied) != 3 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want three applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

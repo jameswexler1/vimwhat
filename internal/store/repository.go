@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -58,9 +59,19 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.muted,
 			c.last_message_at,
 			COALESCE((
-				SELECT m.body
+				SELECT CASE
+					WHEN m.body <> '' THEN m.body
+					ELSE COALESCE((
+						SELECT mm.file_name
+						FROM media_metadata mm
+						WHERE mm.message_id = m.id
+						ORDER BY mm.file_name ASC
+						LIMIT 1
+					), '')
+				END
 				FROM messages m
 				WHERE m.chat_id = c.id
+					AND m.deleted_at = 0
 				ORDER BY m.timestamp_unix DESC, m.id DESC
 				LIMIT 1
 			), '') AS last_preview,
@@ -100,12 +111,15 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
-			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
 		FROM (
 			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
-				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
+				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+				deleted_at, deleted_reason
 			FROM messages
 			WHERE chat_id = ?
+				AND deleted_at = 0
 			ORDER BY timestamp_unix DESC, id DESC
 			LIMIT ?
 		)
@@ -129,7 +143,7 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 
-	return messages, nil
+	return s.attachMediaMetadata(ctx, messages)
 }
 
 func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Chat, error) {
@@ -152,9 +166,19 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 			c.muted,
 			c.last_message_at,
 			COALESCE((
-				SELECT m.body
+				SELECT CASE
+					WHEN m.body <> '' THEN m.body
+					ELSE COALESCE((
+						SELECT mm.file_name
+						FROM media_metadata mm
+						WHERE mm.message_id = m.id
+						ORDER BY mm.file_name ASC
+						LIMIT 1
+					), '')
+				END
 				FROM messages m
 				WHERE m.chat_id = c.id
+					AND m.deleted_at = 0
 				ORDER BY m.timestamp_unix DESC, m.id DESC
 				LIMIT 1
 			), '') AS last_preview,
@@ -199,10 +223,12 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
-			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id
+			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
+			m.deleted_at, m.deleted_reason
 		FROM message_fts
 		JOIN messages m ON m.id = message_fts.message_id
 		WHERE message_fts.chat_id = ?
+			AND m.deleted_at = 0
 			AND message_fts MATCH ?
 		ORDER BY m.timestamp_unix ASC, m.id ASC
 		LIMIT ?
@@ -224,7 +250,7 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 		return nil, fmt.Errorf("iterate searched messages: %w", err)
 	}
 
-	return messages, nil
+	return s.attachMediaMetadata(ctx, messages)
 }
 
 func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
@@ -283,6 +309,17 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 }
 
 func (s *Store) AddMessage(ctx context.Context, message Message) error {
+	return s.addMessage(ctx, message)
+}
+
+func (s *Store) AddMessageWithMedia(ctx context.Context, message Message, mediaItems []MediaMetadata) error {
+	if len(mediaItems) > 0 {
+		message.Media = slices.Clone(mediaItems)
+	}
+	return s.addMessage(ctx, message)
+}
+
+func (s *Store) addMessage(ctx context.Context, message Message) error {
 	if strings.TrimSpace(message.ID) == "" {
 		return fmt.Errorf("message id is required")
 	}
@@ -304,6 +341,13 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	if strings.TrimSpace(message.SenderJID) == "" {
 		message.SenderJID = message.Sender
 	}
+	if len(message.Media) > 1 {
+		return fmt.Errorf("only one media attachment per message is supported")
+	}
+	deletedAt := int64(0)
+	if !message.DeletedAt.IsZero() {
+		deletedAt = message.DeletedAt.Unix()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -313,8 +357,9 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (
 			id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
-			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			remote_id = excluded.remote_id,
 			chat_jid = excluded.chat_jid,
@@ -325,7 +370,15 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 			is_outgoing = excluded.is_outgoing,
 			status = excluded.status,
 			quoted_message_id = excluded.quoted_message_id,
-			quoted_remote_id = excluded.quoted_remote_id
+			quoted_remote_id = excluded.quoted_remote_id,
+			deleted_at = CASE
+				WHEN excluded.deleted_at > 0 THEN excluded.deleted_at
+				ELSE messages.deleted_at
+			END,
+			deleted_reason = CASE
+				WHEN excluded.deleted_at > 0 THEN excluded.deleted_reason
+				ELSE messages.deleted_reason
+			END
 	`,
 		message.ID,
 		message.RemoteID,
@@ -339,6 +392,8 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 		message.Status,
 		message.QuotedMessageID,
 		message.QuotedRemoteID,
+		deletedAt,
+		message.DeletedReason,
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("insert message %s: %w", message.ID, err)
@@ -358,6 +413,14 @@ func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("index message %s: %w", message.ID, err)
+	}
+
+	for _, media := range message.Media {
+		media.MessageID = message.ID
+		if err := upsertMediaMetadata(ctx, tx, media); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
 	}
 
 	result, err := tx.ExecContext(
@@ -409,6 +472,76 @@ func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status strin
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		return fmt.Errorf("message %s does not exist", messageID)
+	}
+
+	return nil
+}
+
+func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
+	if strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("message id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete message: %w", err)
+	}
+
+	var chatID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT chat_id
+		FROM messages
+		WHERE id = ?
+			AND deleted_at = 0
+	`, messageID).Scan(&chatID)
+	if err != nil {
+		_ = tx.Rollback()
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("message %s does not exist", messageID)
+		}
+		return fmt.Errorf("load message %s for delete: %w", messageID, err)
+	}
+
+	now := time.Now().Unix()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET body = '',
+			deleted_at = ?,
+			deleted_reason = 'local'
+		WHERE id = ?
+			AND deleted_at = 0
+	`, now, messageID)
+	if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete message %s: %w", messageID, err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		_ = tx.Rollback()
+		return fmt.Errorf("message %s does not exist", messageID)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, messageID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear fts for deleted message %s: %w", messageID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE chats
+		SET last_message_at = COALESCE((
+				SELECT MAX(timestamp_unix)
+				FROM messages
+				WHERE chat_id = ?
+					AND deleted_at = 0
+			), 0),
+			updated_at = ?
+		WHERE id = ?
+	`, chatID, now, chatID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("refresh chat %s after delete: %w", chatID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete message: %w", err)
 	}
 
 	return nil
@@ -515,20 +648,32 @@ func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
 	if contact.UpdatedAt.IsZero() {
 		contact.UpdatedAt = time.Now()
 	}
+	avatarUpdatedUnix := int64(0)
+	if !contact.AvatarUpdatedAt.IsZero() {
+		avatarUpdatedUnix = contact.AvatarUpdatedAt.Unix()
+	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO contacts (jid, display_name, notify_name, phone, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO contacts (
+			jid, display_name, notify_name, phone, avatar_path,
+			avatar_thumb_path, avatar_updated_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(jid) DO UPDATE SET
 			display_name = excluded.display_name,
 			notify_name = excluded.notify_name,
 			phone = excluded.phone,
+			avatar_path = excluded.avatar_path,
+			avatar_thumb_path = excluded.avatar_thumb_path,
+			avatar_updated_at = excluded.avatar_updated_at,
 			updated_at = excluded.updated_at
 	`,
 		contact.JID,
 		contact.DisplayName,
 		contact.NotifyName,
 		contact.Phone,
+		contact.AvatarPath,
+		contact.AvatarThumbPath,
+		avatarUpdatedUnix,
 		contact.UpdatedAt.Unix(),
 	)
 	if err != nil {
@@ -540,19 +685,33 @@ func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
 
 func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {
 	var (
-		contact     Contact
-		updatedUnix int64
+		contact           Contact
+		avatarUpdatedUnix int64
+		updatedUnix       int64
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT jid, display_name, notify_name, phone, updated_at
+		SELECT jid, display_name, notify_name, phone, avatar_path,
+			avatar_thumb_path, avatar_updated_at, updated_at
 		FROM contacts
 		WHERE jid = ?
-	`, jid).Scan(&contact.JID, &contact.DisplayName, &contact.NotifyName, &contact.Phone, &updatedUnix)
+	`, jid).Scan(
+		&contact.JID,
+		&contact.DisplayName,
+		&contact.NotifyName,
+		&contact.Phone,
+		&contact.AvatarPath,
+		&contact.AvatarThumbPath,
+		&avatarUpdatedUnix,
+		&updatedUnix,
+	)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Contact{}, nil
 		}
 		return Contact{}, fmt.Errorf("load contact %s: %w", jid, err)
+	}
+	if avatarUpdatedUnix > 0 {
+		contact.AvatarUpdatedAt = time.Unix(avatarUpdatedUnix, 0)
 	}
 	contact.UpdatedAt = time.Unix(updatedUnix, 0)
 
@@ -560,6 +719,18 @@ func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {
 }
 
 func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) error {
+	if err := upsertMediaMetadata(ctx, s.db, media); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+type mediaMetadataExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func upsertMediaMetadata(ctx context.Context, execer mediaMetadataExecer, media MediaMetadata) error {
 	if strings.TrimSpace(media.MessageID) == "" {
 		return fmt.Errorf("message id is required")
 	}
@@ -567,7 +738,7 @@ func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) er
 		media.UpdatedAt = time.Now()
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := execer.ExecContext(ctx, `
 		INSERT INTO media_metadata (
 			message_id, mime_type, file_name, size_bytes, local_path,
 			thumbnail_path, download_state, updated_at
@@ -626,6 +797,77 @@ func (s *Store) MediaMetadata(ctx context.Context, messageID string) (MediaMetad
 	media.UpdatedAt = time.Unix(updatedUnix, 0)
 
 	return media, nil
+}
+
+func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	ids := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if message.ID == "" {
+			continue
+		}
+		if _, ok := seen[message.ID]; ok {
+			continue
+		}
+		seen[message.ID] = struct{}{}
+		ids = append(ids, message.ID)
+	}
+	if len(ids) == 0 {
+		return messages, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT message_id, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, updated_at
+		FROM media_metadata
+		WHERE message_id IN (`+placeholders+`)
+		ORDER BY file_name ASC
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list media metadata: %w", err)
+	}
+	defer rows.Close()
+
+	byMessage := make(map[string][]MediaMetadata, len(messages))
+	for rows.Next() {
+		var (
+			media       MediaMetadata
+			updatedUnix int64
+		)
+		if err := rows.Scan(
+			&media.MessageID,
+			&media.MIMEType,
+			&media.FileName,
+			&media.SizeBytes,
+			&media.LocalPath,
+			&media.ThumbnailPath,
+			&media.DownloadState,
+			&updatedUnix,
+		); err != nil {
+			return nil, fmt.Errorf("scan media metadata: %w", err)
+		}
+		media.UpdatedAt = time.Unix(updatedUnix, 0)
+		byMessage[media.MessageID] = append(byMessage[media.MessageID], media)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media metadata: %w", err)
+	}
+
+	for i := range messages {
+		messages[i].Media = byMessage[messages[i].ID]
+	}
+
+	return messages, nil
 }
 
 func (s *Store) SaveUISnapshot(ctx context.Context, snapshot UISnapshot) error {
@@ -734,6 +976,7 @@ func scanMessage(row scanner) (Message, error) {
 		message       Message
 		timestampUnix int64
 		isOutgoing    int
+		deletedUnix   int64
 	)
 	if err := row.Scan(
 		&message.ID,
@@ -748,11 +991,16 @@ func scanMessage(row scanner) (Message, error) {
 		&message.Status,
 		&message.QuotedMessageID,
 		&message.QuotedRemoteID,
+		&deletedUnix,
+		&message.DeletedReason,
 	); err != nil {
 		return Message{}, err
 	}
 
 	message.Timestamp = time.Unix(timestampUnix, 0)
+	if deletedUnix > 0 {
+		message.DeletedAt = time.Unix(deletedUnix, 0)
+	}
 	message.IsOutgoing = isOutgoing == 1
 	if message.ChatJID == "" {
 		message.ChatJID = message.ChatID

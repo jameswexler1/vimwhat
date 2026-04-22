@@ -19,6 +19,7 @@ type theme struct {
 	IncomingLine lipgloss.Color
 	OutgoingLine lipgloss.Color
 	SelectedLine lipgloss.Color
+	FocusedLine  lipgloss.Color
 	BarBG        lipgloss.Color
 	InsertModeBG lipgloss.Color
 }
@@ -65,6 +66,7 @@ func loadTheme() theme {
 		IncomingLine: color(wal.Colors, "color8", fallback.IncomingLine),
 		OutgoingLine: color(wal.Colors, "color2", fallback.OutgoingLine),
 		SelectedLine: color(wal.Colors, "color3", fallback.SelectedLine),
+		FocusedLine:  color(wal.Colors, "color6", fallback.FocusedLine),
 		BarBG:        color(wal.Colors, "color0", fallback.BarBG),
 		InsertModeBG: color(wal.Colors, "color5", fallback.InsertModeBG),
 	}
@@ -82,6 +84,7 @@ func defaultTheme() theme {
 		IncomingLine: lipgloss.Color("#4B6472"),
 		OutgoingLine: lipgloss.Color("#2EA56F"),
 		SelectedLine: lipgloss.Color("#F4D35E"),
+		FocusedLine:  lipgloss.Color("#48CAE4"),
 		BarBG:        lipgloss.Color("#101418"),
 		InsertModeBG: lipgloss.Color("#FF5C8A"),
 	}

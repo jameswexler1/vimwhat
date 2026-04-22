@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"maybewhats/internal/config"
 	"maybewhats/internal/media"
 	"maybewhats/internal/store"
@@ -110,9 +112,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		Config:        env.Config,
 		PreviewReport: env.PreviewReport,
 		Snapshot:      snapshot,
-		PersistMessage: func(chatID, body string) (store.Message, error) {
-			message := pendingOutgoingMessage(chatID, body)
-			if err := env.Store.AddMessage(context.Background(), message); err != nil {
+		PersistMessage: func(chatID, body string, attachments []ui.Attachment) (store.Message, error) {
+			message := pendingOutgoingMessage(chatID, body, attachments)
+			if err := env.Store.AddMessageWithMedia(context.Background(), message, message.Media); err != nil {
 				return store.Message{}, err
 			}
 
@@ -130,6 +132,15 @@ func runTUI(env Environment, stderr io.Writer) int {
 		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
 			return env.Store.SearchMessages(context.Background(), chatID, query, limit)
 		},
+		CopyToClipboard: func(text string) error {
+			return copyToClipboard(context.Background(), env.Config.ClipboardCommand, text)
+		},
+		PickAttachment: func() tea.Cmd {
+			return pickAttachment(env.Config.FilePickerCommand)
+		},
+		DeleteMessage: func(messageID string) error {
+			return env.Store.DeleteMessage(context.Background(), messageID)
+		},
 	}
 
 	if err := ui.Run(opts); err != nil {
@@ -140,9 +151,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 	return 0
 }
 
-func pendingOutgoingMessage(chatID, body string) store.Message {
+func pendingOutgoingMessage(chatID, body string, attachments []ui.Attachment) store.Message {
 	now := time.Now()
-	return store.Message{
+	message := store.Message{
 		ID:         fmt.Sprintf("local-%d", now.UnixNano()),
 		ChatID:     chatID,
 		ChatJID:    chatID,
@@ -153,6 +164,8 @@ func pendingOutgoingMessage(chatID, body string) store.Message {
 		IsOutgoing: true,
 		Status:     "pending",
 	}
+	message.Media = mediaForOutgoingMessage(message.ID, attachments, now)
+	return message
 }
 
 func runMedia(args []string, stderr io.Writer) int {
