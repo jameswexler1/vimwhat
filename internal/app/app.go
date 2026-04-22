@@ -118,6 +118,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 
 	initialConnection, liveEnabled := initialLiveConnectionState(env, context.Background())
 	liveUpdates := make(chan ui.LiveUpdate, 64)
+	historyRequests := make(chan string, 16)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -126,7 +127,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests)
 		}()
 	}
 	defer func() {
@@ -153,6 +154,24 @@ func runTUI(env Environment, stderr io.Writer) int {
 		},
 		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
 			return env.Store.ListMessages(context.Background(), chatID, limit)
+		},
+		LoadOlderMessages: func(chatID string, before store.Message, limit int) ([]store.Message, error) {
+			return env.Store.ListMessagesBefore(context.Background(), chatID, before, limit)
+		},
+		RequestHistory: func(chatID string) error {
+			if !liveEnabled {
+				return fmt.Errorf("whatsapp is not paired")
+			}
+			chatID = strings.TrimSpace(chatID)
+			if chatID == "" {
+				return fmt.Errorf("no active chat")
+			}
+			select {
+			case historyRequests <- chatID:
+				return nil
+			default:
+				return fmt.Errorf("history request queue is full")
+			}
 		},
 		ReloadSnapshot: func(activeChatID string, limit int) (store.Snapshot, error) {
 			return loadSnapshotForChat(context.Background(), env.Store, activeChatID, limit)
@@ -205,7 +224,12 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 	return ui.ConnectionLoggedOut, false
 }
 
-func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate) {
+const (
+	historyPageSize       = 50
+	historyRequestTimeout = 30 * time.Second
+)
+
+func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate, historyRequests <-chan string) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
 
 	session, err := openWhatsAppSession(ctx, env)
@@ -255,6 +279,8 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
 
 	ingestor := whatsapp.Ingestor{Store: env.Store}
+	historyInflight := map[string]time.Time{}
+	online := true
 	for {
 		select {
 		case event, ok := <-events:
@@ -263,6 +289,7 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				return
 			}
 			if event.Kind == whatsapp.EventConnectionState {
+				online = event.Connection.State == whatsapp.ConnectionOnline
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
 				continue
 			}
@@ -275,11 +302,99 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				})
 				continue
 			}
+			if event.Kind == whatsapp.EventHistoryStatus {
+				delete(historyInflight, event.History.ChatID)
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Refresh:         true,
+					Status:          historyStatusLine(event.History),
+					HistoryChatID:   event.History.ChatID,
+					HistoryMessages: event.History.Messages,
+				})
+				continue
+			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
+		case chatID := <-historyRequests:
+			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func handleHistoryRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	inflight map[string]time.Time,
+	online bool,
+	chatID string,
+) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history fetch needs an active chat"})
+		return
+	}
+	if !online {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history fetch needs WhatsApp online"})
+		return
+	}
+	if requestedAt, ok := inflight[chatID]; ok && time.Since(requestedAt) < historyRequestTimeout {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history already loading"})
+		return
+	}
+
+	exhausted, err := db.SyncCursor(ctx, whatsapp.HistoryExhaustedCursor(chatID))
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: fmt.Sprintf("history cursor failed: %s", shortStatusError(err))})
+		return
+	}
+	if exhausted == "true" {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history exhausted"})
+		return
+	}
+
+	anchorMessage, ok, err := db.OldestMessage(ctx, chatID)
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: fmt.Sprintf("history anchor failed: %s", shortStatusError(err))})
+		return
+	}
+	if !ok {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history fetch needs a local message anchor"})
+		return
+	}
+	if strings.TrimSpace(anchorMessage.RemoteID) == "" {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history anchor has no WhatsApp message id"})
+		return
+	}
+
+	anchor := whatsapp.HistoryAnchor{
+		ChatJID:   anchorMessage.ChatJID,
+		MessageID: anchorMessage.RemoteID,
+		IsFromMe:  anchorMessage.IsOutgoing,
+		Timestamp: anchorMessage.Timestamp,
+	}
+	if strings.TrimSpace(anchor.ChatJID) == "" {
+		anchor.ChatJID = anchorMessage.ChatID
+	}
+
+	inflight[chatID] = time.Now()
+	if err := live.RequestHistoryBefore(ctx, anchor, historyPageSize); err != nil {
+		delete(inflight, chatID)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: fmt.Sprintf("history request failed: %s", shortStatusError(err))})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "requested older history"})
+}
+
+func historyStatusLine(event whatsapp.HistoryEvent) string {
+	if event.Exhausted {
+		return fmt.Sprintf("history exhausted; imported %d older message(s)", event.Messages)
+	}
+	if event.Messages == 0 {
+		return "history response contained no older messages"
+	}
+	return fmt.Sprintf("imported %d older message(s)", event.Messages)
 }
 
 func liveUpdateForConnectionEvent(event whatsapp.ConnectionEvent) ui.LiveUpdate {

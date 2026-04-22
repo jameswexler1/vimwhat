@@ -14,16 +14,17 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, and `doctor` session status reporting.
 - Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
+- On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
 
 - Tightening TUI behavior, viewport rules, preview behavior, and modal ergonomics.
-- Manual validation of the live read-only ingestion path against real WhatsApp traffic.
+- Manual validation of remote history fetch against real WhatsApp traffic and large chats.
 
 ### Not implemented yet
 
-- Remote history fetch, remote media download, real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
+- Remote media download, real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
 - Remote media download/fetch pipeline from WhatsApp servers.
 
@@ -155,14 +156,14 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 1. Keep polishing the local TUI shell as protocol behavior lands, especially message navigation, previews, composer behavior, and pane/layout rules.
 2. Use the working `whatsmeow` session to connect on demand, restore an existing paired session, subscribe to protocol events, and expose visible connection status.
 3. Replace demo-only data flow with protocol-backed ingestion into SQLite while keeping the UI DB-first.
-4. Add on-demand remote history and media download paths on top of the existing local store and preview pipeline.
+4. Validate on-demand remote history against real traffic, then add remote media download on top of the existing metadata and preview pipeline.
 5. Expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
 
 ### Current protocol milestone
 
 The QR pairing milestone is complete as of 2026-04-22: `vimwhat login` can pair successfully, `vimwhat logout` clears the local/remote session, rejected partial sessions are cleaned up, and `doctor` reports local pairing state.
 
-The live read-only sync milestone now has an implemented first pass:
+The live read-only sync milestone is implemented and has been manually validated against real inbound text, image, and file metadata traffic:
 
 - Bootstrap a `whatsmeow` client from the paired session when the TUI starts.
 - Show connection/auth state in the status line without blocking cached DB rendering.
@@ -171,7 +172,17 @@ The live read-only sync milestone now has an implemented first pass:
 - Keep outbound sending disabled or clearly marked pending until incoming event ingestion is stable.
 - Add tests with a mocked protocol event source before relying on manual WhatsApp traffic.
 
-The next protocol milestone is proving this against real traffic, then adding remote history fetch.
+The remote history fetch milestone now has an implemented first pass:
+
+- Keep startup DB-first; cached chat rendering remains instant while WhatsApp connects in the background.
+- Load older rows from SQLite before making any remote request.
+- Trigger remote history from `:history fetch` or by scrolling above the loaded message window.
+- Request up to 50 messages before the oldest known local message using `BuildHistorySyncRequest` and `SendPeerMessage`.
+- Normalize `ON_DEMAND` `HistorySync` responses into internal chat/message/media events through `internal/whatsapp.Ingestor`.
+- Persist historical messages idempotently without incrementing unread counts.
+- Track per-chat end-of-history state in `sync_cursors`.
+
+The next protocol milestone is remote media download, followed by real text send.
 
 ### Data model and lazy loading
 

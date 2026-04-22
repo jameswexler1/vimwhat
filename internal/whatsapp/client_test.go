@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/types"
@@ -36,6 +37,25 @@ func TestSessionURIUsesModernCSQLitePragmas(t *testing.T) {
 		if !found {
 			t.Fatalf("SessionURI pragmas = %#v, missing %q", pragmas, pragma)
 		}
+	}
+}
+
+func TestHistoryAnchorMessageInfo(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	info, err := historyAnchorMessageInfo(HistoryAnchor{
+		ChatJID:   "12345@s.whatsapp.net",
+		MessageID: "ABC123",
+		IsFromMe:  true,
+		Timestamp: when,
+	})
+	if err != nil {
+		t.Fatalf("historyAnchorMessageInfo() error = %v", err)
+	}
+	if info.Chat.String() != "12345@s.whatsapp.net" ||
+		info.ID != "ABC123" ||
+		!info.IsFromMe ||
+		!info.Timestamp.Equal(when) {
+		t.Fatalf("history anchor info = %+v", info)
 	}
 }
 

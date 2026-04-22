@@ -22,6 +22,7 @@ type WhatsAppLiveSession interface {
 	WhatsAppSession
 	Connect(context.Context) error
 	SubscribeEvents(context.Context) (<-chan whatsapp.Event, error)
+	RequestHistoryBefore(context.Context, whatsapp.HistoryAnchor, int) error
 }
 
 type WhatsAppSessionOpener func(context.Context, string) (WhatsAppSession, error)

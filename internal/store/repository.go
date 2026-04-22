@@ -146,6 +146,84 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 	return s.attachMediaMetadata(ctx, messages)
 }
 
+func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Message, limit int) ([]Message, error) {
+	if chatID == "" {
+		return nil, nil
+	}
+	if before.Timestamp.IsZero() || strings.TrimSpace(before.ID) == "" {
+		return nil, fmt.Errorf("message anchor is required")
+	}
+	if limit <= 0 {
+		limit = defaultMessageWindow
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
+		FROM (
+			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+				deleted_at, deleted_reason
+			FROM messages
+			WHERE chat_id = ?
+				AND deleted_at = 0
+				AND (
+					timestamp_unix < ?
+					OR (timestamp_unix = ? AND id < ?)
+				)
+			ORDER BY timestamp_unix DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY timestamp_unix ASC, id ASC
+	`, chatID, before.Timestamp.Unix(), before.Timestamp.Unix(), before.ID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list messages before %s for %s: %w", before.ID, chatID, err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan older message: %w", err)
+		}
+		messages = append(messages, message)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate older messages: %w", err)
+	}
+
+	return s.attachMediaMetadata(ctx, messages)
+}
+
+func (s *Store) OldestMessage(ctx context.Context, chatID string) (Message, bool, error) {
+	if chatID == "" {
+		return Message{}, false, nil
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
+		FROM messages
+		WHERE chat_id = ?
+			AND deleted_at = 0
+		ORDER BY timestamp_unix ASC, id ASC
+		LIMIT 1
+	`, chatID)
+
+	message, err := scanMessage(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Message{}, false, nil
+		}
+		return Message{}, false, fmt.Errorf("load oldest message for %s: %w", chatID, err)
+	}
+	return message, true, nil
+}
+
 func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Chat, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -335,6 +413,10 @@ func (s *Store) AddMessageWithMedia(ctx context.Context, message Message, mediaI
 
 func (s *Store) AddIncomingMessage(ctx context.Context, message Message) (bool, error) {
 	return s.addMessage(ctx, message, !message.IsOutgoing)
+}
+
+func (s *Store) AddHistoricalMessage(ctx context.Context, message Message) (bool, error) {
+	return s.addMessage(ctx, message, false)
 }
 
 func (s *Store) addMessage(ctx context.Context, message Message, incrementUnreadOnNew bool) (bool, error) {

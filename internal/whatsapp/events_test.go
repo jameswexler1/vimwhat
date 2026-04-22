@@ -4,7 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
+	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
@@ -76,6 +80,59 @@ func TestNormalizeReceiptEventMapsRemoteIDsToLocalStatus(t *testing.T) {
 		receipt.MessageID != "12345@s.whatsapp.net/ABC123" ||
 		receipt.Status != "read" {
 		t.Fatalf("receipt event = %+v", normalized[0])
+	}
+}
+
+func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {
+	when := uint64(1_700_000_000)
+	syncType := waHistorySync.HistorySync_ON_DEMAND
+	exhausted := true
+	client := &Client{client: &whatsmeow.Client{}}
+
+	normalized := client.normalizeWhatsmeowEvent(&events.HistorySync{
+		Data: &waHistorySync.HistorySync{
+			SyncType: &syncType,
+			Conversations: []*waHistorySync.Conversation{{
+				ID:                   proto.String("12345@s.whatsapp.net"),
+				Name:                 proto.String("Alice"),
+				LastMsgTimestamp:     proto.Uint64(when),
+				EndOfHistoryTransfer: proto.Bool(exhausted),
+				Messages: []*waHistorySync.HistorySyncMsg{{
+					Message: &waWeb.WebMessageInfo{
+						Key: &waCommon.MessageKey{
+							RemoteJID: proto.String("12345@s.whatsapp.net"),
+							FromMe:    proto.Bool(false),
+							ID:        proto.String("OLD1"),
+						},
+						Message:          &waE2E.Message{Conversation: proto.String("older message")},
+						MessageTimestamp: proto.Uint64(when),
+						PushName:         proto.String("Alice"),
+					},
+				}},
+			}},
+		},
+	})
+
+	var sawHistoricalMessage bool
+	var sawHistoryStatus bool
+	for _, event := range normalized {
+		switch event.Kind {
+		case EventMessageUpsert:
+			if event.Message.ID == "12345@s.whatsapp.net/OLD1" &&
+				event.Message.Body == "older message" &&
+				event.Message.Historical {
+				sawHistoricalMessage = true
+			}
+		case EventHistoryStatus:
+			if event.History.ChatID == "12345@s.whatsapp.net" &&
+				event.History.Messages == 1 &&
+				event.History.Exhausted {
+				sawHistoryStatus = true
+			}
+		}
+	}
+	if !sawHistoricalMessage || !sawHistoryStatus {
+		t.Fatalf("normalized history events = %+v, want historical message and status", normalized)
 	}
 }
 

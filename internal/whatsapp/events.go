@@ -6,9 +6,19 @@ import (
 	"time"
 
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
+
+func (c *Client) normalizeWhatsmeowEvent(evt any) []Event {
+	switch event := evt.(type) {
+	case *events.HistorySync:
+		return c.normalizeHistorySyncEvent(event)
+	default:
+		return normalizeWhatsmeowEvent(evt)
+	}
+}
 
 func normalizeWhatsmeowEvent(evt any) []Event {
 	switch event := evt.(type) {
@@ -43,6 +53,116 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 	default:
 		return nil
 	}
+}
+
+func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
+	if c == nil || c.client == nil || event == nil || event.Data == nil {
+		return nil
+	}
+	history := event.Data
+	if history.GetSyncType() != waHistorySync.HistorySync_ON_DEMAND {
+		return nil
+	}
+
+	var out []Event
+	for _, conversation := range history.GetConversations() {
+		chatJID, ok := historyConversationJID(conversation)
+		if !ok || !supportedChat(chatJID) {
+			continue
+		}
+		chatID := chatJID.String()
+		out = append(out, Event{
+			Kind: EventChatUpsert,
+			Chat: ChatEvent{
+				ID:            chatID,
+				JID:           chatID,
+				Title:         historyConversationTitle(conversation, chatJID),
+				Kind:          chatKind(chatJID),
+				UnreadKnown:   false,
+				Pinned:        conversation.GetPinned() > 0,
+				Muted:         conversation.GetMuteEndTime() > uint64(time.Now().Unix()),
+				LastMessageAt: historyConversationTimestamp(conversation),
+			},
+		})
+
+		messages := 0
+		for _, historyMessage := range conversation.GetMessages() {
+			webMessage := historyMessage.GetMessage()
+			if webMessage == nil {
+				continue
+			}
+			messageEvent, err := c.client.ParseWebMessage(chatJID, webMessage)
+			if err != nil {
+				continue
+			}
+			for _, normalized := range normalizeMessageEvent(messageEvent) {
+				if normalized.Kind == EventChatUpsert {
+					normalized.Chat.UnreadKnown = false
+					if strings.TrimSpace(conversation.GetName()) != "" {
+						normalized.Chat.Title = strings.TrimSpace(conversation.GetName())
+					}
+				}
+				if normalized.Kind == EventMessageUpsert {
+					normalized.Message.Historical = true
+					messages++
+				}
+				out = append(out, normalized)
+			}
+		}
+
+		out = append(out, Event{
+			Kind: EventHistoryStatus,
+			History: HistoryEvent{
+				ChatID:    chatID,
+				SyncType:  history.GetSyncType().String(),
+				Messages:  messages,
+				Exhausted: conversation.GetEndOfHistoryTransfer(),
+			},
+		})
+	}
+	return out
+}
+
+func historyConversationJID(conversation *waHistorySync.Conversation) (types.JID, bool) {
+	if conversation == nil {
+		return types.EmptyJID, false
+	}
+	for _, candidate := range []string{conversation.GetID(), conversation.GetNewJID()} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		jid, err := types.ParseJID(candidate)
+		if err == nil {
+			return jid, true
+		}
+	}
+	return types.EmptyJID, false
+}
+
+func historyConversationTitle(conversation *waHistorySync.Conversation, jid types.JID) string {
+	if conversation != nil {
+		if name := strings.TrimSpace(conversation.GetName()); name != "" {
+			return name
+		}
+	}
+	if jid.User != "" {
+		return jid.User
+	}
+	return jid.String()
+}
+
+func historyConversationTimestamp(conversation *waHistorySync.Conversation) time.Time {
+	if conversation == nil {
+		return time.Time{}
+	}
+	if timestamp := conversation.GetLastMsgTimestamp(); timestamp > 0 {
+		return time.Unix(int64(timestamp), 0)
+	}
+	if timestamp := conversation.GetConversationTimestamp(); timestamp > 0 {
+		return time.Unix(int64(timestamp), 0)
+	}
+	return time.Time{}
 }
 
 func connectionEvent(state ConnectionState, detail string) Event {

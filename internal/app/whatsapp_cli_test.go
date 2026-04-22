@@ -57,10 +57,17 @@ func (s *fakeWhatsAppSession) Close() error {
 type fakeLiveWhatsAppSession struct {
 	fakeWhatsAppSession
 	events          chan whatsapp.Event
+	historyRequests chan fakeHistoryRequest
+	historyErr      error
 	connectErr      error
 	subscribeErr    error
 	connectCalled   bool
 	subscribeCalled bool
+}
+
+type fakeHistoryRequest struct {
+	anchor whatsapp.HistoryAnchor
+	limit  int
 }
 
 func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
@@ -74,6 +81,13 @@ func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
 func (s *fakeLiveWhatsAppSession) SubscribeEvents(context.Context) (<-chan whatsapp.Event, error) {
 	s.subscribeCalled = true
 	return s.events, s.subscribeErr
+}
+
+func (s *fakeLiveWhatsAppSession) RequestHistoryBefore(_ context.Context, anchor whatsapp.HistoryAnchor, limit int) error {
+	if s.historyRequests != nil {
+		s.historyRequests <- fakeHistoryRequest{anchor: anchor, limit: limit}
+	}
+	return s.historyErr
 }
 
 func TestRunLoginRendersQRAndCompletes(t *testing.T) {
@@ -132,10 +146,11 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 		},
 	}
 	updates := make(chan ui.LiveUpdate, 16)
+	historyRequests := make(chan string, 16)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates)
+		runLiveWhatsApp(ctx, env, updates, historyRequests)
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -185,6 +200,59 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func TestHandleHistoryRequestUsesOldestAnchorAndCoalesces(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "chat-1@s.whatsapp.net", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	when := time.Unix(1_700_000_000, 0)
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "chat-1/oldest",
+		RemoteID:  "oldest",
+		ChatID:    "chat-1",
+		ChatJID:   "chat-1@s.whatsapp.net",
+		Sender:    "Alice",
+		Body:      "oldest local",
+		Timestamp: when,
+	}); err != nil {
+		t.Fatalf("AddMessage(oldest) error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{historyRequests: make(chan fakeHistoryRequest, 2)}
+	updates := make(chan ui.LiveUpdate, 4)
+	inflight := map[string]time.Time{}
+	handleHistoryRequest(ctx, db, session, updates, inflight, true, "chat-1")
+
+	request := <-session.historyRequests
+	if request.limit != historyPageSize ||
+		request.anchor.ChatJID != "chat-1@s.whatsapp.net" ||
+		request.anchor.MessageID != "oldest" ||
+		!request.anchor.Timestamp.Equal(when) {
+		t.Fatalf("history request = %+v, want oldest anchor and page size", request)
+	}
+
+	handleHistoryRequest(ctx, db, session, updates, inflight, true, "chat-1")
+	select {
+	case duplicate := <-session.historyRequests:
+		t.Fatalf("duplicate history request sent: %+v", duplicate)
+	default:
+	}
+	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return strings.Contains(update.Status, "already loading")
+	})
+	if update.Status == "" {
+		t.Fatal("duplicate request did not produce status")
 	}
 }
 

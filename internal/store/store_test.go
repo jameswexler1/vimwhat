@@ -255,6 +255,87 @@ func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestAddHistoricalMessageDoesNotIncrementUnread(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	_, err = db.AddHistoricalMessage(ctx, Message{
+		ID:        "chat-1/remote-old",
+		RemoteID:  "remote-old",
+		ChatID:    "chat-1",
+		ChatJID:   "chat-1@s.whatsapp.net",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "older imported message",
+		Timestamp: time.Unix(1_600_000_000, 0),
+		Status:    "received",
+	})
+	if err != nil {
+		t.Fatalf("AddHistoricalMessage() error = %v", err)
+	}
+
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Unread != 0 {
+		t.Fatalf("chats = %+v, want no unread increment", chats)
+	}
+}
+
+func TestListMessagesBeforeAndOldestMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	for i, message := range []Message{
+		{ID: "m-1", RemoteID: "r-1", Body: "one", Timestamp: base},
+		{ID: "m-2", RemoteID: "r-2", Body: "two", Timestamp: base.Add(time.Minute)},
+		{ID: "m-3", RemoteID: "r-3", Body: "three", Timestamp: base.Add(2 * time.Minute)},
+	} {
+		message.ChatID = "chat-1"
+		message.ChatJID = "chat-1@s.whatsapp.net"
+		message.Sender = "Alice"
+		if err := db.AddMessage(ctx, message); err != nil {
+			t.Fatalf("AddMessage(%d) error = %v", i, err)
+		}
+	}
+
+	oldest, ok, err := db.OldestMessage(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("OldestMessage() error = %v", err)
+	}
+	if !ok || oldest.ID != "m-1" || oldest.RemoteID != "r-1" {
+		t.Fatalf("OldestMessage() = %+v ok=%v, want m-1", oldest, ok)
+	}
+
+	older, err := db.ListMessagesBefore(ctx, "chat-1", Message{ID: "m-3", Timestamp: base.Add(2 * time.Minute)}, 2)
+	if err != nil {
+		t.Fatalf("ListMessagesBefore() error = %v", err)
+	}
+	if len(older) != 2 || older[0].ID != "m-1" || older[1].ID != "m-2" {
+		t.Fatalf("older messages = %+v, want m-1,m-2 in ascending order", older)
+	}
+}
+
 func TestMessageMediaAndLocalDelete(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

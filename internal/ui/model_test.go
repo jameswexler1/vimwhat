@@ -299,6 +299,87 @@ func TestOpeningChatLoadsMessagesLazily(t *testing.T) {
 	}
 }
 
+func TestHistoryFetchLoadsOlderLocalMessagesBeforeRemoteRequest(t *testing.T) {
+	requested := false
+	base := time.Unix(1_700_000_000, 0)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "three", Timestamp: base.Add(2 * time.Minute)},
+					{ID: "m-4", ChatID: "chat-1", Sender: "Alice", Body: "four", Timestamp: base.Add(3 * time.Minute)},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		LoadOlderMessages: func(chatID string, before store.Message, limit int) ([]store.Message, error) {
+			if chatID != "chat-1" || before.ID != "m-3" || limit != historyPageSize {
+				t.Fatalf("older load args = (%q, %+v, %d)", chatID, before, limit)
+			}
+			return []store.Message{
+				{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "one", Timestamp: base},
+				{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "two", Timestamp: base.Add(time.Minute)},
+			}, nil
+		},
+		RequestHistory: func(string) error {
+			requested = true
+			return nil
+		},
+	})
+
+	updated, _ := model.executeCommand("history fetch")
+	got := updated.(Model)
+	if requested {
+		t.Fatal("RequestHistory called even though older local messages were available")
+	}
+	messages := got.messagesByChat["chat-1"]
+	if len(messages) != 4 || messages[0].ID != "m-1" || messages[1].ID != "m-2" {
+		t.Fatalf("messages after history fetch = %+v", messages)
+	}
+	if got.messageCursor != 1 {
+		t.Fatalf("messageCursor = %d, want last prepended message", got.messageCursor)
+	}
+}
+
+func TestScrollAboveLoadedMessagesRequestsRemoteHistory(t *testing.T) {
+	var requestedChatID string
+	base := time.Unix(1_700_000_000, 0)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "one", Timestamp: base},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		LoadOlderMessages: func(string, store.Message, int) ([]store.Message, error) {
+			return nil, nil
+		},
+		RequestHistory: func(chatID string) error {
+			requestedChatID = chatID
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 0
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	got := updated.(Model)
+	if requestedChatID != "chat-1" {
+		t.Fatalf("requestedChatID = %q, want chat-1", requestedChatID)
+	}
+	if !strings.Contains(got.status, "requested older history") {
+		t.Fatalf("status = %q, want requested older history", got.status)
+	}
+}
+
 func TestNormalCountsMoveCursor(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

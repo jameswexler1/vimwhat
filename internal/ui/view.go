@@ -1501,7 +1501,7 @@ func (m Model) renderHelp(width int) string {
 		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
 		"         sort pinned/recent  preview  media-preview  media-open  media-save  media-hide",
-		"         preview-backend <name>  clear-preview-cache",
+		"         history fetch  preview-backend <name>  clear-preview-cache",
 		"         attach <path>  delete-message",
 		"",
 		"state:",

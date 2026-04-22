@@ -12,6 +12,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
 	_ "modernc.org/sqlite"
@@ -26,13 +27,20 @@ const authTimeout = 45 * time.Second
 
 type QRHandler = func(code string)
 
+type HistoryAnchor struct {
+	ChatJID   string
+	MessageID string
+	IsFromMe  bool
+	Timestamp time.Time
+}
+
 type Adapter interface {
 	Connect(ctx context.Context) error
 	Login(ctx context.Context, handleQR QRHandler) error
 	Logout(ctx context.Context) error
 	SendText(ctx context.Context, chatJID, body string) (SendResult, error)
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
-	RequestRecentHistory(ctx context.Context, chatJID string, limit int) error
+	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
 }
 
 type Client struct {
@@ -442,7 +450,7 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 		for {
 			select {
 			case evt := <-raw:
-				for _, normalized := range normalizeWhatsmeowEvent(evt) {
+				for _, normalized := range c.normalizeWhatsmeowEvent(evt) {
 					select {
 					case out <- normalized:
 					case <-ctx.Done():
@@ -458,8 +466,50 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 	return out, nil
 }
 
-func (Client) RequestRecentHistory(context.Context, string, int) error {
-	return ErrNotImplemented
+func (c *Client) RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	info, err := historyAnchorMessageInfo(anchor)
+	if err != nil {
+		return err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	_, err = c.client.SendPeerMessage(ctx, c.client.BuildHistorySyncRequest(&info, limit))
+	if err != nil {
+		return fmt.Errorf("request whatsapp history before %s: %w", anchor.MessageID, err)
+	}
+	return nil
+}
+
+func historyAnchorMessageInfo(anchor HistoryAnchor) (types.MessageInfo, error) {
+	if anchor.ChatJID == "" {
+		return types.MessageInfo{}, fmt.Errorf("history anchor chat jid is required")
+	}
+	if anchor.MessageID == "" {
+		return types.MessageInfo{}, fmt.Errorf("history anchor message id is required")
+	}
+	if anchor.Timestamp.IsZero() {
+		return types.MessageInfo{}, fmt.Errorf("history anchor timestamp is required")
+	}
+	chat, err := types.ParseJID(anchor.ChatJID)
+	if err != nil {
+		return types.MessageInfo{}, fmt.Errorf("parse history anchor chat jid: %w", err)
+	}
+	if !supportedChat(chat) {
+		return types.MessageInfo{}, fmt.Errorf("unsupported history chat jid %s", anchor.ChatJID)
+	}
+	return types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:     chat,
+			IsFromMe: anchor.IsFromMe,
+			IsGroup:  chat.Server == types.GroupServer,
+		},
+		ID:        anchor.MessageID,
+		Timestamp: anchor.Timestamp,
+	}, nil
 }
 
 type SendResult struct {
@@ -476,6 +526,7 @@ const (
 	EventReceiptUpdate   EventKind = "receipt_update"
 	EventMediaMetadata   EventKind = "media_metadata"
 	EventConnectionState EventKind = "connection_state"
+	EventHistoryStatus   EventKind = "history_status"
 )
 
 type ConnectionState string
@@ -496,6 +547,7 @@ type Event struct {
 	Receipt    ReceiptEvent
 	Media      MediaEvent
 	Connection ConnectionEvent
+	History    HistoryEvent
 }
 
 type ConnectionEvent struct {
@@ -528,6 +580,14 @@ type MessageEvent struct {
 	Status          string
 	QuotedMessageID string
 	QuotedRemoteID  string
+	Historical      bool
+}
+
+type HistoryEvent struct {
+	ChatID    string
+	SyncType  string
+	Messages  int
+	Exhausted bool
 }
 
 type ReceiptEvent struct {

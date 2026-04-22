@@ -33,7 +33,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		}
 		return i.Store.UpsertChatPreserveUnread(ctx, chat)
 	case EventMessageUpsert:
-		_, err := i.Store.AddIncomingMessage(ctx, store.Message{
+		message := store.Message{
 			ID:              event.Message.ID,
 			RemoteID:        event.Message.RemoteID,
 			ChatID:          event.Message.ChatID,
@@ -46,7 +46,13 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			Status:          event.Message.Status,
 			QuotedMessageID: event.Message.QuotedMessageID,
 			QuotedRemoteID:  event.Message.QuotedRemoteID,
-		})
+		}
+		var err error
+		if event.Message.Historical {
+			_, err = i.Store.AddHistoricalMessage(ctx, message)
+		} else {
+			_, err = i.Store.AddIncomingMessage(ctx, message)
+		}
 		return err
 	case EventMediaMetadata:
 		return i.Store.UpsertMediaMetadata(ctx, store.MediaMetadata{
@@ -65,9 +71,18 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		}
 		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
 		return err
+	case EventHistoryStatus:
+		if event.History.Exhausted && event.History.ChatID != "" {
+			return i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), "true")
+		}
+		return nil
 	case EventConnectionState:
 		return nil
 	default:
 		return fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
 	}
+}
+
+func HistoryExhaustedCursor(chatID string) string {
+	return "history:" + chatID + ":exhausted"
 }
