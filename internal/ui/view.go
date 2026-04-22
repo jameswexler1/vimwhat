@@ -853,7 +853,8 @@ func (m Model) mediaPreviewShouldReserve(message store.Message, item store.Media
 }
 
 func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetadata) string {
-	if media.MediaKind(item.MIMEType, item.FileName) == media.KindUnsupported {
+	kind := media.MediaKind(item.MIMEType, item.FileName)
+	if kind == media.KindUnsupported {
 		return ""
 	}
 	request, ok := m.previewRequestForMedia(message, item, 0, 0)
@@ -871,6 +872,12 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 		if preview.Ready() {
 			return ""
 		}
+	}
+	if highQualityPreviewRequiresLocalFile(m.previewReport.Selected, kind) && strings.TrimSpace(item.LocalPath) == "" {
+		if strings.TrimSpace(item.ThumbnailPath) != "" {
+			return "thumbnail only"
+		}
+		return "enter download"
 	}
 	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
 		return "enter download"

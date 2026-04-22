@@ -87,6 +87,9 @@ func TestDetectChafaExplicitBeatsAvailableUeberzugPP(t *testing.T) {
 	if report.Selected != BackendChafa {
 		t.Fatalf("Selected = %q, want %q", report.Selected, BackendChafa)
 	}
+	if got := report.QualityPath(); !strings.Contains(got, "forced by preview_backend=chafa") || !strings.Contains(got, "ueberzug++ is available") {
+		t.Fatalf("QualityPath() = %q, want forced chafa warning", got)
+	}
 }
 
 func TestDetectReportsNoneWhenNoBackendIsAvailable(t *testing.T) {
@@ -212,7 +215,7 @@ func TestPreviewerPrefersFullImageOverThumbnail(t *testing.T) {
 	}
 }
 
-func TestPreviewerUsesImageThumbnailOnlyWhenFullImageUnavailable(t *testing.T) {
+func TestPreviewerRejectsImageThumbnailOnlyForOverlayBackend(t *testing.T) {
 	thumbPath := filepath.Join(t.TempDir(), "thumb.jpg")
 	if err := os.WriteFile(thumbPath, []byte("thumb"), 0o644); err != nil {
 		t.Fatalf("WriteFile(thumb) error = %v", err)
@@ -227,11 +230,59 @@ func TestPreviewerUsesImageThumbnailOnlyWhenFullImageUnavailable(t *testing.T) {
 		Height:        4,
 	})
 
+	if preview.Err == nil || !strings.Contains(preview.Err.Error(), "only a thumbnail") {
+		t.Fatalf("Render() error = %v, want thumbnail-only refusal", preview.Err)
+	}
+	if preview.SourcePath != "" || preview.SourceKind != "" {
+		t.Fatalf("preview source = %q %s, want no thumbnail overlay", preview.SourcePath, preview.SourceKind)
+	}
+}
+
+func TestPreviewerAllowsImageThumbnailFallbackForChafa(t *testing.T) {
+	thumbPath := filepath.Join(t.TempDir(), "thumb.jpg")
+	if err := os.WriteFile(thumbPath, []byte("thumb"), 0o644); err != nil {
+		t.Fatalf("WriteFile(thumb) error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "chafa" {
+			return "/usr/bin/chafa", nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if name != "chafa" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		return []byte("thumb\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendChafa}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID:     "m-1",
+		MIMEType:      "image/jpeg",
+		ThumbnailPath: thumbPath,
+		Width:         10,
+		Height:        4,
+	})
+
 	if preview.Err != nil {
 		t.Fatalf("Render() error = %v", preview.Err)
 	}
 	if preview.SourcePath != thumbPath || preview.SourceKind != SourceThumbnail {
 		t.Fatalf("preview source = %q %s, want thumbnail fallback", preview.SourcePath, preview.SourceKind)
+	}
+	if len(preview.Lines) != 1 || preview.Lines[0] != "thumb" {
+		t.Fatalf("preview lines = %+v", preview.Lines)
 	}
 }
 

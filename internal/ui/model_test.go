@@ -1488,6 +1488,94 @@ func TestEnterOnRemoteMediaShowsDownloadNotImplemented(t *testing.T) {
 	}
 }
 
+func TestEnterOnThumbnailOnlyOverlayMediaDoesNotPreviewLowResolutionThumbnail(t *testing.T) {
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						ThumbnailPath: "/tmp/wa-thumb.jpg",
+						DownloadState: "remote",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	updated, _ := model.activateFocusedMediaPreview()
+	got := updated.(Model)
+	if !strings.Contains(got.status, "only has a thumbnail") || !strings.Contains(got.status, "not implemented") {
+		t.Fatalf("status = %q, want visible full-media limitation", got.status)
+	}
+	if requests := got.requestedPreviewRequests(); len(requests) != 0 {
+		t.Fatalf("requestedPreviewRequests() = %+v, want no thumbnail-only overlay request", requests)
+	}
+	if state := got.mediaAttachmentState(got.messagesByChat["chat-1"][0], got.messagesByChat["chat-1"][0].Media[0]); state != "thumbnail only" {
+		t.Fatalf("mediaAttachmentState() = %q, want thumbnail only", state)
+	}
+}
+
+func TestRequestedPreviewRequestsSkipsStaleThumbnailOnlyOverlayRequest(t *testing.T) {
+	model := mediaTestModel("", media.BackendUeberzugPP)
+	model.messagesByChat["chat-1"][0].Media[0].ThumbnailPath = "/tmp/wa-thumb.jpg"
+	message := model.messagesByChat["chat-1"][0]
+	item := message.Media[0]
+	model.previewRequested = map[string]bool{mediaActivationKey(message, item): true}
+
+	if requests := model.requestedPreviewRequests(); len(requests) != 0 {
+		t.Fatalf("requestedPreviewRequests() = %+v, want no stale thumbnail-only overlay request", requests)
+	}
+}
+
+func TestReplaceMessageMediaPreservesExistingLocalPathWhenUpdateOnlyHasThumbnail(t *testing.T) {
+	messages := []store.Message{{
+		ID:     "m-1",
+		ChatID: "chat-1",
+		Sender: "me",
+		Media: []store.MediaMetadata{{
+			MessageID:     "m-1",
+			FileName:      "photo.jpg",
+			MIMEType:      "image/jpeg",
+			SizeBytes:     2048,
+			LocalPath:     "/home/me/photo.jpg",
+			DownloadState: "downloaded",
+		}},
+	}}
+
+	replaced, ok, message := replaceMessageMedia(messages, "m-1", store.MediaMetadata{
+		MessageID:     "m-1",
+		ThumbnailPath: "/home/me/thumb.jpg",
+		DownloadState: "remote",
+	})
+	if !ok {
+		t.Fatal("replaceMessageMedia() ok = false")
+	}
+	mediaItem := message.Media[0]
+	if mediaItem.LocalPath != "/home/me/photo.jpg" || mediaItem.ThumbnailPath != "/home/me/thumb.jpg" || mediaItem.DownloadState != "downloaded" {
+		t.Fatalf("message media = %+v, want local path preserved and thumbnail added", mediaItem)
+	}
+	if replaced[0].Media[0] != mediaItem {
+		t.Fatalf("replaced messages = %+v, want same merged media", replaced)
+	}
+}
+
 func TestEnterOnRemoteMediaDownloadCallbackQueuesPreview(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {

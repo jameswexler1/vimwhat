@@ -167,6 +167,9 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 			return req.LocalPath, SourceLocal, false, nil
 		}
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			if !allowsThumbnailFallback(req.Backend) {
+				return "", "", false, fmt.Errorf("full image is not downloaded; only a thumbnail is available")
+			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
 		}
 		if req.LocalPath != "" {
@@ -179,12 +182,18 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	}
 	if req.LocalPath == "" {
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			if !allowsThumbnailFallback(req.Backend) {
+				return "", "", false, fmt.Errorf("full video is not downloaded; only a thumbnail is available")
+			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
 		}
 		return "", "", false, fmt.Errorf("video is not downloaded")
 	}
 	if !fileExists(req.LocalPath) {
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
+			if !allowsThumbnailFallback(req.Backend) {
+				return "", "", false, fmt.Errorf("video file is missing; only a thumbnail is available")
+			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
 		}
 		return "", "", false, fmt.Errorf("video file is missing")
@@ -222,6 +231,10 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 		return "", "", false, fmt.Errorf("ffmpeg did not produce a thumbnail")
 	}
 	return thumbnailPath, SourceGeneratedThumbnail, true, nil
+}
+
+func allowsThumbnailFallback(backend Backend) bool {
+	return backend == BackendChafa
 }
 
 func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {

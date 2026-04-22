@@ -1341,6 +1341,9 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 			if strings.TrimSpace(request.LocalPath) == "" && strings.TrimSpace(request.ThumbnailPath) == "" {
 				continue
 			}
+			if highQualityPreviewRequiresLocalFile(request.Backend, media.MediaKind(request.MIMEType, request.FileName)) && strings.TrimSpace(request.LocalPath) == "" {
+				continue
+			}
 			requests = append(requests, request)
 			if len(requests) >= 4 {
 				return requests
@@ -1404,7 +1407,7 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.status = fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
+		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
 	if kind == media.KindUnsupported {
@@ -1419,6 +1422,21 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 			return m.openFocusedMedia()
 		}
 		m.status = fmt.Sprintf("preview backend %s cannot render inline", m.previewReport.Selected)
+		return m, nil
+	}
+	if highQualityPreviewRequiresLocalFile(m.previewReport.Selected, kind) && strings.TrimSpace(item.LocalPath) == "" {
+		if m.downloadMedia != nil {
+			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			return m, func() tea.Msg {
+				downloaded, err := m.downloadMedia(message, item)
+				return mediaDownloadedMsg{
+					MessageID: message.ID,
+					Media:     downloaded,
+					Err:       err,
+				}
+			}
+		}
+		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
 
@@ -1465,7 +1483,7 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 				return mediaDownloadedMsg{MessageID: message.ID, Media: downloaded, Err: err}
 			}
 		}
-		m.status = fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
+		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
 	if m.openMedia == nil {
@@ -1495,7 +1513,7 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 				return mediaSavedMsg{MessageID: message.ID, Media: downloaded, Path: path, Err: err}
 			}
 		}
-		m.status = fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
+		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
 	m.status = fmt.Sprintf("saving media: %s", mediaDisplayName(item))
@@ -1863,17 +1881,53 @@ func replaceMessageMedia(messages []store.Message, messageID string, mediaItem s
 		if mediaItem.MessageID == "" {
 			mediaItem.MessageID = messageID
 		}
-		if mediaItem.DownloadState == "" {
-			mediaItem.DownloadState = "downloaded"
-		}
 		if len(messages[index].Media) == 0 {
+			if mediaItem.DownloadState == "" {
+				mediaItem.DownloadState = "downloaded"
+			}
 			messages[index].Media = []store.MediaMetadata{mediaItem}
 		} else {
+			mediaItem = mergeMediaMetadata(messages[index].Media[0], mediaItem)
+			if mediaItem.DownloadState == "" {
+				mediaItem.DownloadState = "downloaded"
+			}
 			messages[index].Media[0] = mediaItem
 		}
 		return messages, true, messages[index]
 	}
 	return messages, false, store.Message{}
+}
+
+func mergeMediaMetadata(existing, next store.MediaMetadata) store.MediaMetadata {
+	incomingLocalPath := strings.TrimSpace(next.LocalPath) != ""
+	if strings.TrimSpace(next.MessageID) == "" {
+		next.MessageID = existing.MessageID
+	}
+	if strings.TrimSpace(next.MIMEType) == "" {
+		next.MIMEType = existing.MIMEType
+	}
+	if strings.TrimSpace(next.FileName) == "" {
+		next.FileName = existing.FileName
+	}
+	if next.SizeBytes <= 0 {
+		next.SizeBytes = existing.SizeBytes
+	}
+	if strings.TrimSpace(next.LocalPath) == "" {
+		next.LocalPath = existing.LocalPath
+	}
+	if strings.TrimSpace(next.ThumbnailPath) == "" {
+		next.ThumbnailPath = existing.ThumbnailPath
+	}
+	if strings.TrimSpace(existing.LocalPath) != "" && !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "remote" {
+		next.DownloadState = existing.DownloadState
+	}
+	if !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "" {
+		next.DownloadState = existing.DownloadState
+	}
+	if next.UpdatedAt.IsZero() {
+		next.UpdatedAt = existing.UpdatedAt
+	}
+	return next
 }
 
 func mediaActivationKey(message store.Message, item store.MediaMetadata) string {
@@ -1917,6 +1971,20 @@ func mediaDisplayName(item store.MediaMetadata) string {
 		return "media"
 	}
 	return name
+}
+
+func highQualityPreviewRequiresLocalFile(backend media.Backend, kind media.Kind) bool {
+	if kind != media.KindImage && kind != media.KindVideo {
+		return false
+	}
+	return backend == media.BackendUeberzugPP || backend == media.BackendSixel
+}
+
+func mediaDownloadUnavailableStatus(item store.MediaMetadata) string {
+	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) != "" {
+		return fmt.Sprintf("%s only has a thumbnail; full media download is not implemented", mediaDisplayName(item))
+	}
+	return fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
 }
 
 func previewRequestName(request media.PreviewRequest) string {

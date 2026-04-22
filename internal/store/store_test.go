@@ -266,6 +266,56 @@ func TestMessageMediaAndLocalDelete(t *testing.T) {
 	}
 }
 
+func TestUpsertMediaMetadataPreservesExistingLocalFileWhenUpdateOnlyHasThumbnail(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessageWithMedia(ctx, Message{
+		ID:         "m-1",
+		ChatID:     "chat-1",
+		Sender:     "me",
+		Timestamp:  time.Unix(1_700_000_000, 0),
+		IsOutgoing: true,
+	}, []MediaMetadata{{
+		FileName:      "photo.jpg",
+		MIMEType:      "image/jpeg",
+		SizeBytes:     2048,
+		LocalPath:     "/home/me/photo.jpg",
+		DownloadState: "downloaded",
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	if err := store.UpsertMediaMetadata(ctx, MediaMetadata{
+		MessageID:     "m-1",
+		FileName:      "photo.jpg",
+		MIMEType:      "image/jpeg",
+		ThumbnailPath: "/home/me/thumb.jpg",
+		DownloadState: "remote",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadata() error = %v", err)
+	}
+
+	media, err := store.MediaMetadata(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if media.LocalPath != "/home/me/photo.jpg" || media.ThumbnailPath != "/home/me/thumb.jpg" || media.DownloadState != "downloaded" {
+		t.Fatalf("MediaMetadata() = %+v, want local file preserved and thumbnail added", media)
+	}
+}
+
 func TestAddOlderMessageDoesNotMoveChatBackward(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

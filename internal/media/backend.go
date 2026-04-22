@@ -167,6 +167,31 @@ func (r Report) Lines() []string {
 		}
 	}
 	lines = append(lines, fmt.Sprintf("chafa role: %s", chafaRole))
+	lines = append(lines, fmt.Sprintf("preview quality path: %s", r.QualityPath()))
 
 	return lines
+}
+
+func (r Report) QualityPath() string {
+	switch r.Selected {
+	case BackendUeberzugPP:
+		adapter := r.UeberzugPPOutput
+		if adapter == "" {
+			adapter = "unknown"
+		}
+		return "pixel overlay via ueberzug++ " + adapter
+	case BackendSixel:
+		return "pixel output via sixel"
+	case BackendChafa:
+		if r.Requested == BackendChafa && r.Reasons[BackendUeberzugPP] == "available" {
+			return "symbol fallback forced by preview_backend=chafa; ueberzug++ is available"
+		}
+		return "symbol fallback via chafa"
+	case BackendExternal:
+		return "external opener only"
+	case BackendNone:
+		return "inline previews disabled"
+	default:
+		return "unknown"
+	}
 }

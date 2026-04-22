@@ -744,12 +744,31 @@ func upsertMediaMetadata(ctx context.Context, execer mediaMetadataExecer, media 
 			thumbnail_path, download_state, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(message_id) DO UPDATE SET
-			mime_type = excluded.mime_type,
-			file_name = excluded.file_name,
-			size_bytes = excluded.size_bytes,
-			local_path = excluded.local_path,
-			thumbnail_path = excluded.thumbnail_path,
-			download_state = excluded.download_state,
+			mime_type = CASE
+				WHEN excluded.mime_type != '' THEN excluded.mime_type
+				ELSE media_metadata.mime_type
+			END,
+			file_name = CASE
+				WHEN excluded.file_name != '' THEN excluded.file_name
+				ELSE media_metadata.file_name
+			END,
+			size_bytes = CASE
+				WHEN excluded.size_bytes > 0 THEN excluded.size_bytes
+				ELSE media_metadata.size_bytes
+			END,
+			local_path = CASE
+				WHEN excluded.local_path != '' THEN excluded.local_path
+				ELSE media_metadata.local_path
+			END,
+			thumbnail_path = CASE
+				WHEN excluded.thumbnail_path != '' THEN excluded.thumbnail_path
+				ELSE media_metadata.thumbnail_path
+			END,
+			download_state = CASE
+				WHEN media_metadata.local_path != '' AND excluded.local_path = '' THEN media_metadata.download_state
+				WHEN excluded.download_state != '' THEN excluded.download_state
+				ELSE media_metadata.download_state
+			END,
 			updated_at = excluded.updated_at
 	`,
 		media.MessageID,
