@@ -12,16 +12,17 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
+- Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, and `doctor` session status reporting.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
 
 - Tightening TUI behavior, viewport rules, preview behavior, and modal ergonomics.
-- Keeping architecture boundaries ready for live WhatsApp integration without coupling UI directly to protocol events.
+- Live WhatsApp connection bootstrap and protocol event ingestion while keeping the UI DB-first.
+- Mapping incoming `whatsmeow` chat/message/media/receipt events into the existing SQLite repositories.
 
 ### Not implemented yet
 
-- Real `whatsmeow` login/logout/session lifecycle.
 - Live sync, reconnect handling, remote history fetch, read receipts, reactions, presence, and quote-jump backed by the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
 - Remote media download/fetch pipeline from WhatsApp servers.
@@ -151,11 +152,24 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 ## Near-Term Execution Order
 
-1. Finish the local TUI shell so message navigation, previews, composer behavior, and pane/layout rules feel stable.
-2. Implement session/login plumbing in `internal/whatsapp/` and wire it through the existing app bootstrap paths.
+1. Keep polishing the local TUI shell as protocol behavior lands, especially message navigation, previews, composer behavior, and pane/layout rules.
+2. Use the working `whatsmeow` session to connect on demand, restore an existing paired session, subscribe to protocol events, and expose visible connection status.
 3. Replace demo-only data flow with protocol-backed ingestion into SQLite while keeping the UI DB-first.
 4. Add on-demand remote history and media download paths on top of the existing local store and preview pipeline.
-5. Expose the remaining CLI surfaces (`login`, `logout`, `media open`, `export chat`) once the underlying behavior exists.
+5. Expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
+
+### Current protocol milestone
+
+The QR pairing milestone is complete as of 2026-04-22: `vimwhat login` can pair successfully, `vimwhat logout` clears the local/remote session, rejected partial sessions are cleaned up, and `doctor` reports local pairing state.
+
+The next milestone is live read-only sync:
+
+- Bootstrap a `whatsmeow` client from the paired session when the TUI starts.
+- Show connection/auth state in the status line without blocking cached DB rendering.
+- Subscribe to `whatsmeow` events in one protocol-owned goroutine.
+- Convert incoming chat, message, receipt, and media metadata events into the existing `internal/store` schema through `internal/whatsapp.Ingestor`.
+- Keep outbound sending disabled or clearly marked pending until incoming event ingestion is stable.
+- Add tests with a mocked protocol event source before relying on manual WhatsApp traffic.
 
 ### Data model and lazy loading
 
