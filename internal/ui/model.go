@@ -164,6 +164,7 @@ type Model struct {
 	previewRequested       map[string]bool
 	previewGeneration      int
 	overlay                *media.OverlayManager
+	overlaySignature       string
 	suppressOverlay        bool
 	audioProcess           AudioProcess
 	audioSession           int
@@ -1665,9 +1666,17 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 		return m.clearOverlayCmd()
 	}
 	placements := m.visibleMediaPlacements()
+	signature := overlayPlacementsSignature(placements)
+	if signature == m.overlaySignature {
+		return nil
+	}
+	if signature == "" {
+		return m.clearOverlayCmd()
+	}
 	if m.overlay == nil {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 	}
+	m.overlaySignature = signature
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
@@ -1675,7 +1684,8 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	}
 }
 
-func (m Model) clearOverlayCmd() tea.Cmd {
+func (m *Model) clearOverlayCmd() tea.Cmd {
+	m.overlaySignature = ""
 	if m.overlay == nil {
 		return nil
 	}
@@ -1683,6 +1693,27 @@ func (m Model) clearOverlayCmd() tea.Cmd {
 	return func() tea.Msg {
 		return mediaOverlayMsg{Err: manager.Remove(context.Background())}
 	}
+}
+
+func overlayPlacementsSignature(placements []media.Placement) string {
+	if len(placements) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(placements))
+	for _, placement := range placements {
+		parts = append(parts, fmt.Sprintf(
+			"%q %d %d %d %d %q %q",
+			placement.Identifier,
+			placement.X,
+			placement.Y,
+			placement.MaxWidth,
+			placement.MaxHeight,
+			placement.Path,
+			placement.Scaler,
+		))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
 }
 
 func (m Model) requestedPreviewRequests() []media.PreviewRequest {

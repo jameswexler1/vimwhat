@@ -2571,6 +2571,58 @@ func TestLeaderHFClearsLoadedMediaPreviews(t *testing.T) {
 	}
 }
 
+func TestSyncOverlayCmdSkipsUnchangedPlacements(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+
+	first := model.syncOverlayCmd()
+	if first == nil {
+		t.Fatal("first syncOverlayCmd() = nil, want overlay add command")
+	}
+	if model.overlaySignature == "" {
+		t.Fatal("overlaySignature is empty after first syncOverlayCmd()")
+	}
+	second := model.syncOverlayCmd()
+	if second != nil {
+		t.Fatal("second syncOverlayCmd() returned a command for unchanged placements")
+	}
+
+	if msg := first(); msg == nil {
+		t.Fatal("first overlay command returned nil message")
+	}
+	if !strings.Contains(overlay.String(), `"action":"add"`) {
+		t.Fatalf("first overlay command did not add preview:\n%s", overlay.String())
+	}
+	overlay.Reset()
+	third := model.syncOverlayCmd()
+	if third != nil {
+		t.Fatal("third syncOverlayCmd() returned a command after unchanged placement was active")
+	}
+	if overlay.Len() != 0 {
+		t.Fatalf("unchanged overlay sync wrote output:\n%s", overlay.String())
+	}
+}
+
+func TestSyncOverlayCmdSkipsEmptyPlacementsWithoutManager(t *testing.T) {
+	model := mediaTestModel(filepath.Join(t.TempDir(), "photo.jpg"), media.BackendUeberzugPP)
+
+	if cmd := model.syncOverlayCmd(); cmd != nil {
+		t.Fatal("syncOverlayCmd() returned a command without visible placements")
+	}
+	if model.overlay != nil {
+		t.Fatal("syncOverlayCmd() created an overlay manager without visible placements")
+	}
+	if model.overlaySignature != "" {
+		t.Fatalf("overlaySignature = %q, want empty", model.overlaySignature)
+	}
+}
+
 func TestLeaderPrefixConsumesHWithoutMovingFocus(t *testing.T) {
 	model := mediaTestModel(filepath.Join(t.TempDir(), "photo.jpg"), media.BackendChafa)
 	model.focus = FocusMessages
