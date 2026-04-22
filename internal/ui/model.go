@@ -34,6 +34,34 @@ const (
 	FocusPreview  Focus = "preview"
 )
 
+type ConnectionState string
+
+const (
+	ConnectionPaired       ConnectionState = "paired"
+	ConnectionConnecting   ConnectionState = "connecting"
+	ConnectionOnline       ConnectionState = "online"
+	ConnectionReconnecting ConnectionState = "reconnecting"
+	ConnectionOffline      ConnectionState = "offline"
+	ConnectionLoggedOut    ConnectionState = "logged_out"
+)
+
+type LiveUpdate struct {
+	ConnectionState ConnectionState
+	Status          string
+	Refresh         bool
+}
+
+type liveUpdateMsg struct {
+	Update LiveUpdate
+	OK     bool
+}
+
+type snapshotReloadedMsg struct {
+	Snapshot     store.Snapshot
+	ActiveChatID string
+	Err          error
+}
+
 type clipboardCopiedMsg struct {
 	Count int
 	Err   error
@@ -94,8 +122,12 @@ type Options struct {
 	Config          config.Config
 	PreviewReport   media.Report
 	Snapshot        store.Snapshot
+	ConnectionState ConnectionState
+	LiveUpdates     <-chan LiveUpdate
+	BlockSending    bool
 	PersistMessage  func(chatID, body string, attachments []Attachment) (store.Message, error)
 	LoadMessages    func(chatID string, limit int) ([]store.Message, error)
+	ReloadSnapshot  func(activeChatID string, limit int) (store.Snapshot, error)
 	SaveDraft       func(chatID, body string) error
 	SearchChats     func(query string) ([]store.Chat, error)
 	SearchMessages  func(chatID, query string, limit int) ([]store.Message, error)
@@ -137,6 +169,7 @@ type Model struct {
 	paths             config.Paths
 	config            config.Config
 	status            string
+	connectionState   ConnectionState
 	commandLine       string
 	searchLine        string
 	composer          string
@@ -164,6 +197,7 @@ type Model struct {
 	deleteConfirmID   string
 	persistMessage    func(chatID, body string, attachments []Attachment) (store.Message, error)
 	loadMessages      func(chatID string, limit int) ([]store.Message, error)
+	reloadSnapshot    func(activeChatID string, limit int) (store.Snapshot, error)
 	saveDraft         func(chatID, body string) error
 	searchChats       func(query string) ([]store.Chat, error)
 	searchMessages    func(chatID, query string, limit int) ([]store.Message, error)
@@ -174,6 +208,10 @@ type Model struct {
 	deleteMessage     func(messageID string) error
 	saveMedia         func(media store.MediaMetadata) error
 	downloadMedia     func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	liveUpdates       <-chan LiveUpdate
+	reloadInFlight    bool
+	refreshQueued     bool
+	blockSending      bool
 }
 
 const messageLoadLimit = 200
@@ -215,9 +253,11 @@ func NewModel(opts Options) Model {
 		paths:            opts.Paths,
 		config:           normalizeConfig(opts.Config),
 		status:           "ready",
+		connectionState:  opts.ConnectionState,
 		pinnedFirst:      true,
 		persistMessage:   opts.PersistMessage,
 		loadMessages:     opts.LoadMessages,
+		reloadSnapshot:   opts.ReloadSnapshot,
 		saveDraft:        opts.SaveDraft,
 		searchChats:      opts.SearchChats,
 		searchMessages:   opts.SearchMessages,
@@ -228,6 +268,8 @@ func NewModel(opts Options) Model {
 		deleteMessage:    opts.DeleteMessage,
 		saveMedia:        opts.SaveMedia,
 		downloadMedia:    opts.DownloadMedia,
+		liveUpdates:      opts.LiveUpdates,
+		blockSending:     opts.BlockSending,
 		unfilteredByChat: map[string][]store.Message{},
 	}
 }
@@ -272,11 +314,91 @@ func cloneDrafts(input map[string]string) map[string]string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	return m.waitForLiveUpdateCmd()
+}
+
+func (m Model) waitForLiveUpdateCmd() tea.Cmd {
+	if m.liveUpdates == nil {
+		return nil
+	}
+	updates := m.liveUpdates
+	return func() tea.Msg {
+		update, ok := <-updates
+		return liveUpdateMsg{Update: update, OK: ok}
+	}
+}
+
+func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	if update.ConnectionState != "" {
+		m.connectionState = update.ConnectionState
+	}
+	if strings.TrimSpace(update.Status) != "" {
+		m.status = update.Status
+	}
+
+	if update.Refresh && m.reloadSnapshot != nil {
+		if m.reloadInFlight {
+			m.refreshQueued = true
+		} else {
+			m.reloadInFlight = true
+			cmds = append(cmds, m.reloadSnapshotCmd())
+		}
+	}
+	cmds = append(cmds, m.waitForLiveUpdateCmd())
+	return m, batchCmds(cmds...)
+}
+
+func (m Model) reloadSnapshotCmd() tea.Cmd {
+	if m.reloadSnapshot == nil {
+		return nil
+	}
+	activeChatID := m.currentChat().ID
+	reload := m.reloadSnapshot
+	return func() tea.Msg {
+		snapshot, err := reload(activeChatID, messageLoadLimit)
+		return snapshotReloadedMsg{
+			Snapshot:     snapshot,
+			ActiveChatID: activeChatID,
+			Err:          err,
+		}
+	}
+}
+
+func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) {
+	m.reloadInFlight = false
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("refresh failed: %v", msg.Err)
+		return m, m.nextQueuedRefreshCmd()
+	}
+	if err := m.applySnapshot(msg.Snapshot, msg.ActiveChatID, m.messageFilter); err != nil {
+		m.status = fmt.Sprintf("refresh failed: %v", err)
+		return m, m.nextQueuedRefreshCmd()
+	}
+	return m, m.nextQueuedRefreshCmd()
+}
+
+func (m *Model) nextQueuedRefreshCmd() tea.Cmd {
+	if !m.refreshQueued || m.reloadSnapshot == nil {
+		return nil
+	}
+	m.refreshQueued = false
+	m.reloadInFlight = true
+	return m.reloadSnapshotCmd()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case liveUpdateMsg:
+		if !msg.OK {
+			m.liveUpdates = nil
+			return m, nil
+		}
+		next, cmd := m.handleLiveUpdate(msg.Update)
+		return next.withPreviewCmd(cmd)
+	case snapshotReloadedMsg:
+		next, cmd := m.handleSnapshotReloaded(msg)
+		return next.withPreviewCmd(cmd)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -580,6 +702,14 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if chatID == "" {
 			m.status = "no active chat"
 			m.mode = ModeNormal
+			return m, nil
+		}
+		if m.blockSending {
+			if err := m.setDraft(chatID, m.composer); err != nil {
+				m.status = fmt.Sprintf("save draft failed: %v", err)
+				return m, nil
+			}
+			m.status = "sending is not implemented yet"
 			return m, nil
 		}
 
@@ -1078,6 +1208,57 @@ func (m *Model) reloadCurrentMessages() error {
 	m.messagesByChat[chatID] = slices.Clone(messages)
 	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(messages)-1))
 	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(messages)-1))
+	return nil
+}
+
+func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageFilter string) error {
+	if preferredChatID == "" {
+		preferredChatID = snapshot.ActiveChatID
+	}
+	if preferredChatID == "" {
+		preferredChatID = m.currentChat().ID
+	}
+
+	oldChatID := m.currentChat().ID
+	oldCursor := m.messageCursor
+	oldScrollTop := m.messageScrollTop
+
+	m.allChats = slices.Clone(snapshot.Chats)
+	m.draftsByChat = cloneDrafts(snapshot.DraftsByChat)
+	if m.messagesByChat == nil {
+		m.messagesByChat = map[string][]store.Message{}
+	}
+	for chatID, messages := range snapshot.MessagesByChat {
+		m.messagesByChat[chatID] = slices.Clone(messages)
+		delete(m.unfilteredByChat, chatID)
+	}
+
+	if m.activeSearch != "" && m.lastSearchFocus == FocusChats && m.searchChats != nil {
+		if err := m.runStoreSearch(); err != nil {
+			return err
+		}
+	} else {
+		m.searchChatSource = nil
+		if err := m.applyChatView(m.allChats, preferredChatID); err != nil {
+			return err
+		}
+	}
+
+	if oldChatID != "" && m.currentChat().ID == oldChatID {
+		messageCount := len(m.currentMessages())
+		m.messageCursor = clamp(oldCursor, 0, max(0, messageCount-1))
+		m.messageScrollTop = clamp(oldScrollTop, 0, max(0, messageCount-1))
+	}
+
+	if strings.TrimSpace(messageFilter) != "" {
+		m.messageFilter = ""
+		if err := m.applyMessageFilter(messageFilter); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(m.lastSearch) != "" {
+		m.rebuildSearchMatches()
+	}
 	return nil
 }
 

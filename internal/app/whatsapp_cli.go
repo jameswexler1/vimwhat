@@ -18,6 +18,12 @@ type WhatsAppSession interface {
 	Close() error
 }
 
+type WhatsAppLiveSession interface {
+	WhatsAppSession
+	Connect(context.Context) error
+	SubscribeEvents(context.Context) (<-chan whatsapp.Event, error)
+}
+
 type WhatsAppSessionOpener func(context.Context, string) (WhatsAppSession, error)
 
 type WhatsAppSessionStatus struct {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +15,7 @@ import (
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
+	"vimwhat/internal/whatsapp"
 )
 
 type Environment struct {
@@ -114,11 +116,33 @@ func runTUI(env Environment, stderr io.Writer) int {
 		return 1
 	}
 
+	initialConnection, liveEnabled := initialLiveConnectionState(env, context.Background())
+	liveUpdates := make(chan ui.LiveUpdate, 64)
+	var liveUpdateSource <-chan ui.LiveUpdate
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	if liveEnabled {
+		liveUpdateSource = liveUpdates
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runLiveWhatsApp(ctx, env, liveUpdates)
+		}()
+	}
+	defer func() {
+		cancel()
+		wg.Wait()
+		close(liveUpdates)
+	}()
+
 	opts := ui.Options{
-		Paths:         env.Paths,
-		Config:        env.Config,
-		PreviewReport: env.PreviewReport,
-		Snapshot:      snapshot,
+		Paths:           env.Paths,
+		Config:          env.Config,
+		PreviewReport:   env.PreviewReport,
+		Snapshot:        snapshot,
+		ConnectionState: initialConnection,
+		LiveUpdates:     liveUpdateSource,
+		BlockSending:    liveEnabled,
 		PersistMessage: func(chatID, body string, attachments []ui.Attachment) (store.Message, error) {
 			message := pendingOutgoingMessage(chatID, body, attachments)
 			if err := env.Store.AddMessageWithMedia(context.Background(), message, message.Media); err != nil {
@@ -129,6 +153,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		},
 		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
 			return env.Store.ListMessages(context.Background(), chatID, limit)
+		},
+		ReloadSnapshot: func(activeChatID string, limit int) (store.Snapshot, error) {
+			return loadSnapshotForChat(context.Background(), env.Store, activeChatID, limit)
 		},
 		SaveDraft: func(chatID, body string) error {
 			return env.Store.SaveDraft(context.Background(), chatID, body)
@@ -165,6 +192,197 @@ func runTUI(env Environment, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+func initialLiveConnectionState(env Environment, ctx context.Context) (ui.ConnectionState, bool) {
+	status, err := checkWhatsAppSession(ctx, env)
+	if err != nil {
+		return ui.ConnectionOffline, false
+	}
+	if status.Paired {
+		return ui.ConnectionPaired, true
+	}
+	return ui.ConnectionLoggedOut, false
+}
+
+func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate) {
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
+
+	session, err := openWhatsAppSession(ctx, env)
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ConnectionState: ui.ConnectionOffline,
+			Status:          fmt.Sprintf("whatsapp open failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	defer session.Close()
+	liveCtx, cancelLive := context.WithCancel(ctx)
+	defer cancelLive()
+
+	live, ok := session.(WhatsAppLiveSession)
+	if !ok {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ConnectionState: ui.ConnectionOffline,
+			Status:          "whatsapp live session unavailable",
+		})
+		return
+	}
+
+	events, err := live.SubscribeEvents(liveCtx)
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ConnectionState: ui.ConnectionOffline,
+			Status:          fmt.Sprintf("whatsapp subscribe failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+
+	if err := live.Connect(liveCtx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		state := ui.ConnectionOffline
+		if isLoggedOutConnectionError(err) {
+			state = ui.ConnectionLoggedOut
+		}
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ConnectionState: state,
+			Status:          fmt.Sprintf("whatsapp connect failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
+
+	ingestor := whatsapp.Ingestor{Store: env.Store}
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOffline})
+				return
+			}
+			if event.Kind == whatsapp.EventConnectionState {
+				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
+				continue
+			}
+			if err := ingestor.Apply(ctx, event); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: fmt.Sprintf("whatsapp ingest failed: %s", shortStatusError(err)),
+				})
+				continue
+			}
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func liveUpdateForConnectionEvent(event whatsapp.ConnectionEvent) ui.LiveUpdate {
+	update := ui.LiveUpdate{
+		ConnectionState: uiConnectionState(event.State),
+	}
+	if strings.TrimSpace(event.Detail) != "" {
+		update.Status = fmt.Sprintf("whatsapp: %s", event.Detail)
+	}
+	return update
+}
+
+func uiConnectionState(state whatsapp.ConnectionState) ui.ConnectionState {
+	switch state {
+	case whatsapp.ConnectionPaired:
+		return ui.ConnectionPaired
+	case whatsapp.ConnectionConnecting:
+		return ui.ConnectionConnecting
+	case whatsapp.ConnectionOnline:
+		return ui.ConnectionOnline
+	case whatsapp.ConnectionReconnecting:
+		return ui.ConnectionReconnecting
+	case whatsapp.ConnectionLoggedOut:
+		return ui.ConnectionLoggedOut
+	default:
+		return ui.ConnectionOffline
+	}
+}
+
+func sendLiveUpdate(ctx context.Context, updates chan<- ui.LiveUpdate, update ui.LiveUpdate) {
+	select {
+	case updates <- update:
+	case <-ctx.Done():
+	}
+}
+
+func isLoggedOutConnectionError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not paired") ||
+		strings.Contains(msg, "logged out") ||
+		strings.Contains(msg, "session was rejected")
+}
+
+func shortStatusError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return truncateStatus(err.Error(), 96)
+}
+
+func truncateStatus(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return value[:limit]
+	}
+	return value[:limit-3] + "..."
+}
+
+func loadSnapshotForChat(ctx context.Context, db *store.Store, activeChatID string, limit int) (store.Snapshot, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	drafts, err := db.ListDrafts(ctx)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+
+	snapshot := store.Snapshot{
+		Chats:          chats,
+		MessagesByChat: map[string][]store.Message{},
+		DraftsByChat:   drafts,
+	}
+	if len(chats) == 0 {
+		return snapshot, nil
+	}
+
+	selected := activeChatID
+	if !snapshotHasChat(chats, selected) {
+		selected = chats[0].ID
+	}
+	snapshot.ActiveChatID = selected
+
+	messages, err := db.ListMessages(ctx, selected, limit)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	snapshot.MessagesByChat[selected] = messages
+	return snapshot, nil
+}
+
+func snapshotHasChat(chats []store.Chat, chatID string) bool {
+	for _, chat := range chats {
+		if chat.ID == chatID {
+			return true
+		}
+	}
+	return false
 }
 
 func pendingOutgoingMessage(chatID, body string, attachments []ui.Attachment) store.Message {

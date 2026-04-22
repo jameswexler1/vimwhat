@@ -13,17 +13,17 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, and `doctor` session status reporting.
+- Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
 
 - Tightening TUI behavior, viewport rules, preview behavior, and modal ergonomics.
-- Live WhatsApp connection bootstrap and protocol event ingestion while keeping the UI DB-first.
-- Mapping incoming `whatsmeow` chat/message/media/receipt events into the existing SQLite repositories.
+- Manual validation of the live read-only ingestion path against real WhatsApp traffic.
 
 ### Not implemented yet
 
-- Live sync, reconnect handling, remote history fetch, read receipts, reactions, presence, and quote-jump backed by the protocol layer.
+- Remote history fetch, remote media download, real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
 - Remote media download/fetch pipeline from WhatsApp servers.
 
@@ -162,7 +162,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 The QR pairing milestone is complete as of 2026-04-22: `vimwhat login` can pair successfully, `vimwhat logout` clears the local/remote session, rejected partial sessions are cleaned up, and `doctor` reports local pairing state.
 
-The next milestone is live read-only sync:
+The live read-only sync milestone now has an implemented first pass:
 
 - Bootstrap a `whatsmeow` client from the paired session when the TUI starts.
 - Show connection/auth state in the status line without blocking cached DB rendering.
@@ -170,6 +170,8 @@ The next milestone is live read-only sync:
 - Convert incoming chat, message, receipt, and media metadata events into the existing `internal/store` schema through `internal/whatsapp.Ingestor`.
 - Keep outbound sending disabled or clearly marked pending until incoming event ingestion is stable.
 - Add tests with a mocked protocol event source before relying on manual WhatsApp traffic.
+
+The next protocol milestone is proving this against real traffic, then adding remote history fetch.
 
 ### Data model and lazy loading
 

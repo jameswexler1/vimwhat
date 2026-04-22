@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"vimwhat/internal/config"
 	"vimwhat/internal/store"
+	"vimwhat/internal/ui"
+	"vimwhat/internal/whatsapp"
 )
 
 type fakeWhatsAppSession struct {
@@ -51,6 +54,28 @@ func (s *fakeWhatsAppSession) Close() error {
 	return nil
 }
 
+type fakeLiveWhatsAppSession struct {
+	fakeWhatsAppSession
+	events          chan whatsapp.Event
+	connectErr      error
+	subscribeErr    error
+	connectCalled   bool
+	subscribeCalled bool
+}
+
+func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
+	s.connectCalled = true
+	if s.connectErr == nil {
+		s.loggedIn = true
+	}
+	return s.connectErr
+}
+
+func (s *fakeLiveWhatsAppSession) SubscribeEvents(context.Context) (<-chan whatsapp.Event, error) {
+	s.subscribeCalled = true
+	return s.events, s.subscribeErr
+}
+
 func TestRunLoginRendersQRAndCompletes(t *testing.T) {
 	session := &fakeWhatsAppSession{loginCodes: []string{"qr-code"}}
 	var openedPath string
@@ -81,6 +106,119 @@ func TestRunLoginRendersQRAndCompletes(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "rendered:qr-code") || !strings.Contains(got, "login complete") {
 		t.Fatalf("stdout = %q, want rendered QR and completion", got)
+	}
+}
+
+func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 4),
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+	}
+	updates := make(chan ui.LiveUpdate, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates)
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+
+	when := time.Unix(1_700_000_000, 0)
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:        "chat-1/msg-1",
+			RemoteID:  "msg-1",
+			ChatID:    "chat-1",
+			ChatJID:   "chat-1@s.whatsapp.net",
+			Sender:    "Alice",
+			SenderJID: "alice@s.whatsapp.net",
+			Body:      "hello from live",
+			Timestamp: when,
+			Status:    "received",
+		},
+	}
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh
+	})
+
+	messages := waitForStoredMessages(t, db, "chat-1", 1)
+	if len(messages) != 1 || messages[0].Body != "hello from live" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if !session.connectCalled || !session.subscribeCalled {
+		t.Fatalf("connect/subscribe called = %v/%v", session.connectCalled, session.subscribeCalled)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func waitForStoredMessages(t *testing.T, db *store.Store, chatID string, count int) []store.Message {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		messages, err := db.ListMessages(context.Background(), chatID, 10)
+		if err != nil {
+			t.Fatalf("ListMessages() error = %v", err)
+		}
+		if len(messages) >= count {
+			return messages
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d stored message(s), got %d", count, len(messages))
+		}
+	}
+}
+
+func waitForLiveUpdate(t *testing.T, updates <-chan ui.LiveUpdate, match func(ui.LiveUpdate) bool) ui.LiveUpdate {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case update := <-updates:
+			if match(update) {
+				return update
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for live update")
+		}
 	}
 }
 

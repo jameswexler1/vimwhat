@@ -1272,6 +1272,7 @@ func (m Model) renderStatus() string {
 	left := strings.Join([]string{
 		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
 		statusSegment(" "+focus+" ", primaryFG, borderColor, false),
+		m.renderConnectionStatus(),
 		statusSegment(" "+truncateDisplay(chatTitle, max(8, m.width/5))+" ", primaryFG, "", false),
 	}, "")
 
@@ -1310,12 +1311,33 @@ func (m Model) renderStatus() string {
 	return left + center + spacer + right
 }
 
+func (m Model) renderConnectionStatus() string {
+	if m.connectionState == "" {
+		return ""
+	}
+	label := strings.ToUpper(strings.ReplaceAll(string(m.connectionState), "_", " "))
+	return statusSegment(" WA:"+label+" ", connectionStatusColor(m.connectionState), borderColor, false)
+}
+
 func statusSegment(text string, fg, bg lipgloss.Color, bold bool) string {
 	style := lipgloss.NewStyle().Foreground(fg).Bold(bold)
 	if bg != "" {
 		style = style.Background(bg)
 	}
 	return style.Render(text)
+}
+
+func connectionStatusColor(state ConnectionState) lipgloss.Color {
+	switch state {
+	case ConnectionOnline:
+		return accentFG
+	case ConnectionConnecting, ConnectionReconnecting, ConnectionPaired:
+		return warnFG
+	case ConnectionOffline, ConnectionLoggedOut:
+		return warnFG
+	default:
+		return softFG
+	}
 }
 
 func modeStatusColor(mode Mode) lipgloss.Color {

@@ -421,8 +421,41 @@ func (Client) SendText(context.Context, string, string) (SendResult, error) {
 	return SendResult{}, ErrNotImplemented
 }
 
-func (Client) SubscribeEvents(context.Context) (<-chan Event, error) {
-	return nil, ErrNotImplemented
+func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
+	if c == nil || c.client == nil {
+		return nil, ErrClientNotOpen
+	}
+
+	raw := make(chan any, 256)
+	out := make(chan Event, 256)
+	handlerID := c.client.AddEventHandler(func(evt any) {
+		select {
+		case raw <- evt:
+		case <-ctx.Done():
+		}
+	})
+
+	go func() {
+		defer close(out)
+		defer c.client.RemoveEventHandler(handlerID)
+
+		for {
+			select {
+			case evt := <-raw:
+				for _, normalized := range normalizeWhatsmeowEvent(evt) {
+					select {
+					case out <- normalized:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return out, nil
 }
 
 func (Client) RequestRecentHistory(context.Context, string, int) error {
@@ -438,18 +471,36 @@ type SendResult struct {
 type EventKind string
 
 const (
-	EventChatUpsert    EventKind = "chat_upsert"
-	EventMessageUpsert EventKind = "message_upsert"
-	EventReceiptUpdate EventKind = "receipt_update"
-	EventMediaMetadata EventKind = "media_metadata"
+	EventChatUpsert      EventKind = "chat_upsert"
+	EventMessageUpsert   EventKind = "message_upsert"
+	EventReceiptUpdate   EventKind = "receipt_update"
+	EventMediaMetadata   EventKind = "media_metadata"
+	EventConnectionState EventKind = "connection_state"
+)
+
+type ConnectionState string
+
+const (
+	ConnectionPaired       ConnectionState = "paired"
+	ConnectionConnecting   ConnectionState = "connecting"
+	ConnectionOnline       ConnectionState = "online"
+	ConnectionReconnecting ConnectionState = "reconnecting"
+	ConnectionOffline      ConnectionState = "offline"
+	ConnectionLoggedOut    ConnectionState = "logged_out"
 )
 
 type Event struct {
-	Kind    EventKind
-	Chat    ChatEvent
-	Message MessageEvent
-	Receipt ReceiptEvent
-	Media   MediaEvent
+	Kind       EventKind
+	Chat       ChatEvent
+	Message    MessageEvent
+	Receipt    ReceiptEvent
+	Media      MediaEvent
+	Connection ConnectionEvent
+}
+
+type ConnectionEvent struct {
+	State  ConnectionState
+	Detail string
 }
 
 type ChatEvent struct {
@@ -458,6 +509,7 @@ type ChatEvent struct {
 	Title         string
 	Kind          string
 	Unread        int
+	UnreadKnown   bool
 	Pinned        bool
 	Muted         bool
 	LastMessageAt time.Time

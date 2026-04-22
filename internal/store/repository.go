@@ -254,6 +254,14 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 }
 
 func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
+	return s.upsertChat(ctx, chat, false)
+}
+
+func (s *Store) UpsertChatPreserveUnread(ctx context.Context, chat Chat) error {
+	return s.upsertChat(ctx, chat, true)
+}
+
+func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdate bool) error {
 	if strings.TrimSpace(chat.ID) == "" {
 		return fmt.Errorf("chat id is required")
 	}
@@ -281,7 +289,10 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 			jid = excluded.jid,
 			title = excluded.title,
 			kind = excluded.kind,
-			unread_count = excluded.unread_count,
+			unread_count = CASE
+				WHEN ? THEN chats.unread_count
+				ELSE excluded.unread_count
+			END,
 			pinned = excluded.pinned,
 			muted = excluded.muted,
 			last_message_at = CASE
@@ -300,6 +311,7 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 		lastMessageAt,
 		now,
 		now,
+		boolToInt(preserveUnreadOnUpdate),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert chat %s: %w", chat.ID, err)
@@ -309,25 +321,31 @@ func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
 }
 
 func (s *Store) AddMessage(ctx context.Context, message Message) error {
-	return s.addMessage(ctx, message)
+	_, err := s.addMessage(ctx, message, false)
+	return err
 }
 
 func (s *Store) AddMessageWithMedia(ctx context.Context, message Message, mediaItems []MediaMetadata) error {
 	if len(mediaItems) > 0 {
 		message.Media = slices.Clone(mediaItems)
 	}
-	return s.addMessage(ctx, message)
+	_, err := s.addMessage(ctx, message, false)
+	return err
 }
 
-func (s *Store) addMessage(ctx context.Context, message Message) error {
+func (s *Store) AddIncomingMessage(ctx context.Context, message Message) (bool, error) {
+	return s.addMessage(ctx, message, !message.IsOutgoing)
+}
+
+func (s *Store) addMessage(ctx context.Context, message Message, incrementUnreadOnNew bool) (bool, error) {
 	if strings.TrimSpace(message.ID) == "" {
-		return fmt.Errorf("message id is required")
+		return false, fmt.Errorf("message id is required")
 	}
 	if strings.TrimSpace(message.ChatID) == "" {
-		return fmt.Errorf("chat id is required")
+		return false, fmt.Errorf("chat id is required")
 	}
 	if strings.TrimSpace(message.Sender) == "" {
-		return fmt.Errorf("sender is required")
+		return false, fmt.Errorf("sender is required")
 	}
 	if message.Timestamp.IsZero() {
 		message.Timestamp = time.Now()
@@ -342,7 +360,7 @@ func (s *Store) addMessage(ctx context.Context, message Message) error {
 		message.SenderJID = message.Sender
 	}
 	if len(message.Media) > 1 {
-		return fmt.Errorf("only one media attachment per message is supported")
+		return false, fmt.Errorf("only one media attachment per message is supported")
 	}
 	deletedAt := int64(0)
 	if !message.DeletedAt.IsZero() {
@@ -351,8 +369,15 @@ func (s *Store) addMessage(ctx context.Context, message Message) error {
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin add message: %w", err)
+		return false, fmt.Errorf("begin add message: %w", err)
 	}
+
+	var existing int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, message.ID).Scan(&existing); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("check existing message %s: %w", message.ID, err)
+	}
+	isNew := existing == 0
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (
@@ -396,12 +421,12 @@ func (s *Store) addMessage(ctx context.Context, message Message) error {
 		message.DeletedReason,
 	); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("insert message %s: %w", message.ID, err)
+		return false, fmt.Errorf("insert message %s: %w", message.ID, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, message.ID); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("clear fts for message %s: %w", message.ID, err)
+		return false, fmt.Errorf("clear fts for message %s: %w", message.ID, err)
 	}
 
 	if _, err := tx.ExecContext(
@@ -412,17 +437,21 @@ func (s *Store) addMessage(ctx context.Context, message Message) error {
 		message.Body,
 	); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("index message %s: %w", message.ID, err)
+		return false, fmt.Errorf("index message %s: %w", message.ID, err)
 	}
 
 	for _, media := range message.Media {
 		media.MessageID = message.ID
 		if err := upsertMediaMetadata(ctx, tx, media); err != nil {
 			_ = tx.Rollback()
-			return err
+			return false, err
 		}
 	}
 
+	unreadDelta := 0
+	if isNew && incrementUnreadOnNew {
+		unreadDelta = 1
+	}
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE chats
@@ -430,36 +459,49 @@ func (s *Store) addMessage(ctx context.Context, message Message) error {
 				WHEN ? > last_message_at THEN ?
 				ELSE last_message_at
 			END,
+			unread_count = unread_count + ?,
 			updated_at = ?
 		WHERE id = ?`,
 		message.Timestamp.Unix(),
 		message.Timestamp.Unix(),
+		unreadDelta,
 		time.Now().Unix(),
 		message.ChatID,
 	)
 	if err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("touch chat %s: %w", message.ChatID, err)
+		return false, fmt.Errorf("touch chat %s: %w", message.ChatID, err)
 	}
 
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		_ = tx.Rollback()
-		return fmt.Errorf("chat %s does not exist", message.ChatID)
+		return false, fmt.Errorf("chat %s does not exist", message.ChatID)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit add message: %w", err)
+		return false, fmt.Errorf("commit add message: %w", err)
 	}
 
-	return nil
+	return isNew, nil
 }
 
 func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status string) error {
+	updated, err := s.UpdateMessageStatusIfExists(ctx, messageID, status)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return fmt.Errorf("message %s does not exist", messageID)
+	}
+	return nil
+}
+
+func (s *Store) UpdateMessageStatusIfExists(ctx context.Context, messageID, status string) (bool, error) {
 	if strings.TrimSpace(messageID) == "" {
-		return fmt.Errorf("message id is required")
+		return false, fmt.Errorf("message id is required")
 	}
 	if strings.TrimSpace(status) == "" {
-		return fmt.Errorf("message status is required")
+		return false, fmt.Errorf("message status is required")
 	}
 
 	result, err := s.db.ExecContext(ctx, `
@@ -468,13 +510,11 @@ func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status strin
 		WHERE id = ?
 	`, status, messageID)
 	if err != nil {
-		return fmt.Errorf("update message status %s: %w", messageID, err)
-	}
-	if rows, _ := result.RowsAffected(); rows == 0 {
-		return fmt.Errorf("message %s does not exist", messageID)
+		return false, fmt.Errorf("update message status %s: %w", messageID, err)
 	}
 
-	return nil
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
 }
 
 func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {

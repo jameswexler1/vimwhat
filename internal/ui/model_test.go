@@ -107,6 +107,87 @@ func TestInsertSendClearsDraft(t *testing.T) {
 	}
 }
 
+func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
+	var persisted bool
+	var savedChatID string
+	var savedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		BlockSending: true,
+		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+			persisted = true
+			return store.Message{}, nil
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "not yet"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if persisted {
+		t.Fatal("PersistMessage was called in live read-only mode")
+	}
+	if savedChatID != "chat-1" || savedBody != "not yet" {
+		t.Fatalf("saved draft = (%q, %q), want (chat-1, not yet)", savedChatID, savedBody)
+	}
+	if got.composer != "not yet" || len(got.messagesByChat["chat-1"]) != 0 {
+		t.Fatalf("composer/messages = %q/%d, want preserved composer and no message", got.composer, len(got.messagesByChat["chat-1"]))
+	}
+	if !strings.Contains(got.status, "not implemented") {
+		t.Fatalf("status = %q, want not implemented", got.status)
+	}
+}
+
+func TestLiveUpdateRefreshesSnapshotAndStatusLine(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState: ConnectionPaired,
+		ReloadSnapshot: func(activeChatID string, limit int) (store.Snapshot, error) {
+			if activeChatID != "chat-1" || limit != messageLoadLimit {
+				t.Fatalf("reload args = (%q, %d), want (chat-1, %d)", activeChatID, limit, messageLoadLimit)
+			}
+			return store.Snapshot{
+				Chats: []store.Chat{{ID: "chat-1", Title: "Alice", Unread: 1}},
+				MessagesByChat: map[string][]store.Message{
+					"chat-1": {{ID: "msg-1", ChatID: "chat-1", Sender: "Alice", Body: "live"}},
+				},
+				DraftsByChat: map[string]string{},
+				ActiveChatID: "chat-1",
+			}, nil
+		},
+	})
+	model.width = 120
+	model.height = 24
+
+	updated, _ := model.handleLiveUpdate(LiveUpdate{ConnectionState: ConnectionOnline, Refresh: true})
+	if updated.connectionState != ConnectionOnline || !updated.reloadInFlight {
+		t.Fatalf("state/reload = %q/%v, want online/inflight", updated.connectionState, updated.reloadInFlight)
+	}
+	reloadMsg := updated.reloadSnapshotCmd()().(snapshotReloadedMsg)
+	refreshed, _ := updated.handleSnapshotReloaded(reloadMsg)
+	if len(refreshed.messagesByChat["chat-1"]) != 1 || refreshed.messagesByChat["chat-1"][0].Body != "live" {
+		t.Fatalf("messages after refresh = %+v", refreshed.messagesByChat["chat-1"])
+	}
+	if status := stripANSI(refreshed.renderStatus()); !strings.Contains(status, "WA:ONLINE") {
+		t.Fatalf("status = %q, want WA:ONLINE", status)
+	}
+}
+
 func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	searchCalled := false
 	model := NewModel(Options{

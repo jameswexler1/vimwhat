@@ -198,6 +198,63 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	message := Message{
+		ID:        "chat-1/remote-1",
+		RemoteID:  "remote-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+
+	inserted, err := db.AddIncomingMessage(ctx, message)
+	if err != nil {
+		t.Fatalf("AddIncomingMessage(first) error = %v", err)
+	}
+	if !inserted {
+		t.Fatal("first AddIncomingMessage reported inserted=false")
+	}
+	inserted, err = db.AddIncomingMessage(ctx, message)
+	if err != nil {
+		t.Fatalf("AddIncomingMessage(second) error = %v", err)
+	}
+	if inserted {
+		t.Fatal("duplicate AddIncomingMessage reported inserted=true")
+	}
+
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Unread != 1 {
+		t.Fatalf("chats = %+v, want one unread message", chats)
+	}
+
+	if err := db.UpsertChatPreserveUnread(ctx, Chat{ID: "chat-1", Title: "Alice Updated"}); err != nil {
+		t.Fatalf("UpsertChatPreserveUnread() error = %v", err)
+	}
+	chats, err = db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() after preserve error = %v", err)
+	}
+	if chats[0].Unread != 1 || chats[0].Title != "Alice Updated" {
+		t.Fatalf("preserved chat = %+v, want unread preserved and title updated", chats[0])
+	}
+}
+
 func TestMessageMediaAndLocalDelete(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

@@ -18,7 +18,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 
 	switch event.Kind {
 	case EventChatUpsert:
-		return i.Store.UpsertChat(ctx, store.Chat{
+		chat := store.Chat{
 			ID:            event.Chat.ID,
 			JID:           event.Chat.JID,
 			Title:         event.Chat.Title,
@@ -27,9 +27,13 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			Pinned:        event.Chat.Pinned,
 			Muted:         event.Chat.Muted,
 			LastMessageAt: event.Chat.LastMessageAt,
-		})
+		}
+		if event.Chat.UnreadKnown {
+			return i.Store.UpsertChat(ctx, chat)
+		}
+		return i.Store.UpsertChatPreserveUnread(ctx, chat)
 	case EventMessageUpsert:
-		return i.Store.AddMessage(ctx, store.Message{
+		_, err := i.Store.AddIncomingMessage(ctx, store.Message{
 			ID:              event.Message.ID,
 			RemoteID:        event.Message.RemoteID,
 			ChatID:          event.Message.ChatID,
@@ -43,6 +47,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			QuotedMessageID: event.Message.QuotedMessageID,
 			QuotedRemoteID:  event.Message.QuotedRemoteID,
 		})
+		return err
 	case EventMediaMetadata:
 		return i.Store.UpsertMediaMetadata(ctx, store.MediaMetadata{
 			MessageID:     event.Media.MessageID,
@@ -58,7 +63,10 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		if event.Receipt.MessageID == "" {
 			return fmt.Errorf("receipt message id is required")
 		}
-		return i.Store.UpdateMessageStatus(ctx, event.Receipt.MessageID, event.Receipt.Status)
+		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
+		return err
+	case EventConnectionState:
+		return nil
 	default:
 		return fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
 	}
