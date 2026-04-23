@@ -1977,6 +1977,151 @@ func TestEnterOnRemoteMediaDownloadCallbackQueuesPreview(t *testing.T) {
 	}
 }
 
+func TestRemoteMediaDownloadSuppressesDuplicateCommand(t *testing.T) {
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		DownloadMedia: func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error) {
+			t.Fatal("DownloadMedia should not be executed in duplicate suppression test")
+			return store.MediaMetadata{}, nil
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						DownloadState: "remote",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	started, cmd := model.activateFocusedMediaPreview()
+	model = started.(Model)
+	if cmd == nil {
+		t.Fatal("first activateFocusedMediaPreview() command = nil, want download command")
+	}
+	duplicate, duplicateCmd := model.activateFocusedMediaPreview()
+	model = duplicate.(Model)
+	if duplicateCmd != nil {
+		t.Fatalf("duplicate activateFocusedMediaPreview() command = %T, want nil", duplicateCmd)
+	}
+	if !strings.Contains(model.status, "downloading media") {
+		t.Fatalf("status = %q, want downloading media", model.status)
+	}
+	if !model.mediaDownloadInflight["m-1"] {
+		t.Fatalf("mediaDownloadInflight = %+v, want m-1", model.mediaDownloadInflight)
+	}
+
+	cleared, _ := model.handleMediaDownloaded(mediaDownloadedMsg{
+		MessageID: "m-1",
+		Media: store.MediaMetadata{
+			MessageID:     "m-1",
+			LocalPath:     filepath.Join(t.TempDir(), "missing.jpg"),
+			DownloadState: "downloaded",
+		},
+		Err: fmt.Errorf("download failed"),
+	})
+	model = cleared.(Model)
+	if model.mediaDownloadInflight["m-1"] {
+		t.Fatalf("mediaDownloadInflight after completion = %+v, want cleared", model.mediaDownloadInflight)
+	}
+}
+
+func TestRemoteOpenDownloadUpdatesLoadedMediaAndClearsInflight(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var openedPath string
+	var saved store.MediaMetadata
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		SaveMedia: func(media store.MediaMetadata) error {
+			saved = media
+			return nil
+		},
+		DownloadMedia: func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error) {
+			media.MessageID = message.ID
+			media.LocalPath = localPath
+			media.DownloadState = "downloaded"
+			return media, nil
+		},
+		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
+			return func() tea.Msg {
+				openedPath = media.LocalPath
+				return MediaOpenFinishedMsg{Path: media.LocalPath}
+			}
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						DownloadState: "remote",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	opening, cmd := model.openFocusedMedia()
+	model = opening.(Model)
+	if cmd == nil {
+		t.Fatal("openFocusedMedia() command = nil, want download/open command")
+	}
+	raw := cmd()
+	msg, ok := raw.(MediaOpenFinishedMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want MediaOpenFinishedMsg", raw)
+	}
+	opened, _ := model.Update(msg)
+	model = opened.(Model)
+
+	if openedPath != localPath {
+		t.Fatalf("openedPath = %q, want %q", openedPath, localPath)
+	}
+	if got := model.messagesByChat["chat-1"][0].Media[0].LocalPath; got != localPath {
+		t.Fatalf("loaded media local path = %q, want %q", got, localPath)
+	}
+	if saved.LocalPath != localPath {
+		t.Fatalf("saved media = %+v, want local path", saved)
+	}
+	if model.mediaDownloadInflight["m-1"] {
+		t.Fatalf("mediaDownloadInflight = %+v, want cleared", model.mediaDownloadInflight)
+	}
+}
+
 func TestCachedMediaPreviewRendersInsideBubble(t *testing.T) {
 	model := NewModel(Options{
 		Config: configWithPreview(24, 6),

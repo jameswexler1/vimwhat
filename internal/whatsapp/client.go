@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -34,6 +35,18 @@ type HistoryAnchor struct {
 	Timestamp time.Time
 }
 
+type MediaDownloadDescriptor struct {
+	MessageID     string
+	Kind          string
+	URL           string
+	DirectPath    string
+	MediaKey      []byte
+	FileSHA256    []byte
+	FileEncSHA256 []byte
+	FileLength    int64
+	UpdatedAt     time.Time
+}
+
 type Adapter interface {
 	Connect(ctx context.Context) error
 	Login(ctx context.Context, handleQR QRHandler) error
@@ -41,6 +54,7 @@ type Adapter interface {
 	SendText(ctx context.Context, chatJID, body string) (SendResult, error)
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
+	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
 }
 
 type Client struct {
@@ -484,6 +498,108 @@ func (c *Client) RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor,
 	return nil
 }
 
+func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	if strings.TrimSpace(targetPath) == "" {
+		return fmt.Errorf("media download target path is required")
+	}
+	mediaType, err := mediaTypeForDownloadKind(descriptor.Kind)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(descriptor.DirectPath) == "" && strings.TrimSpace(descriptor.URL) == "" {
+		return fmt.Errorf("media download source is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create media download directory: %w", err)
+	}
+	file, err := os.Create(targetPath)
+	if err != nil {
+		return fmt.Errorf("create media download target: %w", err)
+	}
+	ok := false
+	defer func() {
+		_ = file.Close()
+		if !ok {
+			_ = os.Remove(targetPath)
+		}
+	}()
+
+	if strings.TrimSpace(descriptor.DirectPath) != "" {
+		fileLength := -1
+		if descriptor.FileLength > 0 {
+			fileLength = int(descriptor.FileLength)
+		}
+		err = c.client.DownloadMediaWithPathToFile(
+			ctx,
+			descriptor.DirectPath,
+			descriptor.FileEncSHA256,
+			descriptor.FileSHA256,
+			descriptor.MediaKey,
+			fileLength,
+			mediaType,
+			"",
+			file,
+		)
+	} else {
+		err = c.client.DownloadToFile(ctx, downloadableMedia{
+			descriptor: descriptor,
+			mediaType:  mediaType,
+		}, file)
+	}
+	if err != nil {
+		return fmt.Errorf("download whatsapp media: %w", err)
+	}
+	ok = true
+	return nil
+}
+
+func mediaTypeForDownloadKind(kind string) (whatsmeow.MediaType, error) {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "image":
+		return whatsmeow.MediaImage, nil
+	case "video":
+		return whatsmeow.MediaVideo, nil
+	case "audio":
+		return whatsmeow.MediaAudio, nil
+	case "document":
+		return whatsmeow.MediaDocument, nil
+	default:
+		return "", fmt.Errorf("unsupported media download kind %q", kind)
+	}
+}
+
+type downloadableMedia struct {
+	descriptor MediaDownloadDescriptor
+	mediaType  whatsmeow.MediaType
+}
+
+func (m downloadableMedia) GetDirectPath() string {
+	return m.descriptor.DirectPath
+}
+
+func (m downloadableMedia) GetURL() string {
+	return m.descriptor.URL
+}
+
+func (m downloadableMedia) GetMediaKey() []byte {
+	return m.descriptor.MediaKey
+}
+
+func (m downloadableMedia) GetFileSHA256() []byte {
+	return m.descriptor.FileSHA256
+}
+
+func (m downloadableMedia) GetFileEncSHA256() []byte {
+	return m.descriptor.FileEncSHA256
+}
+
+func (m downloadableMedia) GetMediaType() whatsmeow.MediaType {
+	return m.mediaType
+}
+
 func historyAnchorMessageInfo(anchor HistoryAnchor) (types.MessageInfo, error) {
 	if anchor.ChatJID == "" {
 		return types.MessageInfo{}, fmt.Errorf("history anchor chat jid is required")
@@ -607,5 +723,6 @@ type MediaEvent struct {
 	ThumbnailPath string
 	DownloadState string
 	UpdatedAt     time.Time
+	Download      MediaDownloadDescriptor
 	Historical    bool
 }

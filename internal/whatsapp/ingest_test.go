@@ -61,6 +61,14 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 			FileName:      "image.png",
 			SizeBytes:     99,
 			DownloadState: "remote",
+			Download: MediaDownloadDescriptor{
+				Kind:          "image",
+				DirectPath:    "/v/t62.7118-24/image",
+				MediaKey:      []byte{1},
+				FileSHA256:    []byte{2},
+				FileEncSHA256: []byte{3},
+				FileLength:    99,
+			},
 		},
 	}); err != nil {
 		t.Fatalf("Apply(media) error = %v", err)
@@ -99,6 +107,13 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 	}
 	if media.MIMEType != "image/png" || media.DownloadState != "remote" {
 		t.Fatalf("media = %+v", media)
+	}
+	descriptor, ok, err := db.MediaDownloadDescriptor(ctx, "msg-1")
+	if err != nil {
+		t.Fatalf("MediaDownloadDescriptor() error = %v", err)
+	}
+	if !ok || descriptor.Kind != "image" || descriptor.DirectPath == "" || descriptor.FileLength != 99 {
+		t.Fatalf("descriptor = %+v ok=%v", descriptor, ok)
 	}
 }
 

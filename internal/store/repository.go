@@ -841,10 +841,32 @@ func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {
 }
 
 func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) error {
-	if err := upsertMediaMetadata(ctx, s.db, media); err != nil {
-		return err
+	return s.UpsertMediaMetadataWithDownload(ctx, media, nil)
+}
+
+func (s *Store) UpsertMediaMetadataWithDownload(ctx context.Context, media MediaMetadata, descriptor *MediaDownloadDescriptor) error {
+	if descriptor == nil {
+		return upsertMediaMetadata(ctx, s.db, media)
 	}
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert media metadata: %w", err)
+	}
+	if err := upsertMediaMetadata(ctx, tx, media); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if strings.TrimSpace(descriptor.MessageID) == "" {
+		descriptor.MessageID = media.MessageID
+	}
+	if err := upsertMediaDownloadDescriptor(ctx, tx, *descriptor); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert media metadata: %w", err)
+	}
 	return nil
 }
 
@@ -938,6 +960,116 @@ func (s *Store) MediaMetadata(ctx context.Context, messageID string) (MediaMetad
 	media.UpdatedAt = time.Unix(updatedUnix, 0)
 
 	return media, nil
+}
+
+func (s *Store) UpsertMediaDownloadDescriptor(ctx context.Context, descriptor MediaDownloadDescriptor) error {
+	return upsertMediaDownloadDescriptor(ctx, s.db, descriptor)
+}
+
+func upsertMediaDownloadDescriptor(ctx context.Context, execer mediaMetadataExecer, descriptor MediaDownloadDescriptor) error {
+	if strings.TrimSpace(descriptor.MessageID) == "" {
+		return fmt.Errorf("descriptor message id is required")
+	}
+	if strings.TrimSpace(descriptor.Kind) == "" {
+		return fmt.Errorf("descriptor kind is required")
+	}
+	if strings.TrimSpace(descriptor.URL) == "" && strings.TrimSpace(descriptor.DirectPath) == "" {
+		return fmt.Errorf("descriptor download source is required")
+	}
+	if descriptor.UpdatedAt.IsZero() {
+		descriptor.UpdatedAt = time.Now()
+	}
+
+	_, err := execer.ExecContext(ctx, `
+		INSERT INTO media_download_descriptors (
+			message_id, kind, url, direct_path, media_key, file_sha256,
+			file_enc_sha256, file_length, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET
+			kind = CASE
+				WHEN excluded.kind != '' THEN excluded.kind
+				ELSE media_download_descriptors.kind
+			END,
+			url = CASE
+				WHEN excluded.url != '' THEN excluded.url
+				ELSE media_download_descriptors.url
+			END,
+			direct_path = CASE
+				WHEN excluded.direct_path != '' THEN excluded.direct_path
+				ELSE media_download_descriptors.direct_path
+			END,
+			media_key = CASE
+				WHEN length(excluded.media_key) > 0 THEN excluded.media_key
+				ELSE media_download_descriptors.media_key
+			END,
+			file_sha256 = CASE
+				WHEN length(excluded.file_sha256) > 0 THEN excluded.file_sha256
+				ELSE media_download_descriptors.file_sha256
+			END,
+			file_enc_sha256 = CASE
+				WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256
+				ELSE media_download_descriptors.file_enc_sha256
+			END,
+			file_length = CASE
+				WHEN excluded.file_length > 0 THEN excluded.file_length
+				ELSE media_download_descriptors.file_length
+			END,
+			updated_at = excluded.updated_at
+	`,
+		descriptor.MessageID,
+		descriptor.Kind,
+		descriptor.URL,
+		descriptor.DirectPath,
+		nonNilBytes(descriptor.MediaKey),
+		nonNilBytes(descriptor.FileSHA256),
+		nonNilBytes(descriptor.FileEncSHA256),
+		descriptor.FileLength,
+		descriptor.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert media download descriptor for %s: %w", descriptor.MessageID, err)
+	}
+
+	return nil
+}
+
+func nonNilBytes(input []byte) []byte {
+	if input == nil {
+		return []byte{}
+	}
+	return input
+}
+
+func (s *Store) MediaDownloadDescriptor(ctx context.Context, messageID string) (MediaDownloadDescriptor, bool, error) {
+	var (
+		descriptor  MediaDownloadDescriptor
+		updatedUnix int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT message_id, kind, url, direct_path, media_key, file_sha256,
+			file_enc_sha256, file_length, updated_at
+		FROM media_download_descriptors
+		WHERE message_id = ?
+	`, messageID).Scan(
+		&descriptor.MessageID,
+		&descriptor.Kind,
+		&descriptor.URL,
+		&descriptor.DirectPath,
+		&descriptor.MediaKey,
+		&descriptor.FileSHA256,
+		&descriptor.FileEncSHA256,
+		&descriptor.FileLength,
+		&updatedUnix,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return MediaDownloadDescriptor{}, false, nil
+		}
+		return MediaDownloadDescriptor{}, false, fmt.Errorf("load media download descriptor for %s: %w", messageID, err)
+	}
+	descriptor.UpdatedAt = time.Unix(updatedUnix, 0)
+
+	return descriptor, true, nil
 }
 
 func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]Message, error) {

@@ -1029,6 +1029,9 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 	if kind == media.KindAudio {
 		return m.audioAttachmentState(message, item)
 	}
+	if m.mediaDownloadInflight != nil && m.mediaDownloadInflight[mediaDownloadKey(message, item)] {
+		return "downloading"
+	}
 	if kind == media.KindUnsupported {
 		return ""
 	}
@@ -1070,6 +1073,9 @@ func (m Model) audioAttachmentState(message store.Message, item store.MediaMetad
 			return "playing; enter stop"
 		}
 		return "starting"
+	}
+	if m.mediaDownloadInflight != nil && m.mediaDownloadInflight[mediaDownloadKey(message, item)] {
+		return "downloading"
 	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {

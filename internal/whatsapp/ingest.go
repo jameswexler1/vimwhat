@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"vimwhat/internal/store"
 )
@@ -55,7 +56,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		}
 		return err
 	case EventMediaMetadata:
-		return i.Store.UpsertMediaMetadata(ctx, store.MediaMetadata{
+		metadata := store.MediaMetadata{
 			MessageID:     event.Media.MessageID,
 			MIMEType:      event.Media.MIMEType,
 			FileName:      event.Media.FileName,
@@ -64,7 +65,12 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			ThumbnailPath: event.Media.ThumbnailPath,
 			DownloadState: event.Media.DownloadState,
 			UpdatedAt:     event.Media.UpdatedAt,
-		})
+		}
+		descriptor := storeMediaDownloadDescriptor(event.Media.Download, event.Media.MessageID)
+		if descriptor.MessageID != "" {
+			return i.Store.UpsertMediaMetadataWithDownload(ctx, metadata, &descriptor)
+		}
+		return i.Store.UpsertMediaMetadata(ctx, metadata)
 	case EventReceiptUpdate:
 		if event.Receipt.MessageID == "" {
 			return fmt.Errorf("receipt message id is required")
@@ -84,6 +90,28 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
+	}
+}
+
+func storeMediaDownloadDescriptor(input MediaDownloadDescriptor, messageID string) store.MediaDownloadDescriptor {
+	if strings.TrimSpace(input.MessageID) == "" {
+		input.MessageID = messageID
+	}
+	if strings.TrimSpace(input.MessageID) == "" ||
+		strings.TrimSpace(input.Kind) == "" ||
+		(strings.TrimSpace(input.URL) == "" && strings.TrimSpace(input.DirectPath) == "") {
+		return store.MediaDownloadDescriptor{}
+	}
+	return store.MediaDownloadDescriptor{
+		MessageID:     input.MessageID,
+		Kind:          input.Kind,
+		URL:           input.URL,
+		DirectPath:    input.DirectPath,
+		MediaKey:      cloneBytes(input.MediaKey),
+		FileSHA256:    cloneBytes(input.FileSHA256),
+		FileEncSHA256: cloneBytes(input.FileEncSHA256),
+		FileLength:    input.FileLength,
+		UpdatedAt:     input.UpdatedAt,
 	}
 }
 

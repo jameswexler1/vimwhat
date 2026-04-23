@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 3 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=3", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 4 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=4", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -454,6 +454,132 @@ func TestUpsertMediaMetadataPreservesExistingLocalFileWhenUpdateOnlyHasThumbnail
 	}
 }
 
+func TestMediaDownloadDescriptorRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "photo",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	descriptor := MediaDownloadDescriptor{
+		MessageID:     "m-1",
+		Kind:          "image",
+		URL:           "https://mmg.whatsapp.net/file",
+		DirectPath:    "/v/t62.7118-24/example",
+		MediaKey:      []byte{1, 2, 3},
+		FileSHA256:    []byte{4, 5, 6},
+		FileEncSHA256: []byte{7, 8, 9},
+		FileLength:    42,
+		UpdatedAt:     time.Unix(1_700_000_010, 0),
+	}
+	if err := store.UpsertMediaDownloadDescriptor(ctx, descriptor); err != nil {
+		t.Fatalf("UpsertMediaDownloadDescriptor() error = %v", err)
+	}
+
+	got, ok, err := store.MediaDownloadDescriptor(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaDownloadDescriptor() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("MediaDownloadDescriptor() ok = false")
+	}
+	if got.MessageID != descriptor.MessageID ||
+		got.Kind != descriptor.Kind ||
+		got.URL != descriptor.URL ||
+		got.DirectPath != descriptor.DirectPath ||
+		got.FileLength != descriptor.FileLength ||
+		!got.UpdatedAt.Equal(descriptor.UpdatedAt) ||
+		string(got.MediaKey) != string(descriptor.MediaKey) ||
+		string(got.FileSHA256) != string(descriptor.FileSHA256) ||
+		string(got.FileEncSHA256) != string(descriptor.FileEncSHA256) {
+		t.Fatalf("MediaDownloadDescriptor() = %+v, want %+v", got, descriptor)
+	}
+
+	missing, ok, err := store.MediaDownloadDescriptor(ctx, "missing")
+	if err != nil {
+		t.Fatalf("MediaDownloadDescriptor(missing) error = %v", err)
+	}
+	if ok || missing.MessageID != "" {
+		t.Fatalf("MediaDownloadDescriptor(missing) = %+v ok=%v, want empty false", missing, ok)
+	}
+}
+
+func TestUpsertMediaMetadataWithDownloadPersistsBoth(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "photo",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	if err := store.UpsertMediaMetadataWithDownload(ctx, MediaMetadata{
+		MessageID:     "m-1",
+		MIMEType:      "image/jpeg",
+		FileName:      "photo.jpg",
+		SizeBytes:     2048,
+		DownloadState: "remote",
+	}, &MediaDownloadDescriptor{
+		Kind:          "image",
+		DirectPath:    "/v/t62.7118-24/example",
+		MediaKey:      []byte{1},
+		FileSHA256:    []byte{2},
+		FileEncSHA256: []byte{3},
+		FileLength:    2048,
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	media, err := store.MediaMetadata(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if media.MIMEType != "image/jpeg" || media.FileName != "photo.jpg" || media.DownloadState != "remote" {
+		t.Fatalf("MediaMetadata() = %+v", media)
+	}
+	descriptor, ok, err := store.MediaDownloadDescriptor(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaDownloadDescriptor() error = %v", err)
+	}
+	if !ok || descriptor.MessageID != "m-1" || descriptor.Kind != "image" || descriptor.DirectPath == "" {
+		t.Fatalf("MediaDownloadDescriptor() = %+v ok=%v", descriptor, ok)
+	}
+}
+
 func TestAddOlderMessageDoesNotMoveChatBackward(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
@@ -626,8 +752,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 3 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want three applied and none pending", applied, pending)
+	if len(applied) != 4 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want four applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

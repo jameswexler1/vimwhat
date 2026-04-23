@@ -55,6 +55,18 @@ type MediaMetadata struct {
 	UpdatedAt     time.Time
 }
 
+type MediaDownloadDescriptor struct {
+	MessageID     string
+	Kind          string
+	URL           string
+	DirectPath    string
+	MediaKey      []byte
+	FileSHA256    []byte
+	FileEncSHA256 []byte
+	FileLength    int64
+	UpdatedAt     time.Time
+}
+
 type UISnapshot struct {
 	Kind      string
 	Name      string

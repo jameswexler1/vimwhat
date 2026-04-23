@@ -115,6 +115,22 @@ var migrations = []migration{
 				ON messages (chat_id, deleted_at, timestamp_unix ASC, id ASC)`,
 		},
 	},
+	{
+		name: "0004_media_download_descriptors",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS media_download_descriptors (
+				message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+				kind TEXT NOT NULL DEFAULT '',
+				url TEXT NOT NULL DEFAULT '',
+				direct_path TEXT NOT NULL DEFAULT '',
+				media_key BLOB NOT NULL DEFAULT X'',
+				file_sha256 BLOB NOT NULL DEFAULT X'',
+				file_enc_sha256 BLOB NOT NULL DEFAULT X'',
+				file_length INTEGER NOT NULL DEFAULT 0,
+				updated_at INTEGER NOT NULL
+			)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

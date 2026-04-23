@@ -110,8 +110,10 @@ type mediaOverlayMsg struct {
 }
 
 type MediaOpenFinishedMsg struct {
-	Path string
-	Err  error
+	MessageID string
+	Media     store.MediaMetadata
+	Path      string
+	Err       error
 }
 
 type AudioProcess interface {
@@ -165,6 +167,7 @@ type Model struct {
 	previewGeneration      int
 	overlay                *media.OverlayManager
 	overlaySignature       string
+	mediaDownloadInflight  map[string]bool
 	suppressOverlay        bool
 	audioProcess           AudioProcess
 	audioSession           int
@@ -260,6 +263,7 @@ func NewModel(opts Options) Model {
 		previewCache:           map[string]media.Preview{},
 		previewInflight:        map[string]bool{},
 		previewRequested:       map[string]bool{},
+		mediaDownloadInflight:  map[string]bool{},
 		paths:                  opts.Paths,
 		config:                 normalizeConfig(opts.Config),
 		status:                 "ready",
@@ -461,6 +465,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case audioFinishedMsg:
 		return m.handleAudioFinished(msg)
 	case MediaOpenFinishedMsg:
+		m.clearMediaDownloadInFlight(msg.MessageID)
+		if msg.MessageID != "" && strings.TrimSpace(msg.Media.LocalPath) != "" {
+			if updated, _, _ := m.updateLoadedMedia(msg.MessageID, msg.Media); updated && m.saveMedia != nil {
+				if err := m.saveMedia(msg.Media); err != nil {
+					m.status = fmt.Sprintf("open metadata failed: %v", err)
+					return m, nil
+				}
+			}
+		}
 		if msg.Err != nil {
 			m.status = fmt.Sprintf("open failed: %s", shortError(msg.Err))
 		} else {
@@ -1811,7 +1824,9 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 	}
 	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
 		if m.downloadMedia != nil {
-			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			if !m.startMediaDownload(message, item, "downloading media") {
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				downloaded, err := m.downloadMedia(message, item)
 				return mediaDownloadedMsg{
@@ -1840,7 +1855,9 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 	}
 	if highQualityPreviewRequiresLocalFile(m.previewReport.Selected, kind) && strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
-			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			if !m.startMediaDownload(message, item, "downloading media") {
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				downloaded, err := m.downloadMedia(message, item)
 				return mediaDownloadedMsg{
@@ -1886,11 +1903,18 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
-			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			if !m.startMediaDownload(message, item, "downloading media") {
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				downloaded, err := m.downloadMedia(message, item)
 				if err == nil && strings.TrimSpace(downloaded.LocalPath) != "" && m.openMedia != nil {
 					if openMsg := m.openMedia(downloaded)(); openMsg != nil {
+						if finished, ok := openMsg.(MediaOpenFinishedMsg); ok {
+							finished.MessageID = message.ID
+							finished.Media = downloaded
+							return finished
+						}
 						return openMsg
 					}
 				}
@@ -1917,7 +1941,9 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
-			m.status = fmt.Sprintf("downloading media: %s", mediaDisplayName(item))
+			if !m.startMediaDownload(message, item, "downloading media") {
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				downloaded, err := m.downloadMedia(message, item)
 				if err != nil {
@@ -1947,6 +1973,9 @@ func (m Model) toggleFocusedAudio(message store.Message, item store.MediaMetadat
 	}
 	if m.startAudio == nil {
 		m.status = "audio player unavailable"
+		return m, nil
+	}
+	if strings.TrimSpace(item.LocalPath) == "" && !m.startMediaDownload(message, item, "downloading audio") {
 		return m, nil
 	}
 
@@ -2005,6 +2034,7 @@ func (m Model) startAudioCmd(session int, message store.Message, item store.Medi
 }
 
 func (m Model) handleAudioStarted(msg audioStartedMsg) (tea.Model, tea.Cmd) {
+	m.clearMediaDownloadInFlight(msg.MessageID)
 	if msg.Session != m.audioSession {
 		if msg.Process != nil {
 			_ = msg.Process.Stop()
@@ -2216,6 +2246,7 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 }
 
 func (m Model) handleMediaDownloaded(msg mediaDownloadedMsg) (tea.Model, tea.Cmd) {
+	m.clearMediaDownloadInFlight(msg.MessageID)
 	if msg.Err != nil {
 		m.status = fmt.Sprintf("download failed: %s", shortError(msg.Err))
 		return m, nil
@@ -2274,6 +2305,7 @@ func (m Model) handleMediaDownloaded(msg mediaDownloadedMsg) (tea.Model, tea.Cmd
 }
 
 func (m Model) handleMediaSaved(msg mediaSavedMsg) (tea.Model, tea.Cmd) {
+	m.clearMediaDownloadInFlight(msg.MessageID)
 	if msg.Err != nil {
 		m.status = fmt.Sprintf("save failed: %s", shortError(msg.Err))
 		return m, nil
@@ -2562,6 +2594,39 @@ func mediaActivationKey(message store.Message, item store.MediaMetadata) string 
 		strings.TrimSpace(item.FileName),
 		strings.TrimSpace(item.LocalPath),
 	}, "\x00")
+}
+
+func mediaDownloadKey(message store.Message, item store.MediaMetadata) string {
+	if messageID := strings.TrimSpace(item.MessageID); messageID != "" {
+		return messageID
+	}
+	return strings.TrimSpace(message.ID)
+}
+
+func (m *Model) startMediaDownload(message store.Message, item store.MediaMetadata, label string) bool {
+	key := mediaDownloadKey(message, item)
+	if key == "" {
+		m.status = "media download needs a message id"
+		return false
+	}
+	if m.mediaDownloadInflight != nil && m.mediaDownloadInflight[key] {
+		m.status = fmt.Sprintf("%s: %s", label, mediaDisplayName(item))
+		return false
+	}
+	if m.mediaDownloadInflight == nil {
+		m.mediaDownloadInflight = map[string]bool{}
+	}
+	m.mediaDownloadInflight[key] = true
+	m.status = fmt.Sprintf("%s: %s", label, mediaDisplayName(item))
+	return true
+}
+
+func (m *Model) clearMediaDownloadInFlight(messageID string) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" || m.mediaDownloadInflight == nil {
+		return
+	}
+	delete(m.mediaDownloadInflight, messageID)
 }
 
 func keyMatchesLeader(msg tea.KeyMsg, leader string) bool {

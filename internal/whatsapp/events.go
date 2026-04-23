@@ -379,6 +379,17 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 			SizeBytes:     int64(image.GetFileLength()),
 			DownloadState: "remote",
 			UpdatedAt:     updatedAt,
+			Download: mediaDownloadDescriptor(
+				messageID,
+				"image",
+				image.GetURL(),
+				image.GetDirectPath(),
+				image.GetMediaKey(),
+				image.GetFileSHA256(),
+				image.GetFileEncSHA256(),
+				image.GetFileLength(),
+				updatedAt,
+			),
 		}, true
 	}
 	if video := message.GetVideoMessage(); video != nil {
@@ -388,6 +399,17 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 			SizeBytes:     int64(video.GetFileLength()),
 			DownloadState: "remote",
 			UpdatedAt:     updatedAt,
+			Download: mediaDownloadDescriptor(
+				messageID,
+				"video",
+				video.GetURL(),
+				video.GetDirectPath(),
+				video.GetMediaKey(),
+				video.GetFileSHA256(),
+				video.GetFileEncSHA256(),
+				video.GetFileLength(),
+				updatedAt,
+			),
 		}, true
 	}
 	if audio := message.GetAudioMessage(); audio != nil {
@@ -397,6 +419,17 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 			SizeBytes:     int64(audio.GetFileLength()),
 			DownloadState: "remote",
 			UpdatedAt:     updatedAt,
+			Download: mediaDownloadDescriptor(
+				messageID,
+				"audio",
+				audio.GetURL(),
+				audio.GetDirectPath(),
+				audio.GetMediaKey(),
+				audio.GetFileSHA256(),
+				audio.GetFileEncSHA256(),
+				audio.GetFileLength(),
+				updatedAt,
+			),
 		}, true
 	}
 	if document := message.GetDocumentMessage(); document != nil {
@@ -411,9 +444,48 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 			SizeBytes:     int64(document.GetFileLength()),
 			DownloadState: "remote",
 			UpdatedAt:     updatedAt,
+			Download: mediaDownloadDescriptor(
+				messageID,
+				"document",
+				document.GetURL(),
+				document.GetDirectPath(),
+				document.GetMediaKey(),
+				document.GetFileSHA256(),
+				document.GetFileEncSHA256(),
+				document.GetFileLength(),
+				updatedAt,
+			),
 		}, true
 	}
 	return MediaEvent{}, false
+}
+
+func mediaDownloadDescriptor(
+	messageID, kind, url, directPath string,
+	mediaKey, fileSHA256, fileEncSHA256 []byte,
+	fileLength uint64,
+	updatedAt time.Time,
+) MediaDownloadDescriptor {
+	return MediaDownloadDescriptor{
+		MessageID:     messageID,
+		Kind:          kind,
+		URL:           url,
+		DirectPath:    directPath,
+		MediaKey:      cloneBytes(mediaKey),
+		FileSHA256:    cloneBytes(fileSHA256),
+		FileEncSHA256: cloneBytes(fileEncSHA256),
+		FileLength:    int64(fileLength),
+		UpdatedAt:     updatedAt,
+	}
+}
+
+func cloneBytes(input []byte) []byte {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]byte, len(input))
+	copy(out, input)
+	return out
 }
 
 func quotedIDs(chatID string, message *waE2E.Message) (string, string) {

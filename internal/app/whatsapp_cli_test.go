@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,7 +59,9 @@ type fakeLiveWhatsAppSession struct {
 	fakeWhatsAppSession
 	events          chan whatsapp.Event
 	historyRequests chan fakeHistoryRequest
+	downloads       chan fakeDownloadRequest
 	historyErr      error
+	downloadErr     error
 	connectErr      error
 	subscribeErr    error
 	connectCalled   bool
@@ -68,6 +71,11 @@ type fakeLiveWhatsAppSession struct {
 type fakeHistoryRequest struct {
 	anchor whatsapp.HistoryAnchor
 	limit  int
+}
+
+type fakeDownloadRequest struct {
+	descriptor whatsapp.MediaDownloadDescriptor
+	targetPath string
 }
 
 func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
@@ -88,6 +96,16 @@ func (s *fakeLiveWhatsAppSession) RequestHistoryBefore(_ context.Context, anchor
 		s.historyRequests <- fakeHistoryRequest{anchor: anchor, limit: limit}
 	}
 	return s.historyErr
+}
+
+func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor whatsapp.MediaDownloadDescriptor, targetPath string) error {
+	if s.downloads != nil {
+		s.downloads <- fakeDownloadRequest{descriptor: descriptor, targetPath: targetPath}
+	}
+	if s.downloadErr != nil {
+		return s.downloadErr
+	}
+	return os.WriteFile(targetPath, []byte("downloaded media"), 0o644)
 }
 
 func TestRunLoginRendersQRAndCompletes(t *testing.T) {
@@ -150,7 +168,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests)
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -295,6 +313,176 @@ func TestHandleHistoryRequestIgnoresLegacyTrueCursor(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("legacy true cursor blocked history request")
+	}
+}
+
+func TestDownloadRemoteMediaWritesFileAndUpdatesMetadata(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "chat-1/msg-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "photo",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := db.UpsertMediaMetadataWithDownload(ctx, store.MediaMetadata{
+		MessageID:     "chat-1/msg-1",
+		MIMEType:      "image/jpeg",
+		FileName:      "photo.jpg",
+		DownloadState: "remote",
+	}, &store.MediaDownloadDescriptor{
+		Kind:          "image",
+		DirectPath:    "/v/t62.7118-24/photo",
+		MediaKey:      []byte{1},
+		FileSHA256:    []byte{2},
+		FileEncSHA256: []byte{3},
+		FileLength:    16,
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{downloads: make(chan fakeDownloadRequest, 1)}
+	media, err := downloadRemoteMedia(ctx, db, session, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+		Message: store.Message{ID: "chat-1/msg-1"},
+		Media: store.MediaMetadata{
+			MessageID:     "chat-1/msg-1",
+			MIMEType:      "image/jpeg",
+			FileName:      "photo.jpg",
+			DownloadState: "remote",
+		},
+	})
+	if err != nil {
+		t.Fatalf("downloadRemoteMedia() error = %v", err)
+	}
+	if media.DownloadState != "downloaded" || media.LocalPath == "" || filepath.Ext(media.LocalPath) != ".jpg" {
+		t.Fatalf("downloaded media = %+v", media)
+	}
+	data, err := os.ReadFile(media.LocalPath)
+	if err != nil {
+		t.Fatalf("ReadFile(downloaded) error = %v", err)
+	}
+	if string(data) != "downloaded media" {
+		t.Fatalf("downloaded data = %q", data)
+	}
+	request := <-session.downloads
+	if request.descriptor.Kind != "image" || request.descriptor.DirectPath == "" || request.targetPath == media.LocalPath {
+		t.Fatalf("download request = %+v, want descriptor and temp target", request)
+	}
+	stored, err := db.MediaMetadata(ctx, "chat-1/msg-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if stored.DownloadState != "downloaded" || stored.LocalPath != media.LocalPath {
+		t.Fatalf("stored media = %+v, want downloaded local path", stored)
+	}
+}
+
+func TestDownloadRemoteMediaReportsMissingDescriptor(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "chat-1/msg-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "photo",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}, []store.MediaMetadata{{
+		MIMEType:      "image/jpeg",
+		FileName:      "photo.jpg",
+		DownloadState: "remote",
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{}, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+		Message: store.Message{ID: "chat-1/msg-1"},
+		Media: store.MediaMetadata{
+			MessageID:     "chat-1/msg-1",
+			MIMEType:      "image/jpeg",
+			FileName:      "photo.jpg",
+			DownloadState: "remote",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "download details unavailable") {
+		t.Fatalf("downloadRemoteMedia() error = %v, want missing descriptor", err)
+	}
+}
+
+func TestDownloadRemoteMediaMarksFailedOnProtocolError(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "chat-1/msg-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "photo",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := db.UpsertMediaMetadataWithDownload(ctx, store.MediaMetadata{
+		MessageID:     "chat-1/msg-1",
+		MIMEType:      "image/jpeg",
+		FileName:      "photo.jpg",
+		DownloadState: "remote",
+	}, &store.MediaDownloadDescriptor{
+		Kind:       "image",
+		DirectPath: "/v/t62.7118-24/photo",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{downloadErr: errors.New("boom")}, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+		Message: store.Message{ID: "chat-1/msg-1"},
+		Media: store.MediaMetadata{
+			MessageID:     "chat-1/msg-1",
+			MIMEType:      "image/jpeg",
+			FileName:      "photo.jpg",
+			DownloadState: "remote",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("downloadRemoteMedia() error = %v, want boom", err)
+	}
+	stored, err := db.MediaMetadata(ctx, "chat-1/msg-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if stored.DownloadState != "failed" {
+		t.Fatalf("DownloadState = %q, want failed", stored.DownloadState)
 	}
 }
 

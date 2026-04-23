@@ -15,19 +15,19 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, and `doctor` session status reporting.
 - Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
+- Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and cached local files.
 - Large-history TUI guardrails: historical imports avoid refresh storms, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, duplicate in-flight history requests are suppressed, and `ueberzug++` overlay syncs are skipped when placements are unchanged.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
 
-- Remote media download design and implementation.
+- Manual validation and polish of remote media download against real WhatsApp media.
 - Ongoing TUI polish as real protocol features add more loaded state.
 
 ### Not implemented yet
 
-- Remote media download, real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
+- Real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
-- Remote media download/fetch pipeline from WhatsApp servers.
 
 ## Summary
 
@@ -157,7 +157,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 1. Keep polishing the local TUI shell as protocol behavior lands, especially message navigation, previews, composer behavior, and pane/layout rules.
 2. Use the working `whatsmeow` session to connect on demand, restore an existing paired session, subscribe to protocol events, and expose visible connection status.
 3. Replace demo-only data flow with protocol-backed ingestion into SQLite while keeping the UI DB-first.
-4. Build remote media download on top of the existing metadata and preview pipeline so received images/files can be opened, previewed, and saved from the TUI.
+4. Validate remote media download on live WhatsApp traffic, then implement real text send.
 5. Expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
 
 ### Current protocol milestone
@@ -184,7 +184,15 @@ The remote history fetch milestone now has an implemented first pass:
 - Track per-chat end-of-history state in `sync_cursors`.
 - Keep the TUI usable while importing large chats by batching refreshes, preserving the user's selected chat across stale reloads, rendering only a bounded message window, and avoiding repeated overlay sync commands for unchanged media placements.
 
-The next protocol milestone is remote media download, followed by real text send.
+The remote media download milestone now has an implemented first pass:
+
+- Persist WhatsApp download descriptors for received image, video, audio, and document messages.
+- Download media on demand through the live WhatsApp session into the app media cache, using temp-file writes and atomic rename.
+- Update SQLite media state through `remote`, `downloading`, `downloaded`, and `failed`.
+- Reuse existing TUI preview/open/save/audio flows once the file has a local path.
+- Suppress duplicate focused-message download requests while a download is already in flight.
+
+The next protocol milestone is real text send after live validation of media download.
 
 ### Data model and lazy loading
 

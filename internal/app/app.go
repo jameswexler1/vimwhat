@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +123,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	initialConnection, liveEnabled := initialLiveConnectionState(env, context.Background())
 	liveUpdates := make(chan ui.LiveUpdate, 64)
 	historyRequests := make(chan string, 16)
+	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -127,7 +132,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, mediaDownloadRequests)
 		}()
 	}
 	defer func() {
@@ -203,6 +208,34 @@ func runTUI(env Environment, stderr io.Writer) int {
 		SaveMedia: func(media store.MediaMetadata) error {
 			return env.Store.UpsertMediaMetadata(context.Background(), media)
 		},
+		DownloadMedia: func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error) {
+			if !liveEnabled {
+				return store.MediaMetadata{}, fmt.Errorf("whatsapp is not paired")
+			}
+			if strings.TrimSpace(message.ID) == "" {
+				return store.MediaMetadata{}, fmt.Errorf("message id is required")
+			}
+			result := make(chan mediaDownloadResult, 1)
+			request := mediaDownloadRequest{
+				Message: message,
+				Media:   media,
+				Result:  result,
+			}
+			select {
+			case mediaDownloadRequests <- request:
+			default:
+				return media, fmt.Errorf("media download request queue is full")
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), mediaDownloadTimeout)
+			defer cancel()
+			select {
+			case downloaded := <-result:
+				return downloaded.Media, downloaded.Err
+			case <-ctx.Done():
+				return media, fmt.Errorf("media download timed out")
+			}
+		},
 	}
 
 	if err := ui.Run(opts); err != nil {
@@ -225,11 +258,25 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 }
 
 const (
-	historyPageSize       = 50
-	historyRequestTimeout = 30 * time.Second
+	historyPageSize        = 50
+	historyRequestTimeout  = 30 * time.Second
+	mediaDownloadWorkers   = 2
+	mediaDownloadQueueSize = 16
+	mediaDownloadTimeout   = 5 * time.Minute
 )
 
-func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate, historyRequests <-chan string) {
+type mediaDownloadRequest struct {
+	Message store.Message
+	Media   store.MediaMetadata
+	Result  chan<- mediaDownloadResult
+}
+
+type mediaDownloadResult struct {
+	Media store.MediaMetadata
+	Err   error
+}
+
+func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate, historyRequests <-chan string, mediaDownloadRequests <-chan mediaDownloadRequest) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
 
 	session, err := openWhatsAppSession(ctx, env)
@@ -278,6 +325,20 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
 
+	downloadJobs := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
+	var downloadWG sync.WaitGroup
+	for i := 0; i < mediaDownloadWorkers; i++ {
+		downloadWG.Add(1)
+		go func() {
+			defer downloadWG.Done()
+			mediaDownloadWorker(ctx, env.Store, live, env.Paths.MediaDir, downloadJobs)
+		}()
+	}
+	defer func() {
+		close(downloadJobs)
+		downloadWG.Wait()
+	}()
+
 	ingestor := whatsapp.Ingestor{Store: env.Store}
 	historyInflight := map[string]time.Time{}
 	online := true
@@ -316,12 +377,262 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				continue
 			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
-		case chatID := <-historyRequests:
+		case chatID, ok := <-historyRequests:
+			if !ok {
+				return
+			}
 			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
+		case request, ok := <-mediaDownloadRequests:
+			if !ok {
+				return
+			}
+			enqueueMediaDownload(ctx, downloadJobs, online, request)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {
+	if request.Result == nil {
+		return
+	}
+	if !online {
+		sendMediaDownloadResult(ctx, request, request.Media, fmt.Errorf("media download needs WhatsApp online"))
+		return
+	}
+	select {
+	case jobs <- request:
+	case <-ctx.Done():
+		sendMediaDownloadResult(context.Background(), request, request.Media, ctx.Err())
+	default:
+		sendMediaDownloadResult(ctx, request, request.Media, fmt.Errorf("media download queue is full"))
+	}
+}
+
+func mediaDownloadWorker(ctx context.Context, db *store.Store, live WhatsAppLiveSession, mediaDir string, jobs <-chan mediaDownloadRequest) {
+	for {
+		select {
+		case request, ok := <-jobs:
+			if !ok {
+				return
+			}
+			media, err := downloadRemoteMedia(ctx, db, live, mediaDir, request)
+			sendMediaDownloadResult(ctx, request, media, err)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, media store.MediaMetadata, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- mediaDownloadResult{Media: media, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLiveSession, mediaDir string, request mediaDownloadRequest) (store.MediaMetadata, error) {
+	if db == nil {
+		return request.Media, fmt.Errorf("store is required")
+	}
+	if live == nil {
+		return request.Media, fmt.Errorf("whatsapp live session unavailable")
+	}
+
+	messageID := strings.TrimSpace(request.Media.MessageID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(request.Message.ID)
+	}
+	if messageID == "" {
+		return request.Media, fmt.Errorf("message id is required")
+	}
+	mediaItem := request.Media
+	mediaItem.MessageID = messageID
+
+	current, err := db.MediaMetadata(ctx, messageID)
+	if err != nil {
+		return mediaItem, err
+	}
+	mediaItem = mergeAppMediaMetadata(current, mediaItem)
+	if mediaPathAvailable(mediaItem.LocalPath) {
+		mediaItem.DownloadState = "downloaded"
+		mediaItem.UpdatedAt = time.Now()
+		if err := db.UpsertMediaMetadata(ctx, mediaItem); err != nil {
+			return mediaItem, err
+		}
+		return mediaItem, nil
+	}
+
+	descriptor, ok, err := db.MediaDownloadDescriptor(ctx, messageID)
+	if err != nil {
+		return mediaItem, err
+	}
+	if !ok {
+		return mediaItem, fmt.Errorf("media download details unavailable; receive or refetch this message with the current build")
+	}
+
+	mediaItem.DownloadState = "downloading"
+	mediaItem.UpdatedAt = time.Now()
+	if err := db.UpsertMediaMetadata(ctx, mediaItem); err != nil {
+		return mediaItem, err
+	}
+
+	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media cache dir: %w", err))
+	}
+	finalPath := mediaCachePath(mediaDir, messageID, mediaItem)
+	if mediaPathAvailable(finalPath) {
+		mediaItem.LocalPath = finalPath
+		mediaItem.DownloadState = "downloaded"
+		mediaItem.UpdatedAt = time.Now()
+		if info, err := os.Stat(finalPath); err == nil {
+			mediaItem.SizeBytes = info.Size()
+		}
+		if err := db.UpsertMediaMetadata(ctx, mediaItem); err != nil {
+			return mediaItem, err
+		}
+		return mediaItem, nil
+	}
+
+	tmp, err := os.CreateTemp(mediaDir, "download-*.tmp")
+	if err != nil {
+		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media temp file: %w", err))
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	if err := live.DownloadMedia(ctx, whatsappDescriptorFromStore(descriptor), tmpPath); err != nil {
+		return failMediaDownload(ctx, db, mediaItem, err)
+	}
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("stat downloaded media: %w", err))
+	}
+	if info.Size() <= 0 {
+		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("downloaded media is empty"))
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("store downloaded media: %w", err))
+	}
+
+	mediaItem.LocalPath = finalPath
+	mediaItem.SizeBytes = info.Size()
+	mediaItem.DownloadState = "downloaded"
+	mediaItem.UpdatedAt = time.Now()
+	if err := db.UpsertMediaMetadata(ctx, mediaItem); err != nil {
+		return mediaItem, err
+	}
+	return mediaItem, nil
+}
+
+func failMediaDownload(ctx context.Context, db *store.Store, mediaItem store.MediaMetadata, err error) (store.MediaMetadata, error) {
+	mediaItem.DownloadState = "failed"
+	mediaItem.UpdatedAt = time.Now()
+	if db != nil {
+		_ = db.UpsertMediaMetadata(ctx, mediaItem)
+	}
+	return mediaItem, err
+}
+
+func mergeAppMediaMetadata(existing, next store.MediaMetadata) store.MediaMetadata {
+	if strings.TrimSpace(existing.MessageID) == "" {
+		return next
+	}
+	incomingLocalPath := strings.TrimSpace(next.LocalPath) != ""
+	if strings.TrimSpace(next.MessageID) == "" {
+		next.MessageID = existing.MessageID
+	}
+	if strings.TrimSpace(next.MIMEType) == "" {
+		next.MIMEType = existing.MIMEType
+	}
+	if strings.TrimSpace(next.FileName) == "" {
+		next.FileName = existing.FileName
+	}
+	if next.SizeBytes <= 0 {
+		next.SizeBytes = existing.SizeBytes
+	}
+	if strings.TrimSpace(next.LocalPath) == "" {
+		next.LocalPath = existing.LocalPath
+	}
+	if strings.TrimSpace(next.ThumbnailPath) == "" {
+		next.ThumbnailPath = existing.ThumbnailPath
+	}
+	if strings.TrimSpace(existing.LocalPath) != "" && !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "remote" {
+		next.DownloadState = existing.DownloadState
+	}
+	if !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "" {
+		next.DownloadState = existing.DownloadState
+	}
+	if next.UpdatedAt.IsZero() {
+		next.UpdatedAt = existing.UpdatedAt
+	}
+	return next
+}
+
+func mediaPathAvailable(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+func mediaCachePath(mediaDir, messageID string, mediaItem store.MediaMetadata) string {
+	sum := sha256.Sum256([]byte(messageID))
+	name := "wa-" + hex.EncodeToString(sum[:])[:16] + mediaFileExtension(mediaItem)
+	return filepath.Join(mediaDir, name)
+}
+
+func mediaFileExtension(mediaItem store.MediaMetadata) string {
+	if ext := strings.ToLower(filepath.Ext(strings.TrimSpace(mediaItem.FileName))); validMediaExtension(ext) {
+		return ext
+	}
+	if exts, _ := mime.ExtensionsByType(strings.TrimSpace(mediaItem.MIMEType)); len(exts) > 0 && validMediaExtension(exts[0]) {
+		return exts[0]
+	}
+	return ".bin"
+}
+
+func validMediaExtension(ext string) bool {
+	if len(ext) < 2 || len(ext) > 12 || ext[0] != '.' || strings.ContainsAny(ext, `/\`) {
+		return false
+	}
+	for _, r := range ext[1:] {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func whatsappDescriptorFromStore(descriptor store.MediaDownloadDescriptor) whatsapp.MediaDownloadDescriptor {
+	return whatsapp.MediaDownloadDescriptor{
+		MessageID:     descriptor.MessageID,
+		Kind:          descriptor.Kind,
+		URL:           descriptor.URL,
+		DirectPath:    descriptor.DirectPath,
+		MediaKey:      cloneBytes(descriptor.MediaKey),
+		FileSHA256:    cloneBytes(descriptor.FileSHA256),
+		FileEncSHA256: cloneBytes(descriptor.FileEncSHA256),
+		FileLength:    descriptor.FileLength,
+		UpdatedAt:     descriptor.UpdatedAt,
+	}
+}
+
+func cloneBytes(input []byte) []byte {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]byte, len(input))
+	copy(out, input)
+	return out
 }
 
 func isHistoricalImportEvent(event whatsapp.Event) bool {

@@ -29,9 +29,14 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 		},
 		Message: &waE2E.Message{
 			ImageMessage: &waE2E.ImageMessage{
-				Mimetype:   proto.String("image/jpeg"),
-				Caption:    proto.String("photo caption"),
-				FileLength: proto.Uint64(42),
+				URL:           proto.String("https://mmg.whatsapp.net/file"),
+				Mimetype:      proto.String("image/jpeg"),
+				Caption:       proto.String("photo caption"),
+				FileLength:    proto.Uint64(42),
+				MediaKey:      []byte{1, 2, 3},
+				FileSHA256:    []byte{4, 5, 6},
+				FileEncSHA256: []byte{7, 8, 9},
+				DirectPath:    proto.String("/v/t62.7118-24/example"),
 				ContextInfo: &waE2E.ContextInfo{
 					StanzaID: proto.String("QUOTE1"),
 				},
@@ -60,8 +65,87 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 		media.MessageID != message.ID ||
 		media.MIMEType != "image/jpeg" ||
 		media.SizeBytes != 42 ||
-		media.DownloadState != "remote" {
+		media.DownloadState != "remote" ||
+		media.Download.Kind != "image" ||
+		media.Download.URL != "https://mmg.whatsapp.net/file" ||
+		media.Download.DirectPath != "/v/t62.7118-24/example" ||
+		media.Download.FileLength != 42 ||
+		string(media.Download.MediaKey) != string([]byte{1, 2, 3}) ||
+		string(media.Download.FileSHA256) != string([]byte{4, 5, 6}) ||
+		string(media.Download.FileEncSHA256) != string([]byte{7, 8, 9}) {
 		t.Fatalf("media event = %+v", normalized[2])
+	}
+}
+
+func TestMediaMetadataExtractsDownloadDescriptorsByKind(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	tests := []struct {
+		name     string
+		message  *waE2E.Message
+		wantKind string
+		wantName string
+	}{
+		{
+			name: "video",
+			message: &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+				Mimetype:      proto.String("video/mp4"),
+				URL:           proto.String("https://example/video"),
+				DirectPath:    proto.String("/video"),
+				MediaKey:      []byte{1},
+				FileSHA256:    []byte{2},
+				FileEncSHA256: []byte{3},
+				FileLength:    proto.Uint64(11),
+			}},
+			wantKind: "video",
+		},
+		{
+			name: "audio",
+			message: &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+				Mimetype:      proto.String("audio/ogg"),
+				URL:           proto.String("https://example/audio"),
+				DirectPath:    proto.String("/audio"),
+				MediaKey:      []byte{4},
+				FileSHA256:    []byte{5},
+				FileEncSHA256: []byte{6},
+				FileLength:    proto.Uint64(12),
+			}},
+			wantKind: "audio",
+		},
+		{
+			name: "document",
+			message: &waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{
+				Mimetype:      proto.String("application/pdf"),
+				FileName:      proto.String("report.pdf"),
+				URL:           proto.String("https://example/document"),
+				DirectPath:    proto.String("/document"),
+				MediaKey:      []byte{7},
+				FileSHA256:    []byte{8},
+				FileEncSHA256: []byte{9},
+				FileLength:    proto.Uint64(13),
+			}},
+			wantKind: "document",
+			wantName: "report.pdf",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			media, ok := mediaMetadata("msg-1", tt.message, when)
+			if !ok {
+				t.Fatal("mediaMetadata() ok = false")
+			}
+			if media.Download.Kind != tt.wantKind ||
+				media.Download.MessageID != "msg-1" ||
+				media.Download.URL == "" ||
+				media.Download.DirectPath == "" ||
+				media.Download.FileLength == 0 ||
+				!media.Download.UpdatedAt.Equal(when) {
+				t.Fatalf("download descriptor = %+v, want kind/source/length/time", media.Download)
+			}
+			if tt.wantName != "" && media.FileName != tt.wantName {
+				t.Fatalf("FileName = %q, want %q", media.FileName, tt.wantName)
+			}
+		})
 	}
 }
 
