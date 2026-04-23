@@ -3,6 +3,7 @@ package ui
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -47,12 +48,24 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 }
 
 func (m Model) visibleOverlayIdentifiers() map[string]bool {
+	if strings.TrimSpace(m.overlaySignature) == "" {
+		return map[string]bool{}
+	}
 	placements := m.visibleMediaPlacements()
+	if len(placements) == 0 {
+		return map[string]bool{}
+	}
 	visible := make(map[string]bool, len(placements))
 	for _, placement := range placements {
-		visible[placement.Identifier] = true
+		if overlaySignatureContainsIdentifier(m.overlaySignature, placement.Identifier) {
+			visible[placement.Identifier] = true
+		}
 	}
 	return visible
+}
+
+func overlaySignatureContainsIdentifier(signature, identifier string) bool {
+	return strings.Contains(signature, strconv.Quote(identifier))
 }
 
 func (m Model) visibleMediaPlacements() []media.Placement {

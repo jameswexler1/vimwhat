@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
@@ -417,6 +418,41 @@ func truncateDisplay(value string, width int) string {
 	return head + "~"
 }
 
+func sanitizeDisplayLine(value string) string {
+	value = sanitizeDisplayText(value, false)
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func sanitizeDisplayBody(value string) string {
+	return sanitizeDisplayText(value, true)
+}
+
+func sanitizeDisplayText(value string, allowNewlines bool) string {
+	if value == "" {
+		return ""
+	}
+	var out strings.Builder
+	out.Grow(len(value))
+	for _, r := range value {
+		switch r {
+		case '\n':
+			if allowNewlines {
+				out.WriteRune(r)
+			} else {
+				out.WriteRune(' ')
+			}
+		case '\r', '\t':
+			out.WriteRune(' ')
+		default:
+			if unicode.IsControl(r) {
+				continue
+			}
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
 type searchSegment struct {
 	text  string
 	match bool
@@ -498,7 +534,7 @@ func (m Model) renderChats(width, height int) string {
 		headerText += " unread"
 	}
 	if m.activeSearch != "" {
-		headerText += fmt.Sprintf(" /%s", truncateDisplay(m.activeSearch, max(4, width-8)))
+		headerText += fmt.Sprintf(" /%s", truncateDisplay(sanitizeDisplayLine(m.activeSearch), max(4, width-8)))
 	}
 	header := lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render(headerText)
 	lines = append(lines, header)
@@ -538,7 +574,7 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 		Padding(0, 1)
 	contentWidth := panelContentWidth(style, width)
 
-	title := chat.DisplayTitle()
+	title := sanitizeDisplayLine(chat.DisplayTitle())
 	if title == "" {
 		title = "unknown"
 	}
@@ -614,16 +650,16 @@ func chatInitials(title string) string {
 }
 
 func (m Model) chatPreview(chat store.Chat) string {
-	preview := strings.TrimSpace(chat.LastPreview)
+	preview := strings.TrimSpace(sanitizeDisplayBody(chat.LastPreview))
 	if chat.HasDraft {
-		if draft := strings.TrimSpace(m.draftsByChat[chat.ID]); draft != "" {
+		if draft := strings.TrimSpace(sanitizeDisplayBody(m.draftsByChat[chat.ID])); draft != "" {
 			preview = "draft: " + firstLine(draft)
 		}
 	}
 	if preview == "" {
 		return "no local messages"
 	}
-	return firstLine(preview)
+	return sanitizeDisplayLine(firstLine(preview))
 }
 
 func chatSuffix(chat store.Chat) string {
@@ -695,7 +731,7 @@ func adjustedChatScrollTop(scrollTop, active, total, visible int) int {
 
 func (m Model) renderMessages(width, height int) string {
 	chat := m.currentChat()
-	title := chat.DisplayTitle()
+	title := sanitizeDisplayLine(chat.DisplayTitle())
 	if title == "" {
 		title = "Messages"
 	}
@@ -814,15 +850,15 @@ func padLines(lines []string, height int) []string {
 }
 
 func (m Model) renderMessageHeader(title string, width int) string {
-	parts := []string{title}
+	parts := []string{sanitizeDisplayLine(title)}
 	if m.unreadOnly {
 		parts = append(parts, "unread")
 	}
 	if m.activeSearch != "" {
-		parts = append(parts, "/"+m.activeSearch)
+		parts = append(parts, "/"+sanitizeDisplayLine(m.activeSearch))
 	}
 	if m.messageFilter != "" {
-		parts = append(parts, "filter:"+m.messageFilter)
+		parts = append(parts, "filter:"+sanitizeDisplayLine(m.messageFilter))
 	}
 	if count := len(m.currentMessages()); count > 0 {
 		parts = append(parts, fmt.Sprintf("%d msgs", count))
@@ -876,14 +912,14 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 		metaFG = primaryFG
 	}
 
-	body := strings.TrimSpace(message.Body)
+	body := strings.TrimSpace(sanitizeDisplayBody(message.Body))
 	if body == "" && len(message.Media) == 0 {
 		body = "(empty)"
 	}
 	meta := messageBubbleMeta(message)
 	sender := ""
 	if shouldShowMessageSender(m.currentChat(), message) {
-		sender = message.Sender
+		sender = sanitizeDisplayLine(message.Sender)
 		if sender == "" {
 			sender = "unknown"
 		}
@@ -1139,9 +1175,9 @@ func renderAttachmentLine(media store.MediaMetadata, width int, active bool, sta
 }
 
 func attachmentLabel(media store.MediaMetadata) string {
-	name := strings.TrimSpace(media.FileName)
+	name := strings.TrimSpace(sanitizeDisplayLine(media.FileName))
 	if name == "" {
-		name = strings.TrimSpace(media.LocalPath)
+		name = strings.TrimSpace(sanitizeDisplayLine(media.LocalPath))
 	}
 	if name == "" {
 		name = "attachment"
@@ -1149,7 +1185,7 @@ func attachmentLabel(media store.MediaMetadata) string {
 
 	kind := attachmentKind(media.MIMEType, name)
 	size := humanSize(media.SizeBytes)
-	state := strings.TrimSpace(media.DownloadState)
+	state := strings.TrimSpace(sanitizeDisplayLine(media.DownloadState))
 	var parts []string
 	parts = append(parts, kind, name)
 	if size != "" {
@@ -1258,7 +1294,7 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 
 func (m Model) renderInfo(width int) string {
 	chat := m.currentChat()
-	chatTitle := chat.DisplayTitle()
+	chatTitle := sanitizeDisplayLine(chat.DisplayTitle())
 	if chatTitle == "" {
 		chatTitle = "none"
 	}
@@ -1266,7 +1302,7 @@ func (m Model) renderInfo(width int) string {
 	var mediaLines []string
 	if messages := m.currentMessages(); len(messages) > 0 {
 		focused := messages[clamp(m.messageCursor, 0, len(messages)-1)]
-		message = focused.Body
+		message = sanitizeDisplayBody(focused.Body)
 		if item, ok := firstMessageMedia(focused); ok {
 			mediaLines = append(mediaLines,
 				"media:",
@@ -1343,7 +1379,7 @@ func (m Model) renderStatus() string {
 	focus := strings.ToUpper(string(m.focus))
 	chatTitle := "no chat"
 	if chat := m.currentChat(); chat.DisplayTitle() != "" {
-		chatTitle = chat.DisplayTitle()
+		chatTitle = sanitizeDisplayLine(chat.DisplayTitle())
 	}
 	left := strings.Join([]string{
 		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
@@ -1354,13 +1390,13 @@ func (m Model) renderStatus() string {
 
 	search := ""
 	if m.activeSearch != "" {
-		search = " /" + truncateDisplay(m.activeSearch, 16)
+		search = " /" + truncateDisplay(sanitizeDisplayLine(m.activeSearch), 16)
 	}
 	messageFilter := ""
 	if m.messageFilter != "" {
-		messageFilter = " filter:" + truncateDisplay(m.messageFilter, 16)
+		messageFilter = " filter:" + truncateDisplay(sanitizeDisplayLine(m.messageFilter), 16)
 	}
-	center := " " + truncateDisplay(m.status, max(8, m.width/3)) + " "
+	center := " " + truncateDisplay(sanitizeDisplayLine(m.status), max(8, m.width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -1447,7 +1483,7 @@ func (m Model) renderPrompt(label, content, hint string) string {
 		content = content + "  " + hint
 	}
 	prefix := "[" + label + "] "
-	content = truncateDisplay(prefix+content, max(1, m.width-1))
+	content = truncateDisplay(prefix+sanitizeDisplayText(content, false), max(1, m.width-1))
 	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)

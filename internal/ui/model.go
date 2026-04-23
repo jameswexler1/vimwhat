@@ -2685,9 +2685,9 @@ func leaderDisplay(leader string) string {
 }
 
 func mediaDisplayName(item store.MediaMetadata) string {
-	name := strings.TrimSpace(item.FileName)
+	name := strings.TrimSpace(sanitizeDisplayLine(item.FileName))
 	if name == "" {
-		name = strings.TrimSpace(item.LocalPath)
+		name = strings.TrimSpace(sanitizeDisplayLine(item.LocalPath))
 	}
 	if name == "" {
 		return "media"

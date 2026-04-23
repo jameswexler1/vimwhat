@@ -1385,6 +1385,32 @@ func TestMessageBubblesShowGroupSenderOnlyForIncomingGroups(t *testing.T) {
 	}
 }
 
+func TestGroupSenderLabelSanitizesControlText(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	bubble := model.renderMessageBubble(store.Message{
+		ID:      "m-1",
+		ChatID:  "chat-1",
+		ChatJID: "group@g.us",
+		Sender:  "Alice\nInjected\r\x1b[2J",
+		Body:    "hello",
+	}, 80, false, false)
+	plain := stripANSI(bubble)
+
+	if strings.Contains(bubble, "\x1b[2J") || strings.Contains(plain, "\r") || strings.Contains(plain, "\nInjected") {
+		t.Fatalf("group sender label was not sanitized\nraw:\n%q\nplain:\n%s", bubble, plain)
+	}
+	if !strings.Contains(plain, "Alice Injected") {
+		t.Fatalf("sanitized sender label missing expected text\n%s", plain)
+	}
+}
+
 func TestMessageStatusTicks(t *testing.T) {
 	tests := map[string]string{
 		"":           "",
@@ -3138,6 +3164,50 @@ func TestLoadedOverlayPreviewsStayVisibleWhenFocusMoves(t *testing.T) {
 	}
 	if !paths[firstPath] || !paths[secondPath] {
 		t.Fatalf("visible placement paths = %+v, want first and second preview paths", paths)
+	}
+}
+
+func TestScrollingClearedOverlayShowsInlineFallback(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	model.chats = []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}}
+	model.allChats = []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}}
+	model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+		ID:        "m-2",
+		ChatID:    "chat-1",
+		ChatJID:   "group@g.us",
+		Sender:    "Member",
+		SenderJID: "member@s.whatsapp.net",
+		Body:      "newer text",
+	})
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	preview := model.previewCache[media.PreviewKey(request)]
+	preview.Lines = []string{"fallback-overlay-line"}
+	model.previewCache[media.PreviewKey(request)] = preview
+
+	if cmd := model.syncOverlayCmd(); cmd == nil || model.overlaySignature == "" {
+		t.Fatal("syncOverlayCmd() did not mark overlay as active")
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	model = updated.(Model)
+	if model.overlaySignature != "" {
+		t.Fatalf("overlaySignature = %q, want cleared after movement", model.overlaySignature)
+	}
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "fallback-overlay-line") {
+		t.Fatalf("View() hid inline fallback after clearing overlay\n%s", view)
 	}
 }
 
