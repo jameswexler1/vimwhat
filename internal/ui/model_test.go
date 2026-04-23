@@ -398,6 +398,162 @@ func TestMissingAttachmentValidationPreventsSend(t *testing.T) {
 	}
 }
 
+func TestRetryFocusedFailedMediaQueuesNewMessage(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var retried store.Message
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:         "failed-1",
+					ChatID:     "chat-1",
+					Sender:     "me",
+					Body:       "caption",
+					IsOutgoing: true,
+					Status:     "failed",
+					Media: []store.MediaMetadata{{
+						MessageID:     "failed-1",
+						FileName:      "report.pdf",
+						MIMEType:      "application/pdf",
+						LocalPath:     attachmentPath,
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		RetryMessage: func(message store.Message) (store.Message, error) {
+			retried = message
+			return store.Message{
+				ID:         "retry-1",
+				ChatID:     message.ChatID,
+				Sender:     "me",
+				Body:       message.Body,
+				IsOutgoing: true,
+				Status:     "sending",
+				Media: []store.MediaMetadata{{
+					MessageID:     "retry-1",
+					FileName:      message.Media[0].FileName,
+					MIMEType:      message.Media[0].MIMEType,
+					LocalPath:     message.Media[0].LocalPath,
+					DownloadState: "downloaded",
+				}},
+			}, nil
+		},
+	})
+	model.focus = FocusMessages
+	model.composer = "draft stays"
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	got := updated.(Model)
+	if retried.ID != "failed-1" {
+		t.Fatalf("retry callback received %+v, want failed message", retried)
+	}
+	if got.composer != "draft stays" {
+		t.Fatalf("composer = %q, want unchanged", got.composer)
+	}
+	if len(got.messagesByChat["chat-1"]) != 2 {
+		t.Fatalf("messages = %+v, want original plus retry row", got.messagesByChat["chat-1"])
+	}
+	if got.messagesByChat["chat-1"][0].ID != "failed-1" || got.messagesByChat["chat-1"][1].ID != "retry-1" {
+		t.Fatalf("message ids after retry = %+v, want failed-1 then retry-1", got.messagesByChat["chat-1"])
+	}
+	if got.status != "retry queued" {
+		t.Fatalf("status = %q, want retry queued", got.status)
+	}
+}
+
+func TestRetryMessageCommandUsesFocusedFailedMedia(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var called bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:         "failed-1",
+					ChatID:     "chat-1",
+					Sender:     "me",
+					Body:       "caption",
+					IsOutgoing: true,
+					Status:     "failed",
+					Media: []store.MediaMetadata{{
+						MessageID: "failed-1",
+						FileName:  "report.pdf",
+						MIMEType:  "application/pdf",
+						LocalPath: attachmentPath,
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		RetryMessage: func(message store.Message) (store.Message, error) {
+			called = true
+			return store.Message{
+				ID:         "retry-1",
+				ChatID:     message.ChatID,
+				Sender:     "me",
+				Body:       message.Body,
+				IsOutgoing: true,
+				Status:     "sending",
+				Media:      message.Media,
+			}, nil
+		},
+	})
+	model.focus = FocusMessages
+
+	updated, _ := model.executeCommand("retry-message")
+	got := updated.(Model)
+	if !called {
+		t.Fatal("RetryMessage was not called")
+	}
+	if got.status != "retry queued" {
+		t.Fatalf("status = %q, want retry queued", got.status)
+	}
+}
+
+func TestRetryFocusedMediaRejectsInvalidSelection(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Body:   "hello",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+	})
+	model.focus = FocusMessages
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	got := updated.(Model)
+	if !strings.Contains(got.status, "outgoing") {
+		t.Fatalf("status = %q, want retry validation error", got.status)
+	}
+}
+
 func TestRequireOnlineForSendPreservesDraft(t *testing.T) {
 	var persisted bool
 	var savedChatID string
@@ -1220,7 +1376,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		t.Fatal("helpVisible = false, want true")
 	}
 	view := got.View()
-	for _, want := range []string{"vimwhat help", "normal:", "insert:", "command:"} {
+	for _, want := range []string{"vimwhat help", "normal:", "insert:", "command:", "R retry failed media", "retry-message|retry"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing %q\n%s", want, view)
 		}

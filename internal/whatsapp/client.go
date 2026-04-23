@@ -934,6 +934,7 @@ type SendResult struct {
 	RemoteID  string
 	Status    string
 	Timestamp time.Time
+	Notice    string
 }
 
 type EventKind string

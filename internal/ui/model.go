@@ -162,6 +162,7 @@ type Options struct {
 	BlockAttachments     bool
 	RequireOnlineForSend bool
 	PersistMessage       func(OutgoingMessage) (store.Message, error)
+	RetryMessage         func(message store.Message) (store.Message, error)
 	MarkRead             func(chat store.Chat, messages []store.Message) error
 	SendReaction         func(message store.Message, emoji string) error
 	SendPresence         func(chatID string, composing bool) error
@@ -247,6 +248,7 @@ type Model struct {
 	ownPresenceComposing   bool
 	ownPresenceGeneration  int
 	persistMessage         func(OutgoingMessage) (store.Message, error)
+	retryMessage           func(message store.Message) (store.Message, error)
 	markRead               func(chat store.Chat, messages []store.Message) error
 	sendReaction           func(message store.Message, emoji string) error
 	sendPresence           func(chatID string, composing bool) error
@@ -321,6 +323,7 @@ func NewModel(opts Options) Model {
 		connectionState:        opts.ConnectionState,
 		pinnedFirst:            true,
 		persistMessage:         opts.PersistMessage,
+		retryMessage:           opts.RetryMessage,
 		loadMessages:           opts.LoadMessages,
 		loadOlderMessages:      opts.LoadOlderMessages,
 		requestHistory:         opts.RequestHistory,
@@ -724,6 +727,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.beginInsert(&message)
+	case "R":
+		m.retryFocusedMediaMessage()
 	case "v":
 		if len(m.currentMessages()) == 0 {
 			m.status = "no messages to select"
@@ -1385,6 +1390,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.openFocusedMedia()
 	case cmd == "media-save" || cmd == "media save":
 		return m.saveFocusedMedia()
+	case cmd == "retry-message" || cmd == "retry message" || cmd == "retry":
+		m.retryFocusedMediaMessage()
 	case cmd == "history-fetch" || cmd == "history fetch":
 		m.loadOlderOrRequestHistory()
 	case cmd == "mark-read" || cmd == "mark read":
@@ -1775,6 +1782,48 @@ func (m *Model) reactToFocusedMessage(emoji string) {
 	} else {
 		m.status = "reaction queued"
 	}
+}
+
+func (m *Model) retryFocusedMediaMessage() {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return
+	}
+	if err := m.validateRetryMessage(message); err != nil {
+		m.status = err.Error()
+		return
+	}
+	if m.retryMessage == nil {
+		m.status = "retry is unavailable"
+		return
+	}
+	retried, err := m.retryMessage(message)
+	if err != nil {
+		m.status = fmt.Sprintf("retry failed: %v", err)
+		return
+	}
+	if len(retried.Media) == 0 && len(message.Media) == 1 {
+		retried.Media = []store.MediaMetadata{message.Media[0]}
+		retried.Media[0].MessageID = retried.ID
+	}
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		chatID = retried.ChatID
+	}
+	if chatID == "" {
+		m.status = "retry queued"
+		return
+	}
+	m.messagesByChat[chatID] = append(m.messagesByChat[chatID], retried)
+	if base, ok := m.unfilteredByChat[chatID]; ok {
+		m.unfilteredByChat[chatID] = append(base, retried)
+	}
+	m.messageCursor = len(m.messagesByChat[chatID]) - 1
+	m.messageScrollTop = m.messageCursor
+	m.focus = FocusMessages
+	m.rebuildSearchMatches()
+	m.status = "retry queued"
 }
 
 func (m Model) messageLimitForChat(chatID string) int {
@@ -3002,6 +3051,43 @@ func (m Model) validateAttachmentsForSend(body string) error {
 	}
 	if media.MediaKind(attachment.MIMEType, attachment.FileName) == media.KindAudio && body != "" {
 		return fmt.Errorf("audio attachments do not support captions")
+	}
+	return nil
+}
+
+func (m Model) validateRetryMessage(message store.Message) error {
+	if !message.IsOutgoing {
+		return fmt.Errorf("retry needs an outgoing message")
+	}
+	if strings.TrimSpace(message.Status) != "failed" {
+		return fmt.Errorf("retry needs a failed message")
+	}
+	if len(message.Media) == 0 {
+		return fmt.Errorf("retry needs a media attachment")
+	}
+	if len(message.Media) > 1 {
+		return fmt.Errorf("only one attachment per message is supported")
+	}
+	if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
+		return fmt.Errorf("retry needs WhatsApp online")
+	}
+	item := message.Media[0]
+	if strings.TrimSpace(item.LocalPath) == "" {
+		return fmt.Errorf("retry needs a local attachment file")
+	}
+	info, err := os.Stat(item.LocalPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			name := strings.TrimSpace(item.FileName)
+			if name == "" {
+				name = item.LocalPath
+			}
+			return fmt.Errorf("attachment file is missing: %s", name)
+		}
+		return fmt.Errorf("stat attachment: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("attachment path is a directory")
 	}
 	return nil
 }

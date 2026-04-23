@@ -170,20 +170,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 						Quote:       cloneMessagePtr(outgoing.Quote),
 						Result:      result,
 					}
-					select {
-					case mediaSendRequests <- request:
-					case <-waitCtx.Done():
-						return store.Message{}, fmt.Errorf("media send queue timed out")
-					default:
-						return store.Message{}, fmt.Errorf("media send request queue is full")
-					}
-
-					select {
-					case queued := <-result:
-						return queued.Message, queued.Err
-					case <-waitCtx.Done():
-						return store.Message{}, fmt.Errorf("media send queue timed out")
-					}
+					return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
 				}
 				waitCtx, cancel := context.WithTimeout(context.Background(), textSendQueueTimeout)
 				defer cancel()
@@ -217,6 +204,19 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 
 			return message, nil
+		},
+		RetryMessage: func(message store.Message) (store.Message, error) {
+			if !liveEnabled {
+				return store.Message{}, fmt.Errorf("whatsapp is not paired")
+			}
+			waitCtx, cancel := context.WithTimeout(context.Background(), mediaSendQueueTimeout)
+			defer cancel()
+			result := make(chan mediaSendQueuedResult, 1)
+			request, err := retryMediaSendRequest(waitCtx, env.Store, message, result)
+			if err != nil {
+				return store.Message{}, err
+			}
+			return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
 		},
 		MarkRead: func(chat store.Chat, messages []store.Message) error {
 			if !liveEnabled {
@@ -422,12 +422,29 @@ type mediaSendRequest struct {
 	Body        string
 	Attachments []ui.Attachment
 	Quote       *store.Message
-	Result      chan<- mediaSendQueuedResult
+	Result      chan mediaSendQueuedResult
 }
 
 type mediaSendQueuedResult struct {
 	Message store.Message
 	Err     error
+}
+
+func queueMediaSendRequest(ctx context.Context, requests chan<- mediaSendRequest, request mediaSendRequest) (store.Message, error) {
+	select {
+	case requests <- request:
+	case <-ctx.Done():
+		return store.Message{}, fmt.Errorf("media send queue timed out")
+	default:
+		return store.Message{}, fmt.Errorf("media send request queue is full")
+	}
+
+	select {
+	case queued := <-request.Result:
+		return queued.Message, queued.Err
+	case <-ctx.Done():
+		return store.Message{}, fmt.Errorf("media send queue timed out")
+	}
 }
 
 type readReceiptRequest struct {
@@ -951,8 +968,92 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		Refresh: true,
-		Status:  "sent attachment",
+		Status:  mediaSendStatus(result),
 	})
+}
+
+func mediaSendStatus(result whatsapp.SendResult) string {
+	if notice := strings.TrimSpace(result.Notice); notice != "" {
+		return "sent attachment; " + notice
+	}
+	return "sent attachment"
+}
+
+func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.Message, result chan mediaSendQueuedResult) (mediaSendRequest, error) {
+	attachment, err := retryAttachmentForMessage(message)
+	if err != nil {
+		return mediaSendRequest{}, err
+	}
+	request := mediaSendRequest{
+		Context:     ctx,
+		ChatID:      retryChatID(message),
+		Body:        strings.TrimSpace(message.Body),
+		Attachments: []ui.Attachment{attachment},
+		Result:      result,
+	}
+	quote, err := retryQuoteForMessage(ctx, db, message)
+	if err != nil {
+		return mediaSendRequest{}, err
+	}
+	request.Quote = quote
+	return request, nil
+}
+
+func retryAttachmentForMessage(message store.Message) (ui.Attachment, error) {
+	if !message.IsOutgoing {
+		return ui.Attachment{}, fmt.Errorf("retry needs an outgoing message")
+	}
+	if strings.TrimSpace(message.Status) != "failed" {
+		return ui.Attachment{}, fmt.Errorf("retry needs a failed message")
+	}
+	if len(message.Media) == 0 {
+		return ui.Attachment{}, fmt.Errorf("retry needs a media attachment")
+	}
+	if len(message.Media) > 1 {
+		return ui.Attachment{}, fmt.Errorf("only one attachment per message is supported")
+	}
+	item := message.Media[0]
+	attachment, err := prepareLiveAttachmentForSend([]ui.Attachment{{
+		LocalPath:     item.LocalPath,
+		FileName:      item.FileName,
+		MIMEType:      item.MIMEType,
+		SizeBytes:     item.SizeBytes,
+		ThumbnailPath: item.ThumbnailPath,
+		DownloadState: item.DownloadState,
+	}})
+	if err != nil {
+		return ui.Attachment{}, err
+	}
+	return attachment, nil
+}
+
+func retryQuoteForMessage(ctx context.Context, db *store.Store, message store.Message) (*store.Message, error) {
+	if db == nil || strings.TrimSpace(message.QuotedMessageID) == "" {
+		return retryRemoteOnlyQuote(message), nil
+	}
+	quoted, ok, err := db.MessageByID(ctx, message.QuotedMessageID)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return &quoted, nil
+	}
+	return retryRemoteOnlyQuote(message), nil
+}
+
+func retryRemoteOnlyQuote(message store.Message) *store.Message {
+	quotedRemoteID := strings.TrimSpace(message.QuotedRemoteID)
+	if quotedRemoteID == "" {
+		return nil
+	}
+	return &store.Message{RemoteID: quotedRemoteID}
+}
+
+func retryChatID(message store.Message) string {
+	if chatJID := strings.TrimSpace(message.ChatJID); chatJID != "" {
+		return chatJID
+	}
+	return strings.TrimSpace(message.ChatID)
 }
 
 func prepareLiveAttachmentForSend(attachments []ui.Attachment) (ui.Attachment, error) {

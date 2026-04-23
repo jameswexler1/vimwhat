@@ -7,7 +7,9 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,8 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
+
+var probeAudioDurationSeconds = defaultProbeAudioDurationSeconds
 
 type MediaSendRequest struct {
 	ChatJID           string
@@ -43,12 +47,15 @@ const (
 )
 
 type localMediaDetails struct {
-	LocalPath string
-	FileName  string
-	MIMEType  string
-	SizeBytes uint64
-	Width     uint32
-	Height    uint32
+	LocalPath       string
+	FileName        string
+	MIMEType        string
+	SizeBytes       uint64
+	Width           uint32
+	Height          uint32
+	DurationSeconds uint32
+	TransportKind   outgoingMediaKind
+	SendNotice      string
 }
 
 func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error) {
@@ -63,7 +70,7 @@ func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendR
 	if err != nil {
 		return SendResult{}, fmt.Errorf("parse send chat jid: %w", err)
 	}
-	details, kind, err := loadLocalMediaDetails(request)
+	details, kind, err := loadLocalMediaDetails(ctx, request)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -85,13 +92,13 @@ func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendR
 	}
 	defer file.Close()
 
-	uploadType := mediaTypeForOutgoingKind(kind)
+	uploadType := mediaTypeForOutgoingKind(details.TransportKind)
 	upload, err := c.client.UploadReader(ctx, file, nil, uploadType)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("upload whatsapp media: %w", err)
 	}
 
-	message := c.mediaMessageFromUpload(kind, details, caption, upload, request)
+	message := c.mediaMessageFromUpload(details.TransportKind, details, caption, upload, request)
 	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
 	if err != nil {
 		return SendResult{}, fmt.Errorf("send whatsapp media: %w", err)
@@ -108,10 +115,14 @@ func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendR
 		RemoteID:  remoteID,
 		Status:    "sent",
 		Timestamp: timestamp,
+		Notice:    details.SendNotice,
 	}, nil
 }
 
-func loadLocalMediaDetails(request MediaSendRequest) (localMediaDetails, outgoingMediaKind, error) {
+func loadLocalMediaDetails(ctx context.Context, request MediaSendRequest) (localMediaDetails, outgoingMediaKind, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	localPath := strings.TrimSpace(request.LocalPath)
 	if localPath == "" {
 		return localMediaDetails{}, "", fmt.Errorf("media local path is required")
@@ -132,17 +143,61 @@ func loadLocalMediaDetails(request MediaSendRequest) (localMediaDetails, outgoin
 	kind := outgoingKindForFile(mimeType, fileName)
 
 	details := localMediaDetails{
-		LocalPath: localPath,
-		FileName:  fileName,
-		MIMEType:  mimeType,
-		SizeBytes: uint64(info.Size()),
+		LocalPath:     localPath,
+		FileName:      fileName,
+		MIMEType:      mimeType,
+		SizeBytes:     uint64(info.Size()),
+		TransportKind: kind,
 	}
 	if kind == outgoingMediaImage {
 		width, height := imageDimensions(localPath)
 		details.Width = width
 		details.Height = height
 	}
+	if kind == outgoingMediaAudio {
+		durationSeconds, probeErr := probeAudioDurationSeconds(ctx, localPath)
+		if probeErr == nil && durationSeconds > 0 {
+			details.DurationSeconds = durationSeconds
+		} else {
+			details.TransportKind = outgoingMediaDocument
+			details.SendNotice = "audio metadata unavailable; sent as document"
+		}
+	}
 	return details, kind, nil
+}
+
+func defaultProbeAudioDurationSeconds(ctx context.Context, localPath string) (uint32, error) {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return 0, err
+	}
+	output, err := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		localPath,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	durationText := strings.TrimSpace(string(output))
+	if durationText == "" || durationText == "N/A" {
+		return 0, fmt.Errorf("audio duration is unavailable")
+	}
+	duration, err := strconv.ParseFloat(durationText, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse audio duration %q: %w", durationText, err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("audio duration must be positive")
+	}
+	seconds := uint32(duration)
+	if duration > float64(seconds) {
+		seconds++
+	}
+	if seconds == 0 {
+		seconds = 1
+	}
+	return seconds, nil
 }
 
 func normalizeOutgoingMIMEType(mimeType, localPath, fileName string) string {
@@ -273,6 +328,10 @@ func (c *Client) mediaMessageFromUpload(kind outgoingMediaKind, details localMed
 			FileLength:    proto.Uint64(upload.FileLength),
 			Mimetype:      proto.String(details.MIMEType),
 			ContextInfo:   contextInfo,
+			PTT:           proto.Bool(false),
+		}
+		if details.DurationSeconds > 0 {
+			audio.Seconds = proto.Uint32(details.DurationSeconds)
 		}
 		return &waE2E.Message{AudioMessage: audio}
 	default:

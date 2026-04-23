@@ -782,6 +782,125 @@ func TestHandleMediaSendRequestRejectsAudioCaption(t *testing.T) {
 	}
 }
 
+func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	quoted := store.Message{
+		ID:        whatsapp.LocalMessageID(chatJID, "quoted-1"),
+		RemoteID:  "quoted-1",
+		ChatID:    chatJID,
+		ChatJID:   chatJID,
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "earlier context",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	if _, err := db.AddIncomingMessage(ctx, quoted); err != nil {
+		t.Fatalf("AddIncomingMessage() error = %v", err)
+	}
+
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	failed := store.Message{
+		ID:              whatsapp.LocalMessageID(chatJID, "failed-1"),
+		RemoteID:        "failed-1",
+		ChatID:          chatJID,
+		ChatJID:         chatJID,
+		Sender:          "me",
+		SenderJID:       "me",
+		Body:            "retry caption",
+		Timestamp:       time.Unix(1_700_000_100, 0),
+		IsOutgoing:      true,
+		Status:          "failed",
+		QuotedMessageID: quoted.ID,
+		QuotedRemoteID:  quoted.RemoteID,
+		Media: []store.MediaMetadata{{
+			MessageID:     whatsapp.LocalMessageID(chatJID, "failed-1"),
+			FileName:      "report.pdf",
+			MIMEType:      "application/pdf",
+			LocalPath:     attachmentPath,
+			SizeBytes:     9,
+			DownloadState: "downloaded",
+		}},
+	}
+	if err := db.AddMessageWithMedia(ctx, failed, failed.Media); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "retry-1",
+		mediaSends:  make(chan whatsapp.MediaSendRequest, 1),
+	}
+	result := make(chan mediaSendQueuedResult, 1)
+	request, err := retryMediaSendRequest(ctx, db, failed, result)
+	if err != nil {
+		t.Fatalf("retryMediaSendRequest() error = %v", err)
+	}
+	updates := make(chan ui.LiveUpdate, 4)
+	handleMediaSendRequest(ctx, db, session, updates, nil, true, request)
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued retry error = %v", queued.Err)
+	}
+	if queued.Message.ID == failed.ID {
+		t.Fatal("queued retry reused the failed message id")
+	}
+	sent := <-session.mediaSends
+	if sent.ChatJID != chatJID || sent.Caption != "retry caption" || sent.LocalPath != attachmentPath {
+		t.Fatalf("media request = %+v, want chat/caption/path preserved", sent)
+	}
+	if sent.QuotedRemoteID != quoted.RemoteID || sent.QuotedSenderJID != quoted.SenderJID || sent.QuotedMessageBody != quoted.Body {
+		t.Fatalf("retry quote = %+v, want quoted remote id/sender/body", sent)
+	}
+
+	messages := waitForStoredMessages(t, db, chatJID, 3)
+	if len(messages) != 3 {
+		t.Fatalf("messages = %+v, want quoted source plus original failed row plus retry row", messages)
+	}
+	if messages[1].ID != failed.ID || messages[1].Status != "failed" {
+		t.Fatalf("original message = %+v, want unchanged failed row", messages[1])
+	}
+	if messages[2].ID != queued.Message.ID || messages[2].Status != "sent" {
+		t.Fatalf("retry message = %+v, want new sent row", messages[2])
+	}
+}
+
+func TestRetryMediaSendRequestRejectsMissingLocalFile(t *testing.T) {
+	ctx := context.Background()
+	request, err := retryMediaSendRequest(ctx, nil, store.Message{
+		ID:         "failed-1",
+		ChatID:     "12345@s.whatsapp.net",
+		ChatJID:    "12345@s.whatsapp.net",
+		Sender:     "me",
+		IsOutgoing: true,
+		Status:     "failed",
+		Media: []store.MediaMetadata{{
+			MessageID: "failed-1",
+			FileName:  "missing.pdf",
+			MIMEType:  "application/pdf",
+			LocalPath: filepath.Join(t.TempDir(), "missing.pdf"),
+		}},
+	}, make(chan mediaSendQueuedResult, 1))
+	if err == nil || !strings.Contains(err.Error(), "stat attachment") {
+		t.Fatalf("retryMediaSendRequest() error = %v, want missing local file error", err)
+	}
+	_ = request
+}
+
 func TestHandleReadReceiptRequestMarksChatReadAfterProtocolSuccess(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
