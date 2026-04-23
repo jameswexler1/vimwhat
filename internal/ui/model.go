@@ -1001,7 +1001,7 @@ func (m *Model) moveCursor(delta int) {
 		}
 		previous := m.messageCursor
 		m.messageCursor = clamp(m.messageCursor+delta, 0, len(m.currentMessages())-1)
-		m.keepMessageCursorNearViewport(previous)
+		m.keepMessageCursorNearViewport()
 		if m.messageCursor != previous {
 			m.suppressOverlay = true
 		}
@@ -1611,20 +1611,56 @@ func (m Model) chatPaneContentHeight() int {
 	return panelContentHeight(m.panelStyle(FocusChats), bodyHeight)
 }
 
-func (m *Model) keepMessageCursorNearViewport(previous int) {
+func (m *Model) keepMessageCursorNearViewport() {
 	messageCount := len(m.currentMessages())
 	if messageCount == 0 {
 		m.messageScrollTop = 0
 		return
 	}
+	m.messageCursor = clamp(m.messageCursor, 0, messageCount-1)
 	m.messageScrollTop = clamp(m.messageScrollTop, 0, messageCount-1)
+	if m.messageCursor == messageCount-1 {
+		m.messageScrollTop = m.messageCursor
+		return
+	}
+	if scrollTop, ok := m.messageScrollTopWithCursorVisible(); ok {
+		m.messageScrollTop = scrollTop
+		return
+	}
 	if m.messageCursor < m.messageScrollTop {
 		m.messageScrollTop = m.messageCursor
 		return
 	}
-	if m.messageCursor > previous && m.messageCursor > m.messageScrollTop+2 {
+	if m.messageCursor > m.messageScrollTop+2 {
 		m.messageScrollTop = m.messageCursor - 2
 	}
+}
+
+func (m Model) messageScrollTopWithCursorVisible() (int, bool) {
+	width := m.messagePaneContentWidth()
+	height := m.messageViewportHeight()
+	if width <= 0 || height <= 0 {
+		return 0, false
+	}
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return 0, true
+	}
+	start, end := m.visibleMessageRange(len(messages), height)
+	if m.messageCursor < start || m.messageCursor >= end {
+		return clamp(m.messageCursor, 0, len(messages)-1), true
+	}
+	blocks := m.messageBlocksForRange(messages, width, start, end, nil)
+	if len(blocks) == 0 {
+		return 0, true
+	}
+	localCursor := clamp(m.messageCursor-start, 0, len(blocks)-1)
+	localScrollTop := clamp(m.messageScrollTop-start, 0, len(blocks)-1)
+	spans := messageViewportSpans(blocks, localScrollTop, localCursor, height)
+	if messageBlockSpansContain(spans, localCursor) {
+		return m.messageScrollTop, true
+	}
+	return clamp(start+adjustedMessageScrollTop(blocks, localScrollTop, localCursor, height), 0, len(messages)-1), true
 }
 
 func (m *Model) showCurrentChatLatest() {
@@ -2255,6 +2291,29 @@ func (m Model) messagePaneContentWidth() int {
 	}
 	style := m.panelStyle(FocusMessages)
 	return panelContentWidth(style, messageWidth)
+}
+
+func (m Model) messagePaneContentHeight() int {
+	if m.height <= 0 {
+		return 0
+	}
+	inputHeight := m.inputHeight()
+	bodyHeight := m.height - 1 - inputHeight
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+	return panelContentHeight(m.panelStyle(FocusMessages), bodyHeight)
+}
+
+func (m Model) messageViewportHeight() int {
+	height := m.messagePaneContentHeight()
+	if height <= 0 {
+		return 0
+	}
+	bodyHeight := max(1, height-1)
+	footer := m.renderMessageFooter(max(1, m.messagePaneContentWidth()-2))
+	footerHeight := min(countLines(footer), bodyHeight)
+	return max(1, bodyHeight-footerHeight)
 }
 
 func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea.Cmd) {

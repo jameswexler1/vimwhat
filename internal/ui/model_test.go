@@ -516,6 +516,90 @@ func TestGroupChatScrollUpShowsOlderMessagesAboveCursor(t *testing.T) {
 	}
 }
 
+func TestMessageScrollUpFromLatestKeepsNewerMessagesVisible(t *testing.T) {
+	messages := make([]store.Message, 0, 40)
+	for i := 0; i < cap(messages); i++ {
+		messages = append(messages, store.Message{
+			ID:      fmt.Sprintf("m-%02d", i),
+			ChatID:  "chat-1",
+			ChatJID: "group@g.us",
+			Sender:  fmt.Sprintf("Member %02d", i%5),
+			Body:    fmt.Sprintf("group message %02d marker", i),
+		})
+	}
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 24
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+	initialScrollTop := model.messageScrollTop
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	model = updated.(Model)
+
+	if model.messageCursor != 38 {
+		t.Fatalf("messageCursor = %d, want 38 after one upward move", model.messageCursor)
+	}
+	if model.messageScrollTop != initialScrollTop {
+		t.Fatalf("messageScrollTop = %d, want unchanged %d while cursor remains visible", model.messageScrollTop, initialScrollTop)
+	}
+	view := stripANSI(model.renderMessages(90, 18))
+	cursorLine := lineIndexContaining(view, "group message 38 marker")
+	newerLine := lineIndexContaining(view, "group message 39 marker")
+	if cursorLine == -1 || newerLine == -1 {
+		t.Fatalf("cursor and newer messages should both remain visible; cursor=%d newer=%d\n%s", cursorLine, newerLine, view)
+	}
+	if newerLine <= cursorLine {
+		t.Fatalf("newer message should stay below cursor after one upward move; cursor=%d newer=%d\n%s", cursorLine, newerLine, view)
+	}
+}
+
+func TestMessageNavigationScrollsOnlyAtViewportBoundary(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(60)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 18
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+	initialScrollTop := model.messageScrollTop
+
+	for i := 0; i < 3; i++ {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		model = updated.(Model)
+		if model.messageScrollTop != initialScrollTop {
+			t.Fatalf("messageScrollTop changed after %d in-viewport upward move(s): got %d want %d", i+1, model.messageScrollTop, initialScrollTop)
+		}
+	}
+
+	for i := 0; i < 12 && model.messageScrollTop == initialScrollTop; i++ {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		model = updated.(Model)
+	}
+	if model.messageScrollTop == initialScrollTop {
+		t.Fatalf("messageScrollTop never moved after cursor crossed the top boundary")
+	}
+	scrolledTop := model.messageScrollTop
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = updated.(Model)
+	if model.messageScrollTop != scrolledTop {
+		t.Fatalf("messageScrollTop = %d, want unchanged %d after moving down within viewport", model.messageScrollTop, scrolledTop)
+	}
+}
+
 func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	searchCalled := false
 	model := NewModel(Options{

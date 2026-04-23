@@ -338,6 +338,15 @@ func messageLinesForSpans(blocks []messageBlock, spans []messageBlockSpan) []str
 	return out
 }
 
+func messageBlockSpansContain(spans []messageBlockSpan, index int) bool {
+	for _, span := range spans {
+		if span.index == index && span.start < span.end {
+			return true
+		}
+	}
+	return false
+}
+
 func bottomMessageViewportSpans(blocks []messageBlock, height int) []messageBlockSpan {
 	height = max(1, height)
 	if messageBlocksHeight(blocks) <= height {
@@ -854,32 +863,14 @@ func (m Model) renderMessages(width, height int) string {
 	messageHeight := max(1, bodyHeight-footerHeight)
 	start, end := m.visibleMessageRange(len(messages), messageHeight)
 
-	blocks := make([]messageBlock, 0, end-start)
-	visibleOverlays := m.visibleOverlayIdentifiers()
-	var lastDate string
-	if start > 0 {
-		lastDate = messageDate(messages[start-1])
-	}
-	for i := start; i < end; i++ {
-		message := messages[i]
-		date := messageDate(message)
-		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
-		active := i == m.messageCursor
-		bubble := m.renderMessageBubbleForViewport(message, width, active, selected, visibleOverlays)
-		lines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
-		if date != "" && date != lastDate {
-			lines = append([]string{renderDaySeparator(date, width)}, lines...)
-			lastDate = date
-		}
-		blocks = append(blocks, messageBlock{lines: lines})
-	}
+	blocks := m.messageBlocksForRange(messages, width, start, end, m.visibleOverlayIdentifiers())
 
 	body := make([]string, 0, bodyHeight)
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
 		localCursor := clamp(m.messageCursor-start, 0, len(blocks)-1)
-		localScrollTop := localMessageViewportScrollTop(m.messageScrollTop, m.messageCursor, localCursor, len(blocks))
+		localScrollTop := clamp(m.messageScrollTop-start, 0, len(blocks)-1)
 		body = append(body, messageViewport(
 			blocks,
 			localScrollTop,
@@ -898,14 +889,26 @@ func (m Model) renderMessages(width, height int) string {
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
 }
 
-func localMessageViewportScrollTop(globalScrollTop, globalCursor, localCursor, blockCount int) int {
-	if blockCount <= 0 {
-		return 0
+func (m Model) messageBlocksForRange(messages []store.Message, width, start, end int, visibleOverlays map[string]bool) []messageBlock {
+	blocks := make([]messageBlock, 0, end-start)
+	var lastDate string
+	if start > 0 && start <= len(messages) {
+		lastDate = messageDate(messages[start-1])
 	}
-	if globalScrollTop > globalCursor {
-		return clamp(localCursor+1, 0, blockCount-1)
+	for i := start; i < end && i < len(messages); i++ {
+		message := messages[i]
+		date := messageDate(message)
+		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
+		active := i == m.messageCursor
+		bubble := m.renderMessageBubbleForViewport(message, width, active, selected, visibleOverlays)
+		lines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
+		if date != "" && date != lastDate {
+			lines = append([]string{renderDaySeparator(date, width)}, lines...)
+			lastDate = date
+		}
+		blocks = append(blocks, messageBlock{lines: lines})
 	}
-	return 0
+	return blocks
 }
 
 func (m Model) visibleMessageRange(count, height int) (int, int) {

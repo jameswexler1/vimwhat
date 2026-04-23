@@ -216,7 +216,7 @@ func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementC
 	}
 
 	localCursor := clamp(m.messageCursor-start, 0, max(0, len(blocks)-1))
-	localScrollTop := localMessageViewportScrollTop(m.messageScrollTop, m.messageCursor, localCursor, len(blocks))
+	localScrollTop := clamp(m.messageScrollTop-start, 0, max(0, len(blocks)-1))
 	viewportRefs := messageViewportRefs(
 		blocks,
 		localScrollTop,
