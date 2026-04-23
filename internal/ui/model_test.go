@@ -990,6 +990,45 @@ func TestEscapeInSearchModeClearsActiveSearch(t *testing.T) {
 	}
 }
 
+func TestEscapeInNormalModeClearsActiveSearch(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "needle first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	searchModel := searched.(Model)
+	if searchModel.mode != ModeNormal {
+		t.Fatalf("mode after search = %s, want normal", searchModel.mode)
+	}
+	if status := stripANSI(searchModel.renderStatus()); !strings.Contains(status, "/needle 1/2") {
+		t.Fatalf("status before normal escape = %q, want active search count", status)
+	}
+
+	escaped, _ := searchModel.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := escaped.(Model)
+	if got.activeSearch != "" || got.lastSearch != "" || len(got.searchMatches) != 0 || got.searchIndex != -1 {
+		t.Fatalf("search state after normal escape = active %q last %q matches %v index %d", got.activeSearch, got.lastSearch, got.searchMatches, got.searchIndex)
+	}
+	if status := stripANSI(got.renderStatus()); strings.Contains(status, "/needle") {
+		t.Fatalf("status after normal escape retained search count: %q", status)
+	}
+}
+
 func TestEscapeInSearchModeClearsUnsubmittedSearch(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

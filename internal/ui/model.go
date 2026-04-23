@@ -584,6 +584,14 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.leaderPending {
 		return m.handleLeaderKey(msg)
 	}
+	if msg.Type == tea.KeyEsc {
+		m.pendingCount = 0
+		if m.activeSearch != "" || strings.TrimSpace(m.lastSearch) != "" || len(m.searchMatches) > 0 || m.searchIndex != -1 {
+			m.clearSearch()
+			m.status = "search cleared"
+		}
+		return m, nil
+	}
 	if keyMatchesLeader(msg, m.config.LeaderKey) {
 		m.leaderPending = true
 		m.leaderSequence = ""
