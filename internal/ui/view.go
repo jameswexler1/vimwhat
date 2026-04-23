@@ -1390,6 +1390,8 @@ func messageStatusTicks(status string) string {
 		return "✓"
 	case "delivered", "read":
 		return "✓✓"
+	case "failed", "error":
+		return "!"
 	default:
 		return "✓"
 	}

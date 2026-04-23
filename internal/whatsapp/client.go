@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 
 	_ "modernc.org/sqlite"
 )
@@ -51,7 +53,8 @@ type Adapter interface {
 	Connect(ctx context.Context) error
 	Login(ctx context.Context, handleQR QRHandler) error
 	Logout(ctx context.Context) error
-	SendText(ctx context.Context, chatJID, body string) (SendResult, error)
+	GenerateMessageID() string
+	SendText(ctx context.Context, chatJID, body, remoteID string) (SendResult, error)
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
@@ -440,8 +443,57 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func (Client) SendText(context.Context, string, string) (SendResult, error) {
-	return SendResult{}, ErrNotImplemented
+func (c *Client) GenerateMessageID() string {
+	if c == nil || c.client == nil {
+		return ""
+	}
+	return string(c.client.GenerateMessageID())
+}
+
+func (c *Client) SendText(ctx context.Context, chatJID, body, remoteID string) (SendResult, error) {
+	if c == nil || c.client == nil {
+		return SendResult{}, ErrClientNotOpen
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return SendResult{}, fmt.Errorf("text body is required")
+	}
+	normalizedChatJID, err := NormalizeSendChatJID(chatJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	to, err := types.ParseJID(normalizedChatJID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("parse send chat jid: %w", err)
+	}
+	remoteID = strings.TrimSpace(remoteID)
+	if remoteID == "" {
+		remoteID = c.GenerateMessageID()
+	}
+	if remoteID == "" {
+		return SendResult{}, fmt.Errorf("generate message id failed")
+	}
+
+	resp, err := c.client.SendMessage(ctx, to, &waE2E.Message{
+		Conversation: proto.String(body),
+	}, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
+	if err != nil {
+		return SendResult{}, fmt.Errorf("send whatsapp text: %w", err)
+	}
+	if resp.ID != "" {
+		remoteID = string(resp.ID)
+	}
+	timestamp := resp.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+
+	return SendResult{
+		MessageID: LocalMessageID(normalizedChatJID, remoteID),
+		RemoteID:  remoteID,
+		Status:    "sent",
+		Timestamp: timestamp,
+	}, nil
 }
 
 func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
@@ -633,6 +685,7 @@ type SendResult struct {
 	MessageID string
 	RemoteID  string
 	Status    string
+	Timestamp time.Time
 }
 
 type EventKind string

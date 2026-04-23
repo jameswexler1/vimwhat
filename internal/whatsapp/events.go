@@ -314,6 +314,24 @@ func supportedChat(jid types.JID) bool {
 	}
 }
 
+func NormalizeSendChatJID(chatJID string) (string, error) {
+	chatJID = strings.TrimSpace(chatJID)
+	if chatJID == "" {
+		return "", fmt.Errorf("chat jid is required")
+	}
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return "", fmt.Errorf("parse send chat jid: %w", err)
+	}
+	if jid.Device > 0 {
+		return "", fmt.Errorf("send chat jid must not include a device: %s", chatJID)
+	}
+	if !supportedChat(jid) {
+		return "", fmt.Errorf("unsupported send chat jid %s", chatJID)
+	}
+	return jid.String(), nil
+}
+
 func chatKind(jid types.JID) string {
 	if jid.Server == types.GroupServer {
 		return "group"
@@ -441,6 +459,10 @@ func localMessageID(chatID, remoteID string) string {
 		return ""
 	}
 	return chatID + "/" + remoteID
+}
+
+func LocalMessageID(chatID, remoteID string) string {
+	return localMessageID(chatID, remoteID)
 }
 
 func initialMessageStatus(outgoing bool) string {

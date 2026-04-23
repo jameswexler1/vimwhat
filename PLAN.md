@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live read-only WhatsApp client with remote history/media support. The next major protocol gap is real outbound send.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support and plain text outbound send. The next major protocol gaps are read receipts, reactions, replies, presence, and media send.
 
 ### Implemented now
 
@@ -16,6 +16,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and cached local files.
+- Real plain text outbound send from the inline composer, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, and attachment sends still blocked until media upload exists.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
 - Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, non-redundant mode prompts, search match counts in the status bar, and `Esc` clearing active search state from both search and normal mode.
@@ -23,12 +24,12 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 ### In progress
 
-- Manual validation and polish of remote media download against real WhatsApp media.
-- Short regression pass on the recent TUI hardening before starting outbound send.
+- Manual validation and polish of remote media download and plain text outbound send against real WhatsApp traffic.
+- Short regression pass on the recent TUI hardening before starting the next protocol features.
 
 ### Not implemented yet
 
-- Real sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
+- Media sends, read-receipt sending, reactions, presence, and quote-jump backed by the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
 
 ## Summary
@@ -161,7 +162,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 1. Run a quick manual regression pass over the recent TUI hardening: big group scrolling, emoji-heavy messages, search counts/clearance, and custom mode indicators.
 2. Validate remote media download on live WhatsApp traffic.
-3. Implement real text send for plain text composer submissions.
+3. Validate real text send for plain text composer submissions against live direct and group chats.
 4. Add protocol-backed read receipts, reactions, presence, replies/quote-jump, and attachment send after text send is stable.
 5. Expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
 
@@ -214,7 +215,7 @@ The TUI stability and modal polish milestone is implemented:
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, and search clearing.
 
-The next protocol milestone is real text send after live validation of media download.
+The next protocol milestone is protocol-backed read receipts, reactions, presence, replies/quote-jump, and attachment send after live validation of text send.
 
 ### Data model and lazy loading
 

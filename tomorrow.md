@@ -1,4 +1,4 @@
-# Tomorrow: Lock TUI Hardening, Validate Media, Then Text Send
+# Tomorrow: Validate Media and Text Send, Then Next Protocol Features
 
 ## Current State
 
@@ -6,7 +6,7 @@
 - Received image, video, audio, and document messages persist WhatsApp download descriptors.
 - The TUI can request a download through the app layer, cache the file locally, update SQLite, and continue into preview/open/save/audio playback.
 - Recent TUI hardening is implemented: big-chat message scrolling behaves like chat-list scrolling, emoji rendering has `auto`/`full`/`compat` modes, mode indicators default to pywal but support per-mode hex overrides, and `/` search shows match counts and clears with `Esc`.
-- Real outbound send is still disabled in live mode.
+- Real plain text outbound send is implemented in live mode; attachment send remains blocked until media upload exists.
 
 ## First Task: Quick TUI Regression
 
@@ -40,12 +40,22 @@
 - Fix protocol download/writing if the descriptor exists but download fails.
 - Fix TUI state only if the file downloads correctly but preview/open/save/play does not continue.
 
-## Next Implementation Slice: Real Text Send
+## Implemented Slice: Real Text Send
 
-After the TUI regression pass and media validation are acceptable, implement real text send:
+Plain text send now follows this shape:
 
-1. Extend the WhatsApp live session with a `SendText` path that sends a plain text message to the current chat JID.
-2. Replace live-mode `BlockSending` with protocol-backed send for text-only composer submissions.
-3. Persist the outgoing message locally as pending/sending, then update it with the WhatsApp remote ID and final status.
-4. Keep attachments blocked until media upload/send is implemented.
-5. Add tests for successful send, protocol failure, missing chat JID, composer draft preservation on failure, and local status update.
+1. The WhatsApp live session has a `SendText` path that sends a plain text message to the current chat JID.
+2. Live-mode text-only composer submissions use protocol-backed send instead of global send blocking.
+3. Outgoing text messages are persisted locally with precomputed WhatsApp remote IDs and `sending`, then updated to `sent` or `failed`.
+4. Attachments remain blocked until media upload/send is implemented.
+5. Tests cover successful send, protocol failure, invalid chat JID, composer/draft preservation, and local status update.
+
+## Next Implementation Slice
+
+After live validation of media download and plain text send:
+
+1. Add protocol-backed read receipts.
+2. Add reactions.
+3. Add typing presence if exposed cleanly.
+4. Add reply metadata and quote-jump behavior.
+5. Add attachment upload/send after text send remains stable.

@@ -124,28 +124,30 @@ type AudioProcess interface {
 }
 
 type Options struct {
-	Paths             config.Paths
-	Config            config.Config
-	PreviewReport     media.Report
-	Snapshot          store.Snapshot
-	ConnectionState   ConnectionState
-	LiveUpdates       <-chan LiveUpdate
-	BlockSending      bool
-	PersistMessage    func(chatID, body string, attachments []Attachment) (store.Message, error)
-	LoadMessages      func(chatID string, limit int) ([]store.Message, error)
-	LoadOlderMessages func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	RequestHistory    func(chatID string) error
-	ReloadSnapshot    func(activeChatID string, limit int) (store.Snapshot, error)
-	SaveDraft         func(chatID, body string) error
-	SearchChats       func(query string) ([]store.Chat, error)
-	SearchMessages    func(chatID, query string, limit int) ([]store.Message, error)
-	CopyToClipboard   func(text string) error
-	PickAttachment    func() tea.Cmd
-	OpenMedia         func(media store.MediaMetadata) tea.Cmd
-	StartAudio        func(media store.MediaMetadata) (AudioProcess, error)
-	DeleteMessage     func(messageID string) error
-	SaveMedia         func(media store.MediaMetadata) error
-	DownloadMedia     func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	Paths                config.Paths
+	Config               config.Config
+	PreviewReport        media.Report
+	Snapshot             store.Snapshot
+	ConnectionState      ConnectionState
+	LiveUpdates          <-chan LiveUpdate
+	BlockSending         bool
+	BlockAttachments     bool
+	RequireOnlineForSend bool
+	PersistMessage       func(chatID, body string, attachments []Attachment) (store.Message, error)
+	LoadMessages         func(chatID string, limit int) ([]store.Message, error)
+	LoadOlderMessages    func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	RequestHistory       func(chatID string) error
+	ReloadSnapshot       func(activeChatID string, limit int) (store.Snapshot, error)
+	SaveDraft            func(chatID, body string) error
+	SearchChats          func(query string) ([]store.Chat, error)
+	SearchMessages       func(chatID, query string, limit int) ([]store.Message, error)
+	CopyToClipboard      func(text string) error
+	PickAttachment       func() tea.Cmd
+	OpenMedia            func(media store.MediaMetadata) tea.Cmd
+	StartAudio           func(media store.MediaMetadata) (AudioProcess, error)
+	DeleteMessage        func(messageID string) error
+	SaveMedia            func(media store.MediaMetadata) error
+	DownloadMedia        func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 }
 
 type Model struct {
@@ -225,6 +227,8 @@ type Model struct {
 	refreshQueued          bool
 	refreshDebouncePending bool
 	blockSending           bool
+	blockAttachments       bool
+	requireOnlineForSend   bool
 	messageLimitsByChat    map[string]int
 	historyRequestedByChat map[string]bool
 }
@@ -290,6 +294,8 @@ func NewModel(opts Options) Model {
 		downloadMedia:          opts.DownloadMedia,
 		liveUpdates:            opts.LiveUpdates,
 		blockSending:           opts.BlockSending,
+		blockAttachments:       opts.BlockAttachments,
+		requireOnlineForSend:   opts.RequireOnlineForSend,
 		unfilteredByChat:       map[string][]store.Message{},
 		messageLimitsByChat:    map[string]int{},
 		historyRequestedByChat: map[string]bool{},
@@ -793,6 +799,22 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ModeNormal
 			return m, nil
 		}
+		if len(m.attachments) > 0 && m.blockAttachments {
+			if err := m.setDraft(chatID, m.composer); err != nil {
+				m.status = fmt.Sprintf("save draft failed: %v", err)
+				return m, nil
+			}
+			m.status = "attachment send is not implemented yet"
+			return m, nil
+		}
+		if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
+			if err := m.setDraft(chatID, m.composer); err != nil {
+				m.status = fmt.Sprintf("save draft failed: %v", err)
+				return m, nil
+			}
+			m.status = "sending needs WhatsApp online"
+			return m, nil
+		}
 		if m.blockSending {
 			if err := m.setDraft(chatID, m.composer); err != nil {
 				m.status = fmt.Sprintf("save draft failed: %v", err)
@@ -814,6 +836,10 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.persistMessage != nil {
 			persisted, err := m.persistMessage(chatID, body, slices.Clone(m.attachments))
 			if err != nil {
+				if draftErr := m.setDraft(chatID, m.composer); draftErr != nil {
+					m.status = fmt.Sprintf("send failed: %v; save draft failed: %v", err, draftErr)
+					return m, nil
+				}
 				m.status = fmt.Sprintf("send failed: %v", err)
 				return m, nil
 			}
@@ -1449,6 +1475,11 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 	}
 	if strings.TrimSpace(m.lastSearch) != "" {
 		m.rebuildSearchMatches()
+	}
+	if m.mode == ModeInsert && m.composer == "" {
+		if draft := m.draftsByChat[m.currentChat().ID]; strings.TrimSpace(draft) != "" {
+			m.composer = draft
+		}
 	}
 	return nil
 }

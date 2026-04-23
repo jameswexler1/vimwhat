@@ -167,6 +167,169 @@ func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestLiveAttachmentSendBlockedAndPreservesDraftAndAttachment(t *testing.T) {
+	var persisted bool
+	var savedChatID string
+	var savedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState:  ConnectionOnline,
+		BlockAttachments: true,
+		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+			persisted = true
+			return store.Message{}, nil
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "caption"
+	model.attachments = []Attachment{{LocalPath: "/tmp/photo.jpg", FileName: "photo.jpg"}}
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if persisted {
+		t.Fatal("PersistMessage was called for blocked live attachment send")
+	}
+	if savedChatID != "chat-1" || savedBody != "caption" {
+		t.Fatalf("saved draft = (%q, %q), want caption", savedChatID, savedBody)
+	}
+	if got.composer != "caption" || len(got.attachments) != 1 {
+		t.Fatalf("composer/attachments = %q/%+v, want preserved", got.composer, got.attachments)
+	}
+	if !strings.Contains(got.status, "attachment send is not implemented") {
+		t.Fatalf("status = %q, want attachment send blocked", got.status)
+	}
+}
+
+func TestRequireOnlineForSendPreservesDraft(t *testing.T) {
+	var persisted bool
+	var savedChatID string
+	var savedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState:      ConnectionConnecting,
+		RequireOnlineForSend: true,
+		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+			persisted = true
+			return store.Message{}, nil
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "wait for online"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if persisted {
+		t.Fatal("PersistMessage was called while WhatsApp was offline")
+	}
+	if savedChatID != "chat-1" || savedBody != "wait for online" {
+		t.Fatalf("saved draft = (%q, %q), want offline draft", savedChatID, savedBody)
+	}
+	if got.composer != "wait for online" || len(got.messagesByChat["chat-1"]) != 0 {
+		t.Fatalf("composer/messages = %q/%d, want preserved composer and no message", got.composer, len(got.messagesByChat["chat-1"]))
+	}
+	if !strings.Contains(got.status, "online") {
+		t.Fatalf("status = %q, want online requirement", got.status)
+	}
+}
+
+func TestPersistSendErrorSavesDraft(t *testing.T) {
+	var savedChatID string
+	var savedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+			return store.Message{}, fmt.Errorf("boom")
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "do not drop me"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if savedChatID != "chat-1" || savedBody != "do not drop me" {
+		t.Fatalf("saved draft = (%q, %q), want failed body", savedChatID, savedBody)
+	}
+	if got.composer != "do not drop me" || len(got.messagesByChat["chat-1"]) != 0 {
+		t.Fatalf("composer/messages = %q/%d, want preserved composer and no message", got.composer, len(got.messagesByChat["chat-1"]))
+	}
+	if !strings.Contains(got.status, "send failed") {
+		t.Fatalf("status = %q, want send failed", got.status)
+	}
+}
+
+func TestSnapshotReloadRestoresFailedSendDraftWhenComposerEmpty(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+
+	if err := model.applySnapshot(store.Snapshot{
+		Chats:          []store.Chat{{ID: "chat-1", Title: "Alice", HasDraft: true}},
+		MessagesByChat: map[string][]store.Message{"chat-1": nil},
+		DraftsByChat:   map[string]string{"chat-1": "retry me"},
+		ActiveChatID:   "chat-1",
+	}, "chat-1", ""); err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if model.composer != "retry me" {
+		t.Fatalf("composer = %q, want restored failed send draft", model.composer)
+	}
+
+	model.composer = "new text"
+	if err := model.applySnapshot(store.Snapshot{
+		Chats:          []store.Chat{{ID: "chat-1", Title: "Alice", HasDraft: true}},
+		MessagesByChat: map[string][]store.Message{"chat-1": nil},
+		DraftsByChat:   map[string]string{"chat-1": "old failed text"},
+		ActiveChatID:   "chat-1",
+	}, "chat-1", ""); err != nil {
+		t.Fatalf("applySnapshot(second) error = %v", err)
+	}
+	if model.composer != "new text" {
+		t.Fatalf("composer = %q, want newly typed text preserved", model.composer)
+	}
+}
+
+func TestFailedMessageStatusUsesFailureMarker(t *testing.T) {
+	if got := messageStatusTicks("failed"); got != "!" {
+		t.Fatalf("messageStatusTicks(failed) = %q, want !", got)
+	}
+}
+
 func TestLiveUpdateRefreshesSnapshotAndStatusLine(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

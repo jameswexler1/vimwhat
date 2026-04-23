@@ -64,3 +64,7 @@ Pull requests should include:
 Do not commit WhatsApp session data, SQLite databases, logs, or media caches. Keep runtime state under XDG paths, not in the repo. Treat preview backend commands and external opener configuration as untrusted input surfaces.
 
 The live WhatsApp session DB path already exists in app wiring as a runtime artifact even though login/sync is not implemented yet; it must remain out of git.
+
+## Updating plan
+
+After completing changes, check if that checks out with some landmark in PLAN.md and update the PLAN.md according to the current state of the project.

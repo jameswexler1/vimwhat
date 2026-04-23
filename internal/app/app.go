@@ -123,6 +123,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	initialConnection, liveEnabled := initialLiveConnectionState(env, context.Background())
 	liveUpdates := make(chan ui.LiveUpdate, 64)
 	historyRequests := make(chan string, 16)
+	textSendRequests := make(chan textSendRequest, textSendQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
@@ -132,7 +133,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, mediaDownloadRequests)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaDownloadRequests)
 		}()
 	}
 	defer func() {
@@ -142,14 +143,44 @@ func runTUI(env Environment, stderr io.Writer) int {
 	}()
 
 	opts := ui.Options{
-		Paths:           env.Paths,
-		Config:          env.Config,
-		PreviewReport:   env.PreviewReport,
-		Snapshot:        snapshot,
-		ConnectionState: initialConnection,
-		LiveUpdates:     liveUpdateSource,
-		BlockSending:    liveEnabled,
+		Paths:                env.Paths,
+		Config:               env.Config,
+		PreviewReport:        env.PreviewReport,
+		Snapshot:             snapshot,
+		ConnectionState:      initialConnection,
+		LiveUpdates:          liveUpdateSource,
+		BlockAttachments:     liveEnabled,
+		RequireOnlineForSend: liveEnabled,
 		PersistMessage: func(chatID, body string, attachments []ui.Attachment) (store.Message, error) {
+			if liveEnabled {
+				if len(attachments) > 0 {
+					return store.Message{}, fmt.Errorf("attachment send is not implemented yet")
+				}
+				waitCtx, cancel := context.WithTimeout(context.Background(), textSendQueueTimeout)
+				defer cancel()
+				result := make(chan textSendQueuedResult, 1)
+				request := textSendRequest{
+					Context: waitCtx,
+					ChatID:  chatID,
+					Body:    body,
+					Result:  result,
+				}
+				select {
+				case textSendRequests <- request:
+				case <-waitCtx.Done():
+					return store.Message{}, fmt.Errorf("text send queue timed out")
+				default:
+					return store.Message{}, fmt.Errorf("text send request queue is full")
+				}
+
+				select {
+				case queued := <-result:
+					return queued.Message, queued.Err
+				case <-waitCtx.Done():
+					return store.Message{}, fmt.Errorf("text send queue timed out")
+				}
+			}
+
 			message := pendingOutgoingMessage(chatID, body, attachments)
 			if err := env.Store.AddMessageWithMedia(context.Background(), message, message.Media); err != nil {
 				return store.Message{}, err
@@ -261,10 +292,25 @@ const (
 	historyPageSize        = 50
 	historyRequestTimeout  = 30 * time.Second
 	metadataRefreshTimeout = 30 * time.Second
+	textSendQueueSize      = 16
+	textSendQueueTimeout   = 5 * time.Second
+	textSendTimeout        = 90 * time.Second
 	mediaDownloadWorkers   = 2
 	mediaDownloadQueueSize = 16
 	mediaDownloadTimeout   = 5 * time.Minute
 )
+
+type textSendRequest struct {
+	Context context.Context
+	ChatID  string
+	Body    string
+	Result  chan<- textSendQueuedResult
+}
+
+type textSendQueuedResult struct {
+	Message store.Message
+	Err     error
+}
 
 type mediaDownloadRequest struct {
 	Message store.Message
@@ -277,7 +323,14 @@ type mediaDownloadResult struct {
 	Err   error
 }
 
-func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.LiveUpdate, historyRequests <-chan string, mediaDownloadRequests <-chan mediaDownloadRequest) {
+func runLiveWhatsApp(
+	ctx context.Context,
+	env Environment,
+	updates chan<- ui.LiveUpdate,
+	historyRequests <-chan string,
+	textSendRequests <-chan textSendRequest,
+	mediaDownloadRequests <-chan mediaDownloadRequest,
+) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
 
 	session, err := openWhatsAppSession(ctx, env)
@@ -325,6 +378,9 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 		return
 	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
+
+	var textSendWG sync.WaitGroup
+	defer textSendWG.Wait()
 
 	downloadJobs := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var downloadWG sync.WaitGroup
@@ -384,6 +440,11 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				return
 			}
 			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
+		case request, ok := <-textSendRequests:
+			if !ok {
+				return
+			}
+			handleTextSendRequest(ctx, env.Store, live, updates, &textSendWG, online, request)
 		case result, ok := <-metadataResults:
 			if ok {
 				ingested := 0
@@ -438,6 +499,129 @@ func refreshChatMetadata(ctx context.Context, live WhatsAppLiveSession) <-chan m
 		}
 	}()
 	return results
+}
+
+func handleTextSendRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request textSendRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if request.Context != nil {
+		select {
+		case <-request.Context.Done():
+			return
+		default:
+		}
+	}
+	if db == nil {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("text send needs WhatsApp online"))
+		return
+	}
+
+	body := strings.TrimSpace(request.Body)
+	if body == "" {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("text body is required"))
+		return
+	}
+	chatJID, err := whatsapp.NormalizeSendChatJID(request.ChatID)
+	if err != nil {
+		sendTextQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	remoteID := strings.TrimSpace(live.GenerateMessageID())
+	if remoteID == "" {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("generate message id failed"))
+		return
+	}
+
+	now := time.Now()
+	message := store.Message{
+		ID:         whatsapp.LocalMessageID(chatJID, remoteID),
+		RemoteID:   remoteID,
+		ChatID:     chatJID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       body,
+		Timestamp:  now,
+		IsOutgoing: true,
+		Status:     "sending",
+	}
+	if message.ID == "" {
+		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("message id is required"))
+		return
+	}
+	if err := db.AddMessage(ctx, message); err != nil {
+		sendTextQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+
+	sendTextQueuedResult(ctx, request, message, nil)
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeQueuedTextSend(ctx, db, live, updates, message, body)
+		}()
+		return
+	}
+	completeQueuedTextSend(ctx, db, live, updates, message, body)
+}
+
+func sendTextQueuedResult(ctx context.Context, request textSendRequest, message store.Message, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- textSendQueuedResult{Message: message, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, body string) {
+	sendCtx, cancel := context.WithTimeout(ctx, textSendTimeout)
+	defer cancel()
+	result, err := live.SendText(sendCtx, message.ChatJID, body, message.RemoteID)
+	if err != nil {
+		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		_ = db.SaveDraft(context.Background(), message.ChatID, body)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("send failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "sent"
+	}
+	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  "sent message",
+	})
 }
 
 func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {

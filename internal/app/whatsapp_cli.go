@@ -21,6 +21,8 @@ type WhatsAppSession interface {
 type WhatsAppLiveSession interface {
 	WhatsAppSession
 	Connect(context.Context) error
+	GenerateMessageID() string
+	SendText(context.Context, string, string, string) (whatsapp.SendResult, error)
 	SubscribeEvents(context.Context) (<-chan whatsapp.Event, error)
 	RequestHistoryBefore(context.Context, whatsapp.HistoryAnchor, int) error
 	DownloadMedia(context.Context, whatsapp.MediaDownloadDescriptor, string) error

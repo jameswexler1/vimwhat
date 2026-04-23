@@ -60,8 +60,11 @@ type fakeLiveWhatsAppSession struct {
 	events          chan whatsapp.Event
 	historyRequests chan fakeHistoryRequest
 	downloads       chan fakeDownloadRequest
+	sends           chan fakeSendRequest
 	historyErr      error
 	downloadErr     error
+	sendErr         error
+	generatedID     string
 	connectErr      error
 	subscribeErr    error
 	connectCalled   bool
@@ -76,6 +79,12 @@ type fakeHistoryRequest struct {
 type fakeDownloadRequest struct {
 	descriptor whatsapp.MediaDownloadDescriptor
 	targetPath string
+}
+
+type fakeSendRequest struct {
+	chatJID  string
+	body     string
+	remoteID string
 }
 
 type fakeMetadataLiveWhatsAppSession struct {
@@ -102,6 +111,31 @@ func (s *fakeLiveWhatsAppSession) RequestHistoryBefore(_ context.Context, anchor
 		s.historyRequests <- fakeHistoryRequest{anchor: anchor, limit: limit}
 	}
 	return s.historyErr
+}
+
+func (s *fakeLiveWhatsAppSession) GenerateMessageID() string {
+	if s.generatedID != "" {
+		return s.generatedID
+	}
+	return "remote-generated"
+}
+
+func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, chatJID, body, remoteID string) (whatsapp.SendResult, error) {
+	if s.sends != nil {
+		s.sends <- fakeSendRequest{chatJID: chatJID, body: body, remoteID: remoteID}
+	}
+	if s.sendErr != nil {
+		return whatsapp.SendResult{}, s.sendErr
+	}
+	if remoteID == "" {
+		remoteID = s.GenerateMessageID()
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(chatJID, remoteID),
+		RemoteID:  remoteID,
+		Status:    "sent",
+		Timestamp: time.Now(),
+	}, nil
 }
 
 func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor whatsapp.MediaDownloadDescriptor, targetPath string) error {
@@ -178,7 +212,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -278,7 +312,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -392,6 +426,129 @@ func TestHandleHistoryRequestIgnoresLegacyTrueCursor(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("legacy true cursor blocked history request")
+	}
+}
+
+func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "remote-1",
+		sends:       make(chan fakeSendRequest, 1),
+	}
+	result := make(chan textSendQueuedResult, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleTextSendRequest(ctx, db, session, updates, nil, true, textSendRequest{
+		ChatID: chatJID,
+		Body:   "hello live",
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued send error = %v", queued.Err)
+	}
+	if queued.Message.ID != whatsapp.LocalMessageID(chatJID, "remote-1") ||
+		queued.Message.RemoteID != "remote-1" ||
+		queued.Message.Status != "sending" {
+		t.Fatalf("queued message = %+v, want generated remote id and sending status", queued.Message)
+	}
+
+	request := <-session.sends
+	if request.chatJID != chatJID || request.body != "hello live" || request.remoteID != "remote-1" {
+		t.Fatalf("send request = %+v, want jid/body/remote id", request)
+	}
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if len(messages) != 1 || messages[0].ID != queued.Message.ID || messages[0].Status != "sent" {
+		t.Fatalf("stored messages = %+v, want one sent queued message", messages)
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "sent")
+	})
+}
+
+func TestHandleTextSendRequestFailureMarksFailedAndRestoresDraft(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "remote-1",
+		sendErr:     errors.New("boom"),
+	}
+	result := make(chan textSendQueuedResult, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleTextSendRequest(ctx, db, session, updates, nil, true, textSendRequest{
+		ChatID: chatJID,
+		Body:   "retry me",
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued send error = %v", queued.Err)
+	}
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if messages[0].Status != "failed" {
+		t.Fatalf("stored message status = %q, want failed", messages[0].Status)
+	}
+	draft, err := db.Draft(ctx, chatJID)
+	if err != nil {
+		t.Fatalf("Draft() error = %v", err)
+	}
+	if draft != "retry me" {
+		t.Fatalf("draft = %q, want failed body restored", draft)
+	}
+	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "send failed")
+	})
+	if !strings.Contains(update.Status, "boom") {
+		t.Fatalf("failure status = %q, want protocol error", update.Status)
+	}
+}
+
+func TestHandleTextSendRequestRejectsInvalidChatJID(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	result := make(chan textSendQueuedResult, 1)
+	handleTextSendRequest(ctx, db, &fakeLiveWhatsAppSession{}, make(chan ui.LiveUpdate, 1), nil, true, textSendRequest{
+		ChatID: "chat-1",
+		Body:   "hello",
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err == nil || !strings.Contains(queued.Err.Error(), "unsupported send chat jid") {
+		t.Fatalf("queued error = %v, want unsupported chat jid", queued.Err)
 	}
 }
 
