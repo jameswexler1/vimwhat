@@ -620,6 +620,8 @@ func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 			return nil, nil
 		},
 	})
+	model.width = 100
+	model.height = 20
 	model.focus = FocusMessages
 	model.mode = ModeSearch
 	model.searchLine = "needle"
@@ -638,6 +640,10 @@ func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	}
 	if got.activeSearch != "needle" || len(got.searchMatches) != 1 {
 		t.Fatalf("search state = active %q matches %v, want needle and one match", got.activeSearch, got.searchMatches)
+	}
+	status := stripANSI(got.renderStatus())
+	if !strings.Contains(status, "/needle 1/1") {
+		t.Fatalf("status missing search count after search: %q", status)
 	}
 }
 
@@ -918,6 +924,8 @@ func TestClearSearchOnlyClearsSearchState(t *testing.T) {
 			return []store.Message{{ID: "m-1", ChatID: chatID, Sender: "Alice", Body: "normal"}}, nil
 		},
 	})
+	model.width = 100
+	model.height = 20
 	model.focus = FocusMessages
 	model.mode = ModeSearch
 	model.searchLine = "needle"
@@ -956,6 +964,8 @@ func TestSearchNextAndPreviousNavigateMatchesWithoutFiltering(t *testing.T) {
 			ActiveChatID: "chat-1",
 		},
 	})
+	model.width = 100
+	model.height = 20
 	model.focus = FocusMessages
 	model.mode = ModeSearch
 	model.searchLine = "needle"
@@ -965,11 +975,17 @@ func TestSearchNextAndPreviousNavigateMatchesWithoutFiltering(t *testing.T) {
 	if got.messageCursor != 0 {
 		t.Fatalf("first search cursor = %d, want 0", got.messageCursor)
 	}
+	if status := stripANSI(got.renderStatus()); !strings.Contains(status, "/needle 1/2") {
+		t.Fatalf("status after first search = %q, want /needle 1/2", status)
+	}
 
 	next, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	got = next.(Model)
 	if got.messageCursor != 2 {
 		t.Fatalf("n cursor = %d, want 2", got.messageCursor)
+	}
+	if status := stripANSI(got.renderStatus()); !strings.Contains(status, "/needle 2/2") {
+		t.Fatalf("status after n = %q, want /needle 2/2", status)
 	}
 
 	prev, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("N")})
@@ -977,8 +993,38 @@ func TestSearchNextAndPreviousNavigateMatchesWithoutFiltering(t *testing.T) {
 	if got.messageCursor != 0 {
 		t.Fatalf("N cursor = %d, want 0", got.messageCursor)
 	}
+	if status := stripANSI(got.renderStatus()); !strings.Contains(status, "/needle 1/2") {
+		t.Fatalf("status after N = %q, want /needle 1/2", status)
+	}
 	if len(got.messagesByChat["chat-1"]) != 3 {
 		t.Fatalf("search navigation filtered messages: %+v", got.messagesByChat["chat-1"])
+	}
+}
+
+func TestSearchStatusShowsZeroMatches(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "plain"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	got := searched.(Model)
+	if got.activeSearch != "needle" || len(got.searchMatches) != 0 {
+		t.Fatalf("search state = active %q matches %v, want needle and zero matches", got.activeSearch, got.searchMatches)
+	}
+	if status := stripANSI(got.renderStatus()); !strings.Contains(status, "/needle 0/0") {
+		t.Fatalf("status = %q, want /needle 0/0", status)
 	}
 }
 
@@ -1859,14 +1905,14 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 		t.Fatalf("status missing mode/focus: %q", status)
 	}
 	prompt := stripANSI(model.renderInput())
-	if !strings.Contains(prompt, "[COMMAND]") || !strings.Contains(prompt, ":help") || !strings.Contains(prompt, "enter run") {
+	if strings.Contains(prompt, "[COMMAND]") || !strings.Contains(prompt, ":help") || !strings.Contains(prompt, "enter run") {
 		t.Fatalf("command prompt missing workflow: %q", prompt)
 	}
 
 	model.mode = ModeSearch
 	model.searchLine = "needle"
 	prompt = stripANSI(model.renderInput())
-	if !strings.Contains(prompt, "[SEARCH]") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
+	if strings.Contains(prompt, "[SEARCH]") || !strings.Contains(prompt, "/needle") || !strings.Contains(prompt, "empty clears") {
 		t.Fatalf("search prompt missing workflow: %q", prompt)
 	}
 
@@ -1878,6 +1924,34 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	}
 	if modeStatusColor(ModeInsert) != uiTheme.InsertModeBG {
 		t.Fatalf("insert mode status color = %q, want %q", modeStatusColor(ModeInsert), uiTheme.InsertModeBG)
+	}
+}
+
+func TestModeTransitionsDoNotWriteRedundantModeStatus(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "hello"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+	model.status = "ready"
+
+	for _, key := range []string{"i", "v", ":", "/"} {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		got := updated.(Model)
+		status := stripANSI(got.renderStatus())
+		for _, redundant := range []string{"normal mode", "insert mode", "visual mode", "command mode", "search mode"} {
+			if strings.Contains(strings.ToLower(status), redundant) {
+				t.Fatalf("status for key %q contains redundant mode text %q: %q", key, redundant, status)
+			}
+		}
 	}
 }
 

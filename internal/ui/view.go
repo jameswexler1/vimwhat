@@ -1506,7 +1506,7 @@ func (m Model) renderStatus() string {
 
 	search := ""
 	if m.activeSearch != "" {
-		search = " /" + truncateDisplay(m.sanitizeDisplayLine(m.activeSearch), 16)
+		search = " " + m.searchStatusSegment(16)
 	}
 	messageFilter := ""
 	if m.messageFilter != "" {
@@ -1537,6 +1537,37 @@ func (m Model) renderStatus() string {
 	}
 	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, m.width-used)))
 	return left + center + spacer + right
+}
+
+func (m Model) searchStatusSegment(queryWidth int) string {
+	query := m.sanitizeDisplayLine(m.activeSearch)
+	if query == "" {
+		return ""
+	}
+	total := len(m.searchMatches)
+	if total == 0 {
+		return "/" + truncateDisplay(query, queryWidth) + " 0/0"
+	}
+	current := m.searchIndex
+	if current < 0 || current >= total {
+		target := -1
+		switch m.lastSearchFocus {
+		case FocusChats:
+			target = m.activeChat
+		case FocusMessages, FocusPreview:
+			target = m.messageCursor
+		}
+		for i, match := range m.searchMatches {
+			if match == target {
+				current = i
+				break
+			}
+		}
+	}
+	if current < 0 || current >= total {
+		current = 0
+	}
+	return fmt.Sprintf("/%s %d/%d", truncateDisplay(query, queryWidth), current+1, total)
 }
 
 func (m Model) renderConnectionStatus() string {
@@ -1586,20 +1617,19 @@ func modeStatusColor(mode Mode) lipgloss.Color {
 func (m Model) renderInput() string {
 	switch m.mode {
 	case ModeCommand:
-		return m.renderPrompt("COMMAND", ":"+m.commandLine, "enter run  esc cancel")
+		return m.renderPrompt(":"+m.commandLine, "enter run  esc cancel")
 	case ModeSearch:
-		return m.renderPrompt("SEARCH", "/"+m.searchLine, "enter search  esc cancel  empty clears")
+		return m.renderPrompt("/"+m.searchLine, "enter search  esc cancel  empty clears")
 	default:
 		return ""
 	}
 }
 
-func (m Model) renderPrompt(label, content, hint string) string {
+func (m Model) renderPrompt(content, hint string) string {
 	if hint != "" {
 		content = content + "  " + hint
 	}
-	prefix := "[" + label + "] "
-	content = truncateDisplay(prefix+m.sanitizeDisplayText(content, false), max(1, m.width-1))
+	content = truncateDisplay(m.sanitizeDisplayText(content, false), max(1, m.width-1))
 	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)

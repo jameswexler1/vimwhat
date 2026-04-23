@@ -596,7 +596,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeInsert
 		m.focus = FocusMessages
 		m.composer = m.draftsByChat[m.currentChat().ID]
-		m.status = "insert mode"
 	case "v":
 		if len(m.currentMessages()) == 0 {
 			m.status = "no messages to select"
@@ -605,15 +604,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeVisual
 		m.focus = FocusMessages
 		m.visualAnchor = m.messageCursor
-		m.status = "visual mode"
 	case ":":
 		m.mode = ModeCommand
 		m.commandLine = ""
-		m.status = "command mode"
 	case "/":
 		m.mode = ModeSearch
 		m.searchLine = ""
-		m.status = "search mode"
 	case "tab":
 		m.cycleFocus(1)
 	case "shift+tab":
@@ -761,7 +757,6 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mode = ModeNormal
-		m.status = "normal mode"
 	case tea.KeyEnter:
 		body := strings.TrimSpace(m.composer)
 		if body == "" && len(m.attachments) == 0 {
@@ -835,7 +830,6 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.mode = ModeNormal
 		m.commandLine = ""
-		m.status = "normal mode"
 	case tea.KeyEnter:
 		cmd := strings.TrimSpace(m.commandLine)
 		m.commandLine = ""
@@ -860,7 +854,6 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.mode = ModeNormal
 		m.searchLine = ""
-		m.status = "normal mode"
 	case tea.KeyEnter:
 		m.lastSearch = m.searchLine
 		m.lastSearchFocus = m.focus
@@ -876,9 +869,6 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuildSearchMatches()
 		m.advanceSearch(1)
 		m.mode = ModeNormal
-		if len(m.searchMatches) > 0 {
-			m.status = fmt.Sprintf("search: %s", m.lastSearch)
-		}
 	case tea.KeyBackspace, tea.KeyCtrlH:
 		m.searchLine = trimLastCluster(m.searchLine)
 	default:
@@ -894,7 +884,6 @@ func (m Model) updateVisual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
 		m.mode = ModeNormal
-		m.status = "normal mode"
 	case tea.KeyRunes:
 		switch msg.String() {
 		case "j":
