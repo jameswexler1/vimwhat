@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/rivo/uniseg"
 
+	"vimwhat/internal/config"
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
 )
@@ -146,8 +148,11 @@ func wrapPlainText(text string, width int) string {
 
 		line := ""
 		for _, word := range words {
-			for lipgloss.Width(word) > width {
+			for displayWidth(word) > width {
 				prefix, rest := splitDisplayWidth(word, width)
+				if prefix == "" {
+					break
+				}
 				if line != "" {
 					out = append(out, line)
 					line = ""
@@ -160,7 +165,7 @@ func wrapPlainText(text string, width int) string {
 				line = word
 				continue
 			}
-			if lipgloss.Width(line)+1+lipgloss.Width(word) <= width {
+			if displayWidth(line)+1+displayWidth(word) <= width {
 				line += " " + word
 				continue
 			}
@@ -182,20 +187,24 @@ func splitDisplayWidth(value string, width int) (string, string) {
 
 	current := 0
 	cut := 0
-	for i, r := range value {
-		runeWidth := lipgloss.Width(string(r))
-		if current > 0 && current+runeWidth > width {
+	graphemes := uniseg.NewGraphemes(value)
+	for graphemes.Next() {
+		cluster := graphemes.Str()
+		clusterWidth := displayWidth(cluster)
+		if cut > 0 && current+clusterWidth > width {
 			break
 		}
-		current += runeWidth
-		cut = i + len(string(r))
+		current += clusterWidth
+		cut += len(cluster)
 		if current >= width {
 			break
 		}
 	}
 	if cut == 0 {
-		_, size := utf8.DecodeRuneInString(value)
-		cut = size
+		graphemes := uniseg.NewGraphemes(value)
+		if graphemes.Next() {
+			cut = len(graphemes.Str())
+		}
 	}
 
 	return value[:cut], value[cut:]
@@ -412,8 +421,12 @@ func messageBlockFullyVisible(blocks []messageBlock, scrollTop, selected, height
 	return false
 }
 
+func displayWidth(value string) int {
+	return ansi.StringWidth(value)
+}
+
 func alignDisplay(value string, width int, right bool) string {
-	current := lipgloss.Width(value)
+	current := displayWidth(value)
 	if current >= width {
 		return value
 	}
@@ -429,29 +442,53 @@ func padDisplay(value string, width int) string {
 }
 
 func truncateDisplay(value string, width int) string {
-	if lipgloss.Width(value) <= width {
+	if displayWidth(value) <= width {
 		return value
 	}
 	if width <= 1 {
 		return ""
 	}
-	head, _ := splitDisplayWidth(value, width-1)
-	return head + "~"
+	return ansi.Truncate(value, width, "~")
+}
+
+func (m Model) resolvedEmojiMode() string {
+	return config.ResolveEmojiMode(m.config.EmojiMode)
+}
+
+func (m Model) sanitizeDisplayLine(value string) string {
+	return sanitizeDisplayLineForMode(value, m.resolvedEmojiMode())
+}
+
+func (m Model) sanitizeDisplayBody(value string) string {
+	return sanitizeDisplayTextForMode(value, true, m.resolvedEmojiMode())
+}
+
+func (m Model) sanitizeDisplayText(value string, allowNewlines bool) string {
+	return sanitizeDisplayTextForMode(value, allowNewlines, m.resolvedEmojiMode())
 }
 
 func sanitizeDisplayLine(value string) string {
-	value = sanitizeDisplayText(value, false)
+	return sanitizeDisplayLineForMode(value, config.ResolveEmojiMode(config.EmojiModeAuto))
+}
+
+func sanitizeDisplayLineForMode(value, emojiMode string) string {
+	value = sanitizeDisplayTextForMode(value, false, emojiMode)
 	return strings.Join(strings.Fields(value), " ")
 }
 
 func sanitizeDisplayBody(value string) string {
-	return sanitizeDisplayText(value, true)
+	return sanitizeDisplayTextForMode(value, true, config.ResolveEmojiMode(config.EmojiModeAuto))
 }
 
 func sanitizeDisplayText(value string, allowNewlines bool) string {
+	return sanitizeDisplayTextForMode(value, allowNewlines, config.ResolveEmojiMode(config.EmojiModeAuto))
+}
+
+func sanitizeDisplayTextForMode(value string, allowNewlines bool, emojiMode string) string {
 	if value == "" {
 		return ""
 	}
+	compatEmoji := config.ResolveEmojiMode(emojiMode) == config.EmojiModeCompat
 	var out strings.Builder
 	out.Grow(len(value))
 	for _, r := range value {
@@ -465,13 +502,28 @@ func sanitizeDisplayText(value string, allowNewlines bool) string {
 		case '\r', '\t':
 			out.WriteRune(' ')
 		default:
-			if unicode.IsControl(r) || terminalUnsafeZeroWidthRune(r) {
+			if unicode.IsControl(r) ||
+				(compatEmoji && terminalUnsafeZeroWidthRune(r)) ||
+				(!compatEmoji && terminalUnsafeFormatRune(r)) {
 				continue
 			}
 			out.WriteRune(r)
 		}
 	}
 	return out.String()
+}
+
+func terminalUnsafeFormatRune(r rune) bool {
+	if !unicode.Is(unicode.Cf, r) {
+		return false
+	}
+	if r == '\u200d' {
+		return false
+	}
+	if r >= 0xE0020 && r <= 0xE007F {
+		return false
+	}
+	return true
 }
 
 func terminalUnsafeZeroWidthRune(r rune) bool {
@@ -501,34 +553,46 @@ func splitSearchSegments(value, query string) []searchSegment {
 		return []searchSegment{{text: value}}
 	}
 
-	valueRunes := []rune(value)
-	queryRunes := []rune(query)
-	if len(queryRunes) == 0 || len(valueRunes) < len(queryRunes) {
+	valueClusters := graphemeClusters(value)
+	queryClusters := graphemeClusters(query)
+	if len(queryClusters) == 0 || len(valueClusters) < len(queryClusters) {
 		return []searchSegment{{text: value}}
 	}
 
 	var segments []searchSegment
 	start := 0
-	for i := 0; i <= len(valueRunes)-len(queryRunes); {
-		candidate := string(valueRunes[i : i+len(queryRunes)])
+	for i := 0; i <= len(valueClusters)-len(queryClusters); {
+		candidate := strings.Join(valueClusters[i:i+len(queryClusters)], "")
 		if strings.EqualFold(candidate, query) {
 			if start < i {
-				segments = append(segments, searchSegment{text: string(valueRunes[start:i])})
+				segments = append(segments, searchSegment{text: strings.Join(valueClusters[start:i], "")})
 			}
 			segments = append(segments, searchSegment{text: candidate, match: true})
-			i += len(queryRunes)
+			i += len(queryClusters)
 			start = i
 			continue
 		}
 		i++
 	}
-	if start < len(valueRunes) {
-		segments = append(segments, searchSegment{text: string(valueRunes[start:])})
+	if start < len(valueClusters) {
+		segments = append(segments, searchSegment{text: strings.Join(valueClusters[start:], "")})
 	}
 	if len(segments) == 0 {
 		return []searchSegment{{text: value}}
 	}
 	return segments
+}
+
+func graphemeClusters(value string) []string {
+	if value == "" {
+		return nil
+	}
+	graphemes := uniseg.NewGraphemes(value)
+	clusters := make([]string, 0, len(value))
+	for graphemes.Next() {
+		clusters = append(clusters, graphemes.Str())
+	}
+	return clusters
 }
 
 func containsSearchMatch(value, query string) bool {
@@ -571,7 +635,7 @@ func (m Model) renderChats(width, height int) string {
 		headerText += " unread"
 	}
 	if m.activeSearch != "" {
-		headerText += fmt.Sprintf(" /%s", truncateDisplay(sanitizeDisplayLine(m.activeSearch), max(4, width-8)))
+		headerText += fmt.Sprintf(" /%s", truncateDisplay(m.sanitizeDisplayLine(m.activeSearch), max(4, width-8)))
 	}
 	header := lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render(headerText)
 	lines = append(lines, header)
@@ -611,7 +675,7 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 		Padding(0, 1)
 	contentWidth := panelContentWidth(style, width)
 
-	title := sanitizeDisplayLine(chat.DisplayTitle())
+	title := m.sanitizeDisplayLine(chat.DisplayTitle())
 	if title == "" {
 		title = "unknown"
 	}
@@ -687,16 +751,16 @@ func chatInitials(title string) string {
 }
 
 func (m Model) chatPreview(chat store.Chat) string {
-	preview := strings.TrimSpace(sanitizeDisplayBody(chat.LastPreview))
+	preview := strings.TrimSpace(m.sanitizeDisplayBody(chat.LastPreview))
 	if chat.HasDraft {
-		if draft := strings.TrimSpace(sanitizeDisplayBody(m.draftsByChat[chat.ID])); draft != "" {
+		if draft := strings.TrimSpace(m.sanitizeDisplayBody(m.draftsByChat[chat.ID])); draft != "" {
 			preview = "draft: " + firstLine(draft)
 		}
 	}
 	if preview == "" {
 		return "no local messages"
 	}
-	return sanitizeDisplayLine(firstLine(preview))
+	return m.sanitizeDisplayLine(firstLine(preview))
 }
 
 func chatSuffix(chat store.Chat) string {
@@ -768,7 +832,7 @@ func adjustedChatScrollTop(scrollTop, active, total, visible int) int {
 
 func (m Model) renderMessages(width, height int) string {
 	chat := m.currentChat()
-	title := sanitizeDisplayLine(chat.DisplayTitle())
+	title := m.sanitizeDisplayLine(chat.DisplayTitle())
 	if title == "" {
 		title = "Messages"
 	}
@@ -899,15 +963,15 @@ func padLines(lines []string, height int) []string {
 }
 
 func (m Model) renderMessageHeader(title string, width int) string {
-	parts := []string{sanitizeDisplayLine(title)}
+	parts := []string{m.sanitizeDisplayLine(title)}
 	if m.unreadOnly {
 		parts = append(parts, "unread")
 	}
 	if m.activeSearch != "" {
-		parts = append(parts, "/"+sanitizeDisplayLine(m.activeSearch))
+		parts = append(parts, "/"+m.sanitizeDisplayLine(m.activeSearch))
 	}
 	if m.messageFilter != "" {
-		parts = append(parts, "filter:"+sanitizeDisplayLine(m.messageFilter))
+		parts = append(parts, "filter:"+m.sanitizeDisplayLine(m.messageFilter))
 	}
 	if count := len(m.currentMessages()); count > 0 {
 		parts = append(parts, fmt.Sprintf("%d msgs", count))
@@ -961,14 +1025,14 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 		metaFG = primaryFG
 	}
 
-	body := strings.TrimSpace(sanitizeDisplayBody(message.Body))
+	body := strings.TrimSpace(m.sanitizeDisplayBody(message.Body))
 	if body == "" && len(message.Media) == 0 {
 		body = "(empty)"
 	}
 	meta := messageBubbleMeta(message)
 	sender := ""
 	if shouldShowMessageSender(m.currentChat(), message) {
-		sender = sanitizeDisplayLine(message.Sender)
+		sender = m.sanitizeDisplayLine(message.Sender)
 		if sender == "" {
 			sender = "unknown"
 		}
@@ -996,7 +1060,7 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 			lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
 		} else {
 			state := m.mediaAttachmentState(message, item)
-			lines = append(lines, renderAttachmentLine(item, contentWidth, active || selected, state))
+			lines = append(lines, m.renderAttachmentLine(item, contentWidth, active || selected, state))
 		}
 	}
 	if body != "" {
@@ -1124,7 +1188,7 @@ func (m Model) bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body
 		}
 	}
 	for _, media := range message.Media {
-		label := attachmentLabel(media)
+		label := m.attachmentLabel(media)
 		if state := m.mediaAttachmentState(message, media); state != "" {
 			label += " - " + state
 		}
@@ -1211,8 +1275,8 @@ func (m Model) audioAttachmentState(message store.Message, item store.MediaMetad
 	return "enter play"
 }
 
-func renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
-	label := attachmentLabel(media)
+func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
+	label := m.attachmentLabel(media)
 	if state != "" {
 		label += " - " + state
 	}
@@ -1223,10 +1287,10 @@ func renderAttachmentLine(media store.MediaMetadata, width int, active bool, sta
 	return style.Render(truncateDisplay(label, width))
 }
 
-func attachmentLabel(media store.MediaMetadata) string {
-	name := strings.TrimSpace(sanitizeDisplayLine(media.FileName))
+func (m Model) attachmentLabel(media store.MediaMetadata) string {
+	name := strings.TrimSpace(m.sanitizeDisplayLine(media.FileName))
 	if name == "" {
-		name = strings.TrimSpace(sanitizeDisplayLine(media.LocalPath))
+		name = strings.TrimSpace(m.sanitizeDisplayLine(media.LocalPath))
 	}
 	if name == "" {
 		name = "attachment"
@@ -1234,7 +1298,7 @@ func attachmentLabel(media store.MediaMetadata) string {
 
 	kind := attachmentKind(media.MIMEType, name)
 	size := humanSize(media.SizeBytes)
-	state := strings.TrimSpace(sanitizeDisplayLine(media.DownloadState))
+	state := strings.TrimSpace(m.sanitizeDisplayLine(media.DownloadState))
 	var parts []string
 	parts = append(parts, kind, name)
 	if size != "" {
@@ -1335,7 +1399,7 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 	}
 
 	for i, line := range lines {
-		indent := max(0, width-lipgloss.Width(line)-3)
+		indent := max(0, width-displayWidth(line)-3)
 		lines[i] = truncateDisplay(strings.Repeat(" ", indent)+line, width)
 	}
 	return strings.Join(lines, "\n")
@@ -1343,7 +1407,7 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 
 func (m Model) renderInfo(width int) string {
 	chat := m.currentChat()
-	chatTitle := sanitizeDisplayLine(chat.DisplayTitle())
+	chatTitle := m.sanitizeDisplayLine(chat.DisplayTitle())
 	if chatTitle == "" {
 		chatTitle = "none"
 	}
@@ -1351,11 +1415,11 @@ func (m Model) renderInfo(width int) string {
 	var mediaLines []string
 	if messages := m.currentMessages(); len(messages) > 0 {
 		focused := messages[clamp(m.messageCursor, 0, len(messages)-1)]
-		message = sanitizeDisplayBody(focused.Body)
+		message = m.sanitizeDisplayBody(focused.Body)
 		if item, ok := firstMessageMedia(focused); ok {
 			mediaLines = append(mediaLines,
 				"media:",
-				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("file: %s", mediaDisplayName(item))),
+				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("file: %s", m.mediaDisplayName(item))),
 				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("mime: %s", emptyLabel(item.MIMEType))),
 				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("state: %s", emptyLabel(item.DownloadState))),
 			)
@@ -1363,10 +1427,10 @@ func (m Model) renderInfo(width int) string {
 				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("preview: %s", state)))
 			}
 			if item.LocalPath != "" {
-				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("local: %s", item.LocalPath)))
+				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("local: %s", m.sanitizeDisplayLine(item.LocalPath))))
 			}
 			if item.ThumbnailPath != "" {
-				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("thumb: %s", item.ThumbnailPath)))
+				mediaLines = append(mediaLines, lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("thumb: %s", m.sanitizeDisplayLine(item.ThumbnailPath))))
 			}
 			if request, ok := m.previewRequestForMedia(focused, item, 0, 0); ok {
 				if preview, ok := m.previewCache[media.PreviewKey(request)]; ok {
@@ -1428,7 +1492,7 @@ func (m Model) renderStatus() string {
 	focus := strings.ToUpper(string(m.focus))
 	chatTitle := "no chat"
 	if chat := m.currentChat(); chat.DisplayTitle() != "" {
-		chatTitle = sanitizeDisplayLine(chat.DisplayTitle())
+		chatTitle = m.sanitizeDisplayLine(chat.DisplayTitle())
 	}
 	left := strings.Join([]string{
 		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
@@ -1439,13 +1503,13 @@ func (m Model) renderStatus() string {
 
 	search := ""
 	if m.activeSearch != "" {
-		search = " /" + truncateDisplay(sanitizeDisplayLine(m.activeSearch), 16)
+		search = " /" + truncateDisplay(m.sanitizeDisplayLine(m.activeSearch), 16)
 	}
 	messageFilter := ""
 	if m.messageFilter != "" {
-		messageFilter = " filter:" + truncateDisplay(sanitizeDisplayLine(m.messageFilter), 16)
+		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
-	center := " " + truncateDisplay(sanitizeDisplayLine(m.status), max(8, m.width/3)) + " "
+	center := " " + truncateDisplay(m.sanitizeDisplayLine(m.status), max(8, m.width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -1466,7 +1530,7 @@ func (m Model) renderStatus() string {
 		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
 	}
 	if used > m.width {
-		return truncateDisplay(" "+mode+" "+focus+" "+m.status+" "+rightText+rightCount, m.width)
+		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount, m.width)
 	}
 	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, m.width-used)))
 	return left + center + spacer + right
@@ -1532,7 +1596,7 @@ func (m Model) renderPrompt(label, content, hint string) string {
 		content = content + "  " + hint
 	}
 	prefix := "[" + label + "] "
-	content = truncateDisplay(prefix+sanitizeDisplayText(content, false), max(1, m.width-1))
+	content = truncateDisplay(prefix+m.sanitizeDisplayText(content, false), max(1, m.width-1))
 	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)
@@ -1584,7 +1648,7 @@ func (m Model) composerAttachmentLines(width int) []string {
 			LocalPath:     attachment.LocalPath,
 			DownloadState: attachment.DownloadState,
 		}
-		lines = append(lines, renderAttachmentLine(media, width, true, ""))
+		lines = append(lines, m.renderAttachmentLine(media, width, true, ""))
 	}
 	return lines
 }

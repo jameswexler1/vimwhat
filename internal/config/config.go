@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Editor              string
 	PreviewBackend      string
+	EmojiMode           string
 	NotificationCommand string
 	ClipboardCommand    string
 	FilePickerCommand   string
@@ -26,6 +27,12 @@ type Config struct {
 	PreviewDelayMS      int
 	DownloadsDir        string
 }
+
+const (
+	EmojiModeAuto   = "auto"
+	EmojiModeFull   = "full"
+	EmojiModeCompat = "compat"
+)
 
 func Load(paths Paths) (Config, error) {
 	cfg := Default(paths)
@@ -56,6 +63,7 @@ func Default(paths Paths) Config {
 	return Config{
 		Editor:             editor,
 		PreviewBackend:     "auto",
+		EmojiMode:          EmojiModeAuto,
 		FilePickerCommand:  "yazi --chooser-file {chooser}",
 		ImageViewerCommand: "nsxiv {path}",
 		VideoPlayerCommand: "mpv {path}",
@@ -109,6 +117,11 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.Editor = parsed
 		case "preview_backend":
 			cfg.PreviewBackend = parsed
+		case "emoji_mode":
+			cfg.EmojiMode, err = parseEmojiMode(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: emoji_mode: %w", lineNo, err)
+			}
 		case "notification_command":
 			cfg.NotificationCommand = parsed
 		case "clipboard_command":
@@ -155,6 +168,55 @@ func parseSimpleTOML(input string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+func ResolveEmojiMode(mode string) string {
+	return ResolveEmojiModeForEnv(mode, os.Getenv("TERM"), os.Getenv("LC_ALL"), os.Getenv("LC_CTYPE"), os.Getenv("LANG"))
+}
+
+func ResolveEmojiModeForEnv(mode, term, lcAll, lcCtype, lang string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case EmojiModeFull:
+		return EmojiModeFull
+	case EmojiModeCompat:
+		return EmojiModeCompat
+	case "", EmojiModeAuto:
+		if strings.EqualFold(strings.TrimSpace(term), "dumb") || !LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang) {
+			return EmojiModeCompat
+		}
+		return EmojiModeFull
+	default:
+		return EmojiModeCompat
+	}
+}
+
+func LocaleLooksUTF8() bool {
+	return LocaleLooksUTF8ForEnv(os.Getenv("LC_ALL"), os.Getenv("LC_CTYPE"), os.Getenv("LANG"))
+}
+
+func LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang string) bool {
+	for _, value := range []string{lcAll, lcCtype, lang} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		upper := strings.ToUpper(value)
+		return strings.Contains(upper, "UTF-8") || strings.Contains(upper, "UTF8")
+	}
+	return true
+}
+
+func parseEmojiMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case EmojiModeAuto:
+		return EmojiModeAuto, nil
+	case EmojiModeFull:
+		return EmojiModeFull, nil
+	case EmojiModeCompat:
+		return EmojiModeCompat, nil
+	default:
+		return "", fmt.Errorf("must be %q, %q, or %q", EmojiModeAuto, EmojiModeFull, EmojiModeCompat)
+	}
 }
 
 func parseLeaderKey(value string) (string, error) {

@@ -49,3 +49,7 @@ Runtime state is kept out of the repository:
 - Logs/cache/media previews: `$XDG_CACHE_HOME/vimwhat/`
 
 Do not commit session files, SQLite databases, logs, media caches, or generated preview assets.
+
+## Emoji rendering
+
+Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on UTF-8 terminals, including skin tones, ZWJ professions/families, and flags. If a terminal/font stack still misreports emoji cell widths, set `emoji_mode = "compat"` to keep the stable degraded rendering, or `emoji_mode = "full"` to force full emoji rendering.

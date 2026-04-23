@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rivo/uniseg"
 
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
@@ -299,6 +299,11 @@ func NewModel(opts Options) Model {
 func normalizeConfig(cfg config.Config) config.Config {
 	if cfg.LeaderKey == "" {
 		cfg.LeaderKey = "space"
+	}
+	switch cfg.EmojiMode {
+	case config.EmojiModeAuto, config.EmojiModeFull, config.EmojiModeCompat:
+	default:
+		cfg.EmojiMode = config.EmojiModeAuto
 	}
 	if cfg.DownloadsDir == "" {
 		cfg.DownloadsDir = config.Default(config.Paths{}).DownloadsDir
@@ -815,7 +820,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = FocusMessages
 		m.status = "message queued"
 	case tea.KeyBackspace, tea.KeyCtrlH:
-		m.composer = trimLastRune(m.composer)
+		m.composer = trimLastCluster(m.composer)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 			m.composer += msg.String()
@@ -840,7 +845,7 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.executeCommand(cmd)
 	case tea.KeyBackspace, tea.KeyCtrlH:
-		m.commandLine = trimLastRune(m.commandLine)
+		m.commandLine = trimLastCluster(m.commandLine)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 			m.commandLine += msg.String()
@@ -875,7 +880,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("search: %s", m.lastSearch)
 		}
 	case tea.KeyBackspace, tea.KeyCtrlH:
-		m.searchLine = trimLastRune(m.searchLine)
+		m.searchLine = trimLastCluster(m.searchLine)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 			m.searchLine += msg.String()
@@ -1879,7 +1884,7 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(item.LocalPath) != "" {
 			return m.openFocusedMedia()
 		}
-		m.status = fmt.Sprintf("no inline preview for %s", mediaDisplayName(item))
+		m.status = fmt.Sprintf("no inline preview for %s", m.mediaDisplayName(item))
 		return m, nil
 	}
 	if m.previewReport.Selected == media.BackendNone || m.previewReport.Selected == media.BackendExternal {
@@ -1909,7 +1914,7 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 
 	request, ok := m.previewRequestForMedia(message, item, 0, 0)
 	if !ok {
-		m.status = fmt.Sprintf("no inline preview for %s", mediaDisplayName(item))
+		m.status = fmt.Sprintf("no inline preview for %s", m.mediaDisplayName(item))
 		return m, nil
 	}
 	previewKey := media.PreviewKey(request)
@@ -1920,14 +1925,14 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 		delete(m.previewCache, previewKey)
 	}
 	if m.previewInflight != nil && m.previewInflight[previewKey] {
-		m.status = fmt.Sprintf("rendering preview: %s", mediaDisplayName(item))
+		m.status = fmt.Sprintf("rendering preview: %s", m.mediaDisplayName(item))
 		return m, nil
 	}
 	if m.previewRequested == nil {
 		m.previewRequested = map[string]bool{}
 	}
 	m.previewRequested[mediaActivationKey(message, item)] = true
-	m.status = fmt.Sprintf("rendering preview: %s", mediaDisplayName(item))
+	m.status = fmt.Sprintf("rendering preview: %s", m.mediaDisplayName(item))
 	return m, nil
 }
 
@@ -1964,7 +1969,7 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 		m.status = "media opener unavailable"
 		return m, nil
 	}
-	m.status = fmt.Sprintf("opening media: %s", mediaDisplayName(item))
+	m.status = fmt.Sprintf("opening media: %s", m.mediaDisplayName(item))
 	m.suppressOverlay = true
 	return m, batchCmds(m.clearOverlayCmd(), m.openMedia(item))
 }
@@ -1992,7 +1997,7 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
-	m.status = fmt.Sprintf("saving media: %s", mediaDisplayName(item))
+	m.status = fmt.Sprintf("saving media: %s", m.mediaDisplayName(item))
 	return m, func() tea.Msg {
 		path, err := saveMediaToDownloads(item, m.config.DownloadsDir)
 		return mediaSavedMsg{MessageID: message.ID, Media: item, Path: path, Err: err}
@@ -2020,7 +2025,7 @@ func (m Model) toggleFocusedAudio(message store.Message, item store.MediaMetadat
 	session := m.audioSession
 	m.audioMessageID = message.ID
 	m.audioMediaKey = mediaActivationKey(message, item)
-	m.audioDisplayName = mediaDisplayName(item)
+	m.audioDisplayName = m.mediaDisplayName(item)
 	if strings.TrimSpace(item.LocalPath) == "" {
 		m.status = fmt.Sprintf("downloading audio: %s", m.audioDisplayName)
 	} else {
@@ -2108,7 +2113,7 @@ func (m Model) handleAudioStarted(msg audioStartedMsg) (tea.Model, tea.Cmd) {
 	m.audioProcess = msg.Process
 	m.audioMessageID = msg.MessageID
 	m.audioMediaKey = mediaActivationKey(store.Message{ID: msg.MessageID}, msg.Media)
-	m.audioDisplayName = mediaDisplayName(msg.Media)
+	m.audioDisplayName = m.mediaDisplayName(msg.Media)
 	m.status = fmt.Sprintf("playing audio: %s", m.audioDisplayName)
 	return m, m.waitAudioCmd(msg.Session, msg.MessageID, m.audioMediaKey, msg.Process)
 }
@@ -2336,7 +2341,7 @@ func (m Model) handleMediaDownloaded(msg mediaDownloadedMsg) (tea.Model, tea.Cmd
 		m.previewRequested = map[string]bool{}
 	}
 	m.previewRequested[mediaActivationKey(updatedMessage, msg.Media)] = true
-	m.status = fmt.Sprintf("downloaded media; rendering preview: %s", mediaDisplayName(msg.Media))
+	m.status = fmt.Sprintf("downloaded media; rendering preview: %s", m.mediaDisplayName(msg.Media))
 	return m, nil
 }
 
@@ -2646,14 +2651,14 @@ func (m *Model) startMediaDownload(message store.Message, item store.MediaMetada
 		return false
 	}
 	if m.mediaDownloadInflight != nil && m.mediaDownloadInflight[key] {
-		m.status = fmt.Sprintf("%s: %s", label, mediaDisplayName(item))
+		m.status = fmt.Sprintf("%s: %s", label, m.mediaDisplayName(item))
 		return false
 	}
 	if m.mediaDownloadInflight == nil {
 		m.mediaDownloadInflight = map[string]bool{}
 	}
 	m.mediaDownloadInflight[key] = true
-	m.status = fmt.Sprintf("%s: %s", label, mediaDisplayName(item))
+	m.status = fmt.Sprintf("%s: %s", label, m.mediaDisplayName(item))
 	return true
 }
 
@@ -2682,6 +2687,17 @@ func leaderDisplay(leader string) string {
 		return "space"
 	}
 	return leader
+}
+
+func (m Model) mediaDisplayName(item store.MediaMetadata) string {
+	name := strings.TrimSpace(m.sanitizeDisplayLine(item.FileName))
+	if name == "" {
+		name = strings.TrimSpace(m.sanitizeDisplayLine(item.LocalPath))
+	}
+	if name == "" {
+		return "media"
+	}
+	return name
 }
 
 func mediaDisplayName(item store.MediaMetadata) string {
@@ -2866,15 +2882,22 @@ func (m *Model) updateChatDraftFlag(chatID string, hasDraft bool) {
 	}
 }
 
-func trimLastRune(value string) string {
+func trimLastCluster(value string) string {
 	if value == "" {
 		return value
 	}
-	_, size := utf8.DecodeLastRuneInString(value)
-	if size == 0 {
+	lastStart := 0
+	seen := false
+	graphemes := uniseg.NewGraphemes(value)
+	for graphemes.Next() {
+		start, _ := graphemes.Positions()
+		lastStart = start
+		seen = true
+	}
+	if !seen {
 		return ""
 	}
-	return value[:len(value)-size]
+	return value[:lastStart]
 }
 
 func onOff(value bool) string {

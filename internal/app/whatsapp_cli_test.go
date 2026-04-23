@@ -702,6 +702,9 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	if !strings.Contains(out.String(), "session status: paired locally (123@s.whatsapp.net)") {
 		t.Fatalf("doctor output = %q, want paired-local session status", out.String())
 	}
+	if !strings.Contains(out.String(), "emoji mode:") {
+		t.Fatalf("doctor output = %q, want emoji mode line", out.String())
+	}
 }
 
 func TestRenderTerminalQRRejectsEmptyCode(t *testing.T) {

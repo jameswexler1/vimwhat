@@ -39,6 +39,25 @@ func TestInsertBackspacePreservesUTF8(t *testing.T) {
 	}
 }
 
+func TestInsertBackspaceRemovesEmojiCluster(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "ok 👩🏻‍⚕️"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyBackspace})
+	got := updated.(Model).composer
+	if got != "ok " {
+		t.Fatalf("composer = %q, want %q", got, "ok ")
+	}
+}
+
 func TestInsertEscPersistsDraft(t *testing.T) {
 	var savedChatID string
 	var savedBody string
@@ -406,9 +425,9 @@ func TestLargeGroupChatScrollUpKeepsViewBounded(t *testing.T) {
 			ID:        fmt.Sprintf("m-%03d", i),
 			ChatID:    "chat-1",
 			ChatJID:   "family@g.us",
-			Sender:    fmt.Sprintf("Member %02d", i%17),
+			Sender:    fmt.Sprintf("Member %02d 👩🏻‍⚕️", i%17),
 			SenderJID: fmt.Sprintf("member-%02d@s.whatsapp.net", i%17),
-			Body:      fmt.Sprintf("group message %03d with enough wrapped text to exercise sender rows and scrolling through a large conversation", i),
+			Body:      fmt.Sprintf("group message %03d 🙏🏻 with enough wrapped text to exercise sender rows and scrolling through a large conversation 🇧🇷", i),
 			Timestamp: now.Add(time.Duration(i) * time.Second),
 		}
 		if i%6 == 0 {
@@ -432,6 +451,7 @@ func TestLargeGroupChatScrollUpKeepsViewBounded(t *testing.T) {
 		messages = append(messages, message)
 	}
 	model := NewModel(Options{
+		Config: config.Config{EmojiMode: config.EmojiModeFull},
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{
 				ID:    "chat-1",
@@ -1466,8 +1486,33 @@ func TestGroupSenderLabelSanitizesControlText(t *testing.T) {
 	}
 }
 
-func TestMessageBubbleSanitizesTerminalHostileEmojiModifiers(t *testing.T) {
+func TestMessageBubblePreservesFullEmojiSequences(t *testing.T) {
 	model := NewModel(Options{
+		Config: config.Config{EmojiMode: config.EmojiModeFull},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	bubble := model.renderMessageBubble(store.Message{
+		ID:      "m-1",
+		ChatID:  "chat-1",
+		ChatJID: "group@g.us",
+		Sender:  "Doctor 👩🏻‍⚕️",
+		Body:    "tem que ter um desse na bolsa🙏🏻",
+	}, 80, false, false)
+	plain := stripANSI(bubble)
+
+	if !strings.Contains(plain, "Doctor 👩🏻‍⚕️") || !strings.Contains(plain, "bolsa🙏🏻") {
+		t.Fatalf("rendered bubble did not preserve full emoji sequences\n%s", plain)
+	}
+}
+
+func TestMessageBubbleCompatEmojiModeStripsTerminalHostileModifiers(t *testing.T) {
+	model := NewModel(Options{
+		Config: config.Config{EmojiMode: config.EmojiModeCompat},
 		Snapshot: store.Snapshot{
 			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
 			MessagesByChat: map[string][]store.Message{"chat-1": nil},
@@ -1491,6 +1536,31 @@ func TestMessageBubbleSanitizesTerminalHostileEmojiModifiers(t *testing.T) {
 	}
 	if !strings.Contains(plain, "Doctor 👩⚕") || !strings.Contains(plain, "bolsa🙏") {
 		t.Fatalf("rendered bubble lost sanitized emoji bases\n%s", plain)
+	}
+}
+
+func TestDisplayHelpersKeepEmojiClustersIntact(t *testing.T) {
+	clusters := []string{
+		"🙏🏻",
+		"👩🏻‍⚕️",
+		"👨‍👩‍👧‍👦",
+		"🇧🇷",
+		"e\u0301",
+	}
+
+	for _, cluster := range clusters {
+		t.Run(cluster, func(t *testing.T) {
+			prefix, rest := splitDisplayWidth(cluster+"x", 1)
+			if prefix != cluster || rest != "x" {
+				t.Fatalf("splitDisplayWidth() = %q/%q, want %q/%q", prefix, rest, cluster, "x")
+			}
+
+			width := displayWidth(cluster) + 1
+			truncated := truncateDisplay(cluster+" tail", width)
+			if !strings.Contains(truncated, cluster) {
+				t.Fatalf("truncateDisplay() split or dropped emoji cluster: %q", truncated)
+			}
+		})
 	}
 }
 
@@ -3865,11 +3935,11 @@ func assertViewWithinBounds(t *testing.T, model Model) {
 		}
 	}
 	if message, ok := model.focusedMessage(); ok {
-		body := strings.TrimSpace(sanitizeDisplayLine(firstLine(message.Body)))
+		body := strings.TrimSpace(model.sanitizeDisplayLine(firstLine(message.Body)))
 		if body != "" {
 			prefix := body
-			if len(prefix) > 24 {
-				prefix = prefix[:24]
+			if displayWidth(prefix) > 24 {
+				prefix, _ = splitDisplayWidth(prefix, 24)
 			}
 			if !strings.Contains(view, prefix) {
 				t.Fatalf("cursor message %q is not visible in rendered view\n%s", prefix, view)

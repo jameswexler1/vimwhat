@@ -959,6 +959,11 @@ func printDoctor(env Environment, w io.Writer) {
 	}
 	appliedMigrations, pendingMigrations, migrationErr := env.Store.MigrationStatus(context.Background())
 	sessionStatus := sessionStatusLine(env, context.Background())
+	emojiMode := env.Config.EmojiMode
+	if strings.TrimSpace(emojiMode) == "" {
+		emojiMode = config.EmojiModeAuto
+	}
+	resolvedEmojiMode := config.ResolveEmojiMode(emojiMode)
 
 	lines := []string{
 		"vimwhat doctor",
@@ -974,6 +979,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("preview max: %dx%d delay=%dms", env.Config.PreviewMaxWidth, env.Config.PreviewMaxHeight, env.Config.PreviewDelayMS),
 		fmt.Sprintf("downloads dir: %s", env.Config.DownloadsDir),
 		fmt.Sprintf("leader key: %s", env.Config.LeaderKey),
+		fmt.Sprintf("emoji mode: %s -> %s (TERM=%s UTF-8=%s)", emojiMode, resolvedEmojiMode, emptyAsAuto(os.Getenv("TERM")), yesNo(config.LocaleLooksUTF8())),
 		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
 		fmt.Sprintf("video player command: %s", emptyAsAuto(env.Config.VideoPlayerCommand)),
 		fmt.Sprintf("audio player command: %s", emptyAsAuto(env.Config.AudioPlayerCommand)),
@@ -1003,6 +1009,13 @@ func emptyAsAuto(value string) string {
 		return "auto"
 	}
 	return value
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func noneIfEmpty(values []string) string {

@@ -27,6 +27,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.PreviewBackend != "auto" {
 		t.Fatalf("PreviewBackend = %q, want %q", cfg.PreviewBackend, "auto")
 	}
+	if cfg.EmojiMode != EmojiModeAuto {
+		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeAuto)
+	}
 	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
@@ -46,6 +49,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	content := stringsJoin(
 		`editor = "nvim"`,
 		`preview_backend = "chafa"`,
+		`emoji_mode = "full"`,
 		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
@@ -74,6 +78,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.PreviewBackend != "chafa" {
 		t.Fatalf("PreviewBackend = %q, want %q", cfg.PreviewBackend, "chafa")
+	}
+	if cfg.EmojiMode != EmojiModeFull {
+		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeFull)
 	}
 	if cfg.NotificationCommand != "notify-send vimwhat" {
 		t.Fatalf("NotificationCommand = %q", cfg.NotificationCommand)
@@ -134,6 +141,47 @@ func TestLoadRejectsInvalidLeaderKey(t *testing.T) {
 	_, err := Load(Paths{ConfigFile: path})
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid leader error")
+	}
+}
+
+func TestLoadRejectsInvalidEmojiMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`emoji_mode = "broken"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid emoji mode error")
+	}
+}
+
+func TestResolveEmojiModeAutoUsesFullForUTF8Terminals(t *testing.T) {
+	if got := ResolveEmojiModeForEnv(EmojiModeAuto, "st-256color", "", "", "en_US.UTF-8"); got != EmojiModeFull {
+		t.Fatalf("ResolveEmojiModeForEnv() = %q, want %q", got, EmojiModeFull)
+	}
+}
+
+func TestResolveEmojiModeAutoFallsBackForClearlyUnsupportedTerminals(t *testing.T) {
+	tests := []struct {
+		name  string
+		term  string
+		lcAll string
+		ctype string
+		lang  string
+	}{
+		{name: "dumb term", term: "dumb", lang: "en_US.UTF-8"},
+		{name: "c locale", term: "st-256color", lang: "C"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ResolveEmojiModeForEnv(EmojiModeAuto, test.term, test.lcAll, test.ctype, test.lang); got != EmojiModeCompat {
+				t.Fatalf("ResolveEmojiModeForEnv() = %q, want %q", got, EmojiModeCompat)
+			}
+		})
 	}
 }
 
