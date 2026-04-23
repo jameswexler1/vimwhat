@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 4 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=4", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 5 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=5", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -252,6 +252,85 @@ func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
 	}
 	if chats[0].Unread != 1 || chats[0].Title != "Alice Updated" {
 		t.Fatalf("preserved chat = %+v, want unread preserved and title updated", chats[0])
+	}
+}
+
+func TestChatTitleSourcePrecedenceRejectsWeakGroupFallback(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{
+		ID:          "12345-678@g.us",
+		JID:         "12345-678@g.us",
+		Title:       "Project Group",
+		TitleSource: ChatTitleSourceGroupSubject,
+		Kind:        "group",
+	}); err != nil {
+		t.Fatalf("UpsertChat(real title) error = %v", err)
+	}
+	if err := db.UpsertChatPreserveUnread(ctx, Chat{
+		ID:          "12345-678@g.us",
+		JID:         "12345-678@g.us",
+		Title:       "12345-678",
+		TitleSource: ChatTitleSourceJID,
+		Kind:        "group",
+	}); err != nil {
+		t.Fatalf("UpsertChat(weak title) error = %v", err)
+	}
+
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Title != "Project Group" || chats[0].TitleSource != ChatTitleSourceGroupSubject {
+		t.Fatalf("chat after weak title = %+v, want original group subject", chats)
+	}
+}
+
+func TestUpdateChatTitleIfExistsRepairsWeakGroupTitle(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{
+		ID:          "12345-678@g.us",
+		JID:         "12345-678@g.us",
+		Title:       "12345-678",
+		TitleSource: ChatTitleSourceJID,
+		Kind:        "group",
+	}); err != nil {
+		t.Fatalf("UpsertChat(weak title) error = %v", err)
+	}
+	updated, err := db.UpdateChatTitleIfExists(ctx, Chat{
+		ID:          "12345-678@g.us",
+		JID:         "12345-678@g.us",
+		Title:       "Project Group",
+		TitleSource: ChatTitleSourceGroupSubject,
+		Kind:        "group",
+	})
+	if err != nil {
+		t.Fatalf("UpdateChatTitleIfExists() error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateChatTitleIfExists() updated = false, want true")
+	}
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].DisplayTitle() != "Project Group" {
+		t.Fatalf("chat after repair = %+v, want Project Group", chats)
 	}
 }
 
@@ -752,8 +831,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 4 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want four applied and none pending", applied, pending)
+	if len(applied) != 5 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want five applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

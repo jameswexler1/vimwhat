@@ -9,6 +9,8 @@ import (
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+
+	"vimwhat/internal/store"
 )
 
 func (c *Client) normalizeWhatsmeowEvent(evt any) []Event {
@@ -50,6 +52,14 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return normalizeMessageEvent(event)
 	case *events.Receipt:
 		return normalizeReceiptEvent(event)
+	case *events.GroupInfo:
+		return normalizeGroupInfoEvent(event.JID, "", event.Name)
+	case *events.JoinedGroup:
+		return normalizeGroupInfoEvent(event.JID, event.GroupName.Name, &event.GroupName)
+	case *events.Contact:
+		return normalizeContactEvent(event)
+	case *events.PushName:
+		return normalizePushNameEvent(event)
 	default:
 		return nil
 	}
@@ -77,6 +87,7 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 				ID:            chatID,
 				JID:           chatID,
 				Title:         historyConversationTitle(conversation, chatJID),
+				TitleSource:   historyConversationTitleSource(conversation, chatJID),
 				Kind:          chatKind(chatJID),
 				UnreadKnown:   false,
 				Pinned:        conversation.GetPinned() > 0,
@@ -102,6 +113,7 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 					normalized.Chat.Historical = true
 					if strings.TrimSpace(conversation.GetName()) != "" {
 						normalized.Chat.Title = strings.TrimSpace(conversation.GetName())
+						normalized.Chat.TitleSource = historyConversationTitleSource(conversation, chatJID)
 					}
 				}
 				if normalized.Kind == EventMessageUpsert {
@@ -167,10 +179,26 @@ func historyConversationTitle(conversation *waHistorySync.Conversation, jid type
 			return name
 		}
 	}
+	if jid.Server == types.GroupServer {
+		return "Unnamed group"
+	}
 	if jid.User != "" {
 		return jid.User
 	}
 	return jid.String()
+}
+
+func historyConversationTitleSource(conversation *waHistorySync.Conversation, jid types.JID) string {
+	if conversation != nil && strings.TrimSpace(conversation.GetName()) != "" {
+		if jid.Server == types.GroupServer {
+			return store.ChatTitleSourceGroupSubject
+		}
+		return store.ChatTitleSourceHistoryName
+	}
+	if jid.Server == types.GroupServer {
+		return store.ChatTitleSourcePlaceholder
+	}
+	return store.ChatTitleSourceJID
 }
 
 func historyConversationTimestamp(conversation *waHistorySync.Conversation) time.Time {
@@ -214,6 +242,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 				ID:            chatID,
 				JID:           chatID,
 				Title:         chatTitle(event.Info),
+				TitleSource:   chatTitleSource(event.Info),
 				Kind:          chatKind(event.Info.Chat),
 				LastMessageAt: event.Info.Timestamp,
 			},
@@ -292,13 +321,92 @@ func chatKind(jid types.JID) string {
 }
 
 func chatTitle(info types.MessageInfo) string {
-	if info.Chat.Server != types.GroupServer && strings.TrimSpace(info.PushName) != "" {
+	if info.Chat.Server == types.GroupServer {
+		return "Unnamed group"
+	}
+	if strings.TrimSpace(info.PushName) != "" {
 		return strings.TrimSpace(info.PushName)
 	}
 	if info.Chat.User != "" {
 		return info.Chat.User
 	}
 	return info.Chat.String()
+}
+
+func chatTitleSource(info types.MessageInfo) string {
+	if info.Chat.Server == types.GroupServer {
+		return store.ChatTitleSourcePlaceholder
+	}
+	if strings.TrimSpace(info.PushName) != "" {
+		return store.ChatTitleSourcePushName
+	}
+	return store.ChatTitleSourceJID
+}
+
+func normalizeGroupInfoEvent(jid types.JID, cachedName string, changedName *types.GroupName) []Event {
+	if !supportedChat(jid) || jid.Server != types.GroupServer {
+		return nil
+	}
+	name := strings.TrimSpace(cachedName)
+	if changedName != nil && strings.TrimSpace(changedName.Name) != "" {
+		name = strings.TrimSpace(changedName.Name)
+	}
+	title := name
+	source := store.ChatTitleSourceGroupSubject
+	if title == "" {
+		title = "Unnamed group"
+		source = store.ChatTitleSourcePlaceholder
+	}
+	chatID := jid.String()
+	return []Event{{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          chatID,
+			JID:         chatID,
+			Title:       title,
+			TitleSource: source,
+			Kind:        "group",
+		},
+	}}
+}
+
+func normalizeContactEvent(event *events.Contact) []Event {
+	if event == nil || event.Action == nil || event.JID.IsEmpty() {
+		return nil
+	}
+	displayName := strings.TrimSpace(event.Action.GetFullName())
+	if displayName == "" {
+		displayName = strings.TrimSpace(event.Action.GetFirstName())
+	}
+	phone := strings.TrimSpace(event.Action.GetPnJID())
+	if phone == "" && event.JID.Server == types.DefaultUserServer {
+		phone = event.JID.User
+	}
+	return []Event{{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         event.JID.String(),
+			DisplayName: displayName,
+			Phone:       phone,
+			UpdatedAt:   event.Timestamp,
+			TitleSource: store.ChatTitleSourceContactDisplay,
+		},
+	}}
+}
+
+func normalizePushNameEvent(event *events.PushName) []Event {
+	if event == nil || event.JID.IsEmpty() || strings.TrimSpace(event.NewPushName) == "" {
+		return nil
+	}
+	return []Event{{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         event.JID.String(),
+			NotifyName:  strings.TrimSpace(event.NewPushName),
+			UpdatedAt:   time.Now(),
+			TitleSource: store.ChatTitleSourcePushName,
+		},
+	}}
 }
 
 func senderName(info types.MessageInfo) string {

@@ -78,6 +78,12 @@ type fakeDownloadRequest struct {
 	targetPath string
 }
 
+type fakeMetadataLiveWhatsAppSession struct {
+	*fakeLiveWhatsAppSession
+	metadataEvents []whatsapp.Event
+	metadataErr    error
+}
+
 func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
 	s.connectCalled = true
 	if s.connectErr == nil {
@@ -106,6 +112,10 @@ func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor wh
 		return s.downloadErr
 	}
 	return os.WriteFile(targetPath, []byte("downloaded media"), 0o644)
+}
+
+func (s *fakeMetadataLiveWhatsAppSession) RefreshChatMetadata(context.Context) ([]whatsapp.Event, error) {
+	return s.metadataEvents, s.metadataErr
 }
 
 func TestRunLoginRendersQRAndCompletes(t *testing.T) {
@@ -211,6 +221,75 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	}
 	if !session.connectCalled || !session.subscribeCalled {
 		t.Fatalf("connect/subscribe called = %v/%v", session.connectCalled, session.subscribeCalled)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := db.UpsertChat(ctx, store.Chat{
+		ID:          "12345-678@g.us",
+		JID:         "12345-678@g.us",
+		Title:       "12345-678",
+		TitleSource: store.ChatTitleSourceJID,
+		Kind:        "group",
+	}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	session := &fakeMetadataLiveWhatsAppSession{
+		fakeLiveWhatsAppSession: &fakeLiveWhatsAppSession{
+			events: make(chan whatsapp.Event, 4),
+		},
+		metadataEvents: []whatsapp.Event{{
+			Kind: whatsapp.EventChatUpsert,
+			Chat: whatsapp.ChatEvent{
+				ID:          "12345-678@g.us",
+				JID:         "12345-678@g.us",
+				Title:       "Project Group",
+				TitleSource: store.ChatTitleSourceGroupSubject,
+				Kind:        "group",
+			},
+		}},
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+	}
+	updates := make(chan ui.LiveUpdate, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan mediaDownloadRequest, 16))
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh
+	})
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Title != "Project Group" || chats[0].TitleSource != store.ChatTitleSourceGroupSubject {
+		t.Fatalf("chats after metadata = %+v, want Project Group/group_subject", chats)
 	}
 
 	cancel()

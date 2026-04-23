@@ -185,3 +185,65 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 		t.Fatalf("history cursor = %q, want no_more", cursor)
 	}
 }
+
+func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	if err := ingestor.Apply(ctx, Event{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         "missing@s.whatsapp.net",
+			DisplayName: "Missing",
+			UpdatedAt:   time.Unix(1_700_000_000, 0),
+			TitleSource: store.ChatTitleSourceContactDisplay,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(contact missing chat) error = %v", err)
+	}
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 0 {
+		t.Fatalf("contact upsert created chats = %+v, want none", chats)
+	}
+
+	if err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          "12345@s.whatsapp.net",
+			JID:         "12345@s.whatsapp.net",
+			Title:       "12345",
+			TitleSource: store.ChatTitleSourceJID,
+			Kind:        "direct",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(chat) error = %v", err)
+	}
+	if err := ingestor.Apply(ctx, Event{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         "12345@s.whatsapp.net",
+			DisplayName: "Alice",
+			UpdatedAt:   time.Unix(1_700_000_001, 0),
+			TitleSource: store.ChatTitleSourceContactDisplay,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(contact existing chat) error = %v", err)
+	}
+	chats, err = db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() after contact error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Title != "Alice" || chats[0].TitleSource != store.ChatTitleSourceContactDisplay {
+		t.Fatalf("chat after contact = %+v, want Alice/contact_display", chats)
+	}
+}

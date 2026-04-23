@@ -6,6 +6,7 @@ type Chat struct {
 	ID            string
 	JID           string
 	Title         string
+	TitleSource   string
 	Kind          string
 	Unread        int
 	Pinned        bool

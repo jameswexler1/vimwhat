@@ -16,7 +16,8 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and cached local files.
-- Large-history TUI guardrails: historical imports avoid refresh storms, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, duplicate in-flight history requests are suppressed, and `ueberzug++` overlay syncs are skipped when placements are unchanged.
+- Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
+- Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
@@ -191,6 +192,15 @@ The remote media download milestone now has an implemented first pass:
 - Update SQLite media state through `remote`, `downloading`, `downloaded`, and `failed`.
 - Reuse existing TUI preview/open/save/audio flows once the file has a local path.
 - Suppress duplicate focused-message download requests while a download is already in flight.
+
+The large-chat and title-correctness hardening milestone is implemented:
+
+- Add `title_source` to chat rows and only allow stronger title sources to replace weaker JID/placeholders.
+- Treat group subjects from history sync, joined-group metadata, and group-info events as authoritative.
+- Ingest contact and push-name updates without creating empty chats or erasing better saved names.
+- Refresh joined group/contact metadata after the live WhatsApp connection comes online, without blocking TUI startup.
+- Display neutral group placeholders when old rows contain phone-like/JID-derived group titles.
+- Debounce live DB snapshot refreshes and bound message render windows for chats with hundreds of loaded messages.
 
 The next protocol milestone is real text send after live validation of media download.
 

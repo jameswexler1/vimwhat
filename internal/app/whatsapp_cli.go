@@ -26,6 +26,10 @@ type WhatsAppLiveSession interface {
 	DownloadMedia(context.Context, whatsapp.MediaDownloadDescriptor, string) error
 }
 
+type WhatsAppMetadataSession interface {
+	RefreshChatMetadata(context.Context) ([]whatsapp.Event, error)
+}
+
 type WhatsAppSessionOpener func(context.Context, string) (WhatsAppSession, error)
 
 type WhatsAppSessionStatus struct {

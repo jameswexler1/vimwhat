@@ -260,6 +260,7 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 const (
 	historyPageSize        = 50
 	historyRequestTimeout  = 30 * time.Second
+	metadataRefreshTimeout = 30 * time.Second
 	mediaDownloadWorkers   = 2
 	mediaDownloadQueueSize = 16
 	mediaDownloadTimeout   = 5 * time.Minute
@@ -341,6 +342,7 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 
 	ingestor := whatsapp.Ingestor{Store: env.Store}
 	historyInflight := map[string]time.Time{}
+	metadataResults := refreshChatMetadata(ctx, live)
 	online := true
 	for {
 		select {
@@ -382,6 +384,27 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 				return
 			}
 			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
+		case result, ok := <-metadataResults:
+			if ok {
+				ingested := 0
+				for _, event := range result.Events {
+					if err := ingestor.Apply(ctx, event); err != nil {
+						sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+							Status: fmt.Sprintf("metadata ingest failed: %s", shortStatusError(err)),
+						})
+						continue
+					}
+					ingested++
+				}
+				update := ui.LiveUpdate{Refresh: ingested > 0}
+				if result.Err != nil {
+					update.Status = fmt.Sprintf("metadata refresh failed: %s", shortStatusError(result.Err))
+				}
+				if update.Refresh || update.Status != "" {
+					sendLiveUpdate(ctx, updates, update)
+				}
+			}
+			metadataResults = nil
 		case request, ok := <-mediaDownloadRequests:
 			if !ok {
 				return
@@ -391,6 +414,30 @@ func runLiveWhatsApp(ctx context.Context, env Environment, updates chan<- ui.Liv
 			return
 		}
 	}
+}
+
+type metadataRefreshResult struct {
+	Events []whatsapp.Event
+	Err    error
+}
+
+func refreshChatMetadata(ctx context.Context, live WhatsAppLiveSession) <-chan metadataRefreshResult {
+	metadata, ok := live.(WhatsAppMetadataSession)
+	if !ok {
+		return nil
+	}
+	results := make(chan metadataRefreshResult, 1)
+	go func() {
+		defer close(results)
+		refreshCtx, cancel := context.WithTimeout(ctx, metadataRefreshTimeout)
+		defer cancel()
+		events, err := metadata.RefreshChatMetadata(refreshCtx)
+		select {
+		case results <- metadataRefreshResult{Events: events, Err: err}:
+		case <-ctx.Done():
+		}
+	}()
+	return results
 }
 
 func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {

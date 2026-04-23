@@ -12,6 +12,8 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+
+	"vimwhat/internal/store"
 )
 
 func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
@@ -50,6 +52,9 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 	}
 	if normalized[0].Kind != EventChatUpsert || normalized[0].Chat.Title != "Alice" {
 		t.Fatalf("chat event = %+v", normalized[0])
+	}
+	if normalized[0].Chat.TitleSource != store.ChatTitleSourcePushName {
+		t.Fatalf("chat title source = %q, want push name", normalized[0].Chat.TitleSource)
 	}
 	message := normalized[1].Message
 	if normalized[1].Kind != EventMessageUpsert ||
@@ -164,6 +169,48 @@ func TestNormalizeReceiptEventMapsRemoteIDsToLocalStatus(t *testing.T) {
 		receipt.MessageID != "12345@s.whatsapp.net/ABC123" ||
 		receipt.Status != "read" {
 		t.Fatalf("receipt event = %+v", normalized[0])
+	}
+}
+
+func TestNormalizeGroupMessageUsesPlaceholderTitle(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345-678", types.GroupServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: types.NewJID("11111", types.DefaultUserServer),
+			},
+			ID:        "GROUP1",
+			PushName:  "Alice",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{Conversation: proto.String("hello group")},
+	})
+	if len(normalized) < 2 {
+		t.Fatalf("normalized = %+v, want chat and message events", normalized)
+	}
+	chatEvent := normalized[0].Chat
+	if normalized[0].Kind != EventChatUpsert ||
+		chatEvent.Title != "Unnamed group" ||
+		chatEvent.TitleSource != store.ChatTitleSourcePlaceholder {
+		t.Fatalf("group chat event = %+v, want placeholder title", normalized[0])
+	}
+}
+
+func TestNormalizeGroupInfoUsesSubjectTitle(t *testing.T) {
+	chat := types.NewJID("12345-678", types.GroupServer)
+	normalized := normalizeWhatsmeowEvent(&events.GroupInfo{
+		JID: chat,
+		Name: &types.GroupName{
+			Name: "Project Group",
+		},
+	})
+	if len(normalized) != 1 ||
+		normalized[0].Kind != EventChatUpsert ||
+		normalized[0].Chat.Title != "Project Group" ||
+		normalized[0].Chat.TitleSource != store.ChatTitleSourceGroupSubject {
+		t.Fatalf("group info normalized to %+v", normalized)
 	}
 }
 

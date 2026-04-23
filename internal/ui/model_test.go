@@ -175,16 +175,61 @@ func TestLiveUpdateRefreshesSnapshotAndStatusLine(t *testing.T) {
 	model.height = 24
 
 	updated, _ := model.handleLiveUpdate(LiveUpdate{ConnectionState: ConnectionOnline, Refresh: true})
-	if updated.connectionState != ConnectionOnline || !updated.reloadInFlight {
-		t.Fatalf("state/reload = %q/%v, want online/inflight", updated.connectionState, updated.reloadInFlight)
+	if updated.connectionState != ConnectionOnline || !updated.refreshDebouncePending || updated.reloadInFlight {
+		t.Fatalf("state/debounce/reload = %q/%v/%v, want online/pending/not inflight", updated.connectionState, updated.refreshDebouncePending, updated.reloadInFlight)
 	}
-	reloadMsg := updated.reloadSnapshotCmd()().(snapshotReloadedMsg)
-	refreshed, _ := updated.handleSnapshotReloaded(reloadMsg)
+	debounced, cmd := updated.handleRefreshDebounced()
+	if !debounced.reloadInFlight || cmd == nil {
+		t.Fatalf("debounced reload = %v cmd nil=%v, want inflight command", debounced.reloadInFlight, cmd == nil)
+	}
+	reloadMsg := cmd().(snapshotReloadedMsg)
+	refreshed, _ := debounced.handleSnapshotReloaded(reloadMsg)
 	if len(refreshed.messagesByChat["chat-1"]) != 1 || refreshed.messagesByChat["chat-1"][0].Body != "live" {
 		t.Fatalf("messages after refresh = %+v", refreshed.messagesByChat["chat-1"])
 	}
 	if status := stripANSI(refreshed.renderStatus()); !strings.Contains(status, "WA:ONLINE") {
 		t.Fatalf("status = %q, want WA:ONLINE", status)
+	}
+}
+
+func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
+	reloads := 0
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ReloadSnapshot: func(activeChatID string, limit int) (store.Snapshot, error) {
+			reloads++
+			return store.Snapshot{
+				Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+				MessagesByChat: map[string][]store.Message{"chat-1": nil},
+				DraftsByChat:   map[string]string{},
+				ActiveChatID:   "chat-1",
+			}, nil
+		},
+	})
+
+	updated, _ := model.handleLiveUpdate(LiveUpdate{Refresh: true})
+	updated, _ = updated.handleLiveUpdate(LiveUpdate{Refresh: true})
+	updated, _ = updated.handleLiveUpdate(LiveUpdate{Refresh: true})
+	if !updated.refreshDebouncePending || updated.reloadInFlight {
+		t.Fatalf("debounce/inflight = %v/%v, want pending/not inflight", updated.refreshDebouncePending, updated.reloadInFlight)
+	}
+
+	debounced, cmd := updated.handleRefreshDebounced()
+	if cmd == nil {
+		t.Fatal("handleRefreshDebounced() cmd = nil, want reload")
+	}
+	reloadMsg := cmd().(snapshotReloadedMsg)
+	if reloads != 1 {
+		t.Fatalf("reloads = %d, want one coalesced reload", reloads)
+	}
+	refreshed, _ := debounced.handleSnapshotReloaded(reloadMsg)
+	if refreshed.refreshQueued {
+		t.Fatal("refreshQueued = true after coalesced reload, want false")
 	}
 }
 
@@ -233,8 +278,54 @@ func TestVisibleMessageRangeBoundsLargeLoadedChat(t *testing.T) {
 	if start > model.messageCursor || end <= model.messageCursor {
 		t.Fatalf("visible range [%d,%d) does not contain cursor %d", start, end, model.messageCursor)
 	}
-	if got := end - start; got > 100 {
+	if got := end - start; got > maxMessageRenderWindow {
 		t.Fatalf("visible range length = %d, want bounded window", got)
+	}
+}
+
+func TestLargeMixedChatScrollKeepsViewBounded(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	messages := make([]store.Message, 0, 600)
+	for i := 0; i < cap(messages); i++ {
+		message := store.Message{
+			ID:        fmt.Sprintf("m-%03d", i),
+			ChatID:    "chat-1",
+			Sender:    "Alice",
+			Body:      fmt.Sprintf("message %03d with enough body text to wrap in the message pane while scrolling under load", i),
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+		}
+		if i%9 == 0 {
+			message.Media = []store.MediaMetadata{{
+				MessageID:     message.ID,
+				MIMEType:      "image/jpeg",
+				FileName:      fmt.Sprintf("photo-%03d.jpg", i),
+				DownloadState: "downloaded",
+				LocalPath:     fmt.Sprintf("/tmp/photo-%03d.jpg", i),
+				UpdatedAt:     message.Timestamp,
+			}}
+		}
+		messages = append(messages, message)
+	}
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 30
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+
+	for i := 0; i < 180; i++ {
+		model.moveCursor(-1)
+		assertViewWithinBounds(t, model)
+	}
+	for i := 0; i < 120; i++ {
+		model.moveCursor(1)
+		assertViewWithinBounds(t, model)
 	}
 }
 
@@ -785,6 +876,27 @@ func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 	}
 	if !strings.Contains(view, "┌") || !strings.Contains(view, "└") {
 		t.Fatalf("chat list did not render bordered cells\n%s", view)
+	}
+}
+
+func TestGroupChatWeakTitleRendersAsPlaceholder(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:          "12345-678@g.us",
+				JID:         "12345-678@g.us",
+				Title:       "12345-678",
+				TitleSource: store.ChatTitleSourceJID,
+				Kind:        "group",
+			}},
+			MessagesByChat: map[string][]store.Message{"12345-678@g.us": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "12345-678@g.us",
+		},
+	})
+	view := stripANSI(model.renderChats(40, 8))
+	if strings.Contains(view, "12345-678") || !strings.Contains(view, "Unnamed group") {
+		t.Fatalf("chat list = %q, want placeholder without numeric group id", view)
 	}
 }
 
@@ -3473,6 +3585,20 @@ var (
 
 func stripANSI(value string) string {
 	return ansiRE.ReplaceAllString(value, "")
+}
+
+func assertViewWithinBounds(t *testing.T, model Model) {
+	t.Helper()
+	view := stripANSI(model.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) > model.height {
+		t.Fatalf("View() produced %d lines, want <= %d", len(lines), model.height)
+	}
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line %d width = %d, want <= %d", i+1, width, model.width)
+		}
+	}
 }
 
 type styledRune struct {

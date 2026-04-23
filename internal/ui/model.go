@@ -64,6 +64,8 @@ type snapshotReloadedMsg struct {
 	Err          error
 }
 
+type refreshDebouncedMsg struct{}
+
 type clipboardCopiedMsg struct {
 	Count int
 	Err   error
@@ -221,6 +223,7 @@ type Model struct {
 	liveUpdates            <-chan LiveUpdate
 	reloadInFlight         bool
 	refreshQueued          bool
+	refreshDebouncePending bool
 	blockSending           bool
 	messageLimitsByChat    map[string]int
 	historyRequestedByChat map[string]bool
@@ -228,6 +231,7 @@ type Model struct {
 
 const messageLoadLimit = 200
 const historyPageSize = 50
+const refreshDebounceDuration = 75 * time.Millisecond
 
 func Run(opts Options) error {
 	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen())
@@ -364,13 +368,32 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	if update.Refresh && m.reloadSnapshot != nil {
 		if m.reloadInFlight {
 			m.refreshQueued = true
-		} else {
-			m.reloadInFlight = true
-			cmds = append(cmds, m.reloadSnapshotCmd())
+		} else if !m.refreshDebouncePending {
+			m.refreshDebouncePending = true
+			cmds = append(cmds, refreshDebounceCmd())
 		}
 	}
 	cmds = append(cmds, m.waitForLiveUpdateCmd())
 	return m, batchCmds(cmds...)
+}
+
+func refreshDebounceCmd() tea.Cmd {
+	return tea.Tick(refreshDebounceDuration, func(time.Time) tea.Msg {
+		return refreshDebouncedMsg{}
+	})
+}
+
+func (m Model) handleRefreshDebounced() (Model, tea.Cmd) {
+	m.refreshDebouncePending = false
+	if m.reloadSnapshot == nil {
+		return m, nil
+	}
+	if m.reloadInFlight {
+		m.refreshQueued = true
+		return m, nil
+	}
+	m.reloadInFlight = true
+	return m, m.reloadSnapshotCmd()
 }
 
 func (m Model) reloadSnapshotCmd() tea.Cmd {
@@ -427,6 +450,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next.withPreviewCmd(cmd)
 	case snapshotReloadedMsg:
 		next, cmd := m.handleSnapshotReloaded(msg)
+		return next.withPreviewCmd(cmd)
+	case refreshDebouncedMsg:
+		next, cmd := m.handleRefreshDebounced()
 		return next.withPreviewCmd(cmd)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -599,6 +625,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focus == FocusMessages {
 			m.messageCursor = 0
 			m.messageScrollTop = 0
+			m.suppressOverlay = true
 		} else {
 			m.activeChat = 0
 			m.chatScrollTop = 0
@@ -617,6 +644,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				m.messageCursor = clamp(target, 0, messageCount-1)
 				m.messageScrollTop = m.messageCursor
+				m.suppressOverlay = true
 			}
 		} else {
 			if chatCount := len(m.chats); chatCount > 0 {
@@ -645,7 +673,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.showCurrentChatLatest()
-			m.status = fmt.Sprintf("opened %s", m.currentChat().Title)
+			m.status = fmt.Sprintf("opened %s", m.currentChat().DisplayTitle())
 		} else if m.focus == FocusMessages || m.focus == FocusPreview {
 			return m.activateFocusedMediaPreview()
 		}
@@ -947,6 +975,7 @@ func (m *Model) moveCursor(delta int) {
 		if len(m.chats) == 0 {
 			return
 		}
+		previousChat := m.activeChat
 		m.activeChat = clamp(m.activeChat+delta, 0, len(m.chats)-1)
 		m.keepActiveChatVisible()
 		if err := m.ensureCurrentMessagesLoaded(); err != nil {
@@ -954,6 +983,9 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		m.showCurrentChatLatest()
+		if m.activeChat != previousChat {
+			m.suppressOverlay = true
+		}
 	case FocusMessages:
 		if len(m.currentMessages()) == 0 {
 			return
@@ -965,6 +997,9 @@ func (m *Model) moveCursor(delta int) {
 		previous := m.messageCursor
 		m.messageCursor = clamp(m.messageCursor+delta, 0, len(m.currentMessages())-1)
 		m.keepMessageCursorNearViewport(previous)
+		if m.messageCursor != previous {
+			m.suppressOverlay = true
+		}
 	}
 }
 
@@ -1121,7 +1156,7 @@ func (m *Model) rebuildSearchMatches() {
 	switch m.lastSearchFocus {
 	case FocusChats:
 		for i, chat := range m.chats {
-			if strings.Contains(strings.ToLower(chat.Title), query) {
+			if strings.Contains(strings.ToLower(chat.DisplayTitle()), query) {
 				m.searchMatches = append(m.searchMatches, i)
 			}
 		}
@@ -1285,6 +1320,7 @@ func (m *Model) loadOlderOrRequestHistory() {
 			m.addMessageLimit(chatID, len(older))
 			m.messageCursor = len(older) - 1
 			m.messageScrollTop = m.messageCursor
+			m.suppressOverlay = true
 			m.status = fmt.Sprintf("loaded %d older local message(s)", len(older))
 			return
 		}
@@ -2725,7 +2761,7 @@ func sortChats(chats []store.Chat, pinnedFirst bool) {
 		if !left.LastMessageAt.Equal(right.LastMessageAt) {
 			return left.LastMessageAt.After(right.LastMessageAt)
 		}
-		return strings.ToLower(left.Title) < strings.ToLower(right.Title)
+		return strings.ToLower(left.DisplayTitle()) < strings.ToLower(right.DisplayTitle())
 	})
 }
 

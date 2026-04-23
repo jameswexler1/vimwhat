@@ -55,6 +55,7 @@ type Adapter interface {
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
+	RefreshChatMetadata(ctx context.Context) ([]Event, error)
 }
 
 type Client struct {
@@ -643,6 +644,7 @@ const (
 	EventMediaMetadata   EventKind = "media_metadata"
 	EventConnectionState EventKind = "connection_state"
 	EventHistoryStatus   EventKind = "history_status"
+	EventContactUpsert   EventKind = "contact_upsert"
 )
 
 type ConnectionState string
@@ -664,6 +666,7 @@ type Event struct {
 	Media      MediaEvent
 	Connection ConnectionEvent
 	History    HistoryEvent
+	Contact    ContactEvent
 }
 
 type ConnectionEvent struct {
@@ -675,6 +678,7 @@ type ChatEvent struct {
 	ID            string
 	JID           string
 	Title         string
+	TitleSource   string
 	Kind          string
 	Unread        int
 	UnreadKnown   bool
@@ -682,6 +686,15 @@ type ChatEvent struct {
 	Muted         bool
 	LastMessageAt time.Time
 	Historical    bool
+}
+
+type ContactEvent struct {
+	JID         string
+	DisplayName string
+	NotifyName  string
+	Phone       string
+	UpdatedAt   time.Time
+	TitleSource string
 }
 
 type MessageEvent struct {

@@ -232,6 +232,8 @@ type messageBlock struct {
 	lines []string
 }
 
+const maxMessageRenderWindow = 48
+
 func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []string {
 	height = max(1, height)
 	if len(blocks) == 0 {
@@ -504,7 +506,7 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 		Padding(0, 1)
 	contentWidth := panelContentWidth(style, width)
 
-	title := chat.Title
+	title := chat.DisplayTitle()
 	if title == "" {
 		title = "unknown"
 	}
@@ -661,7 +663,7 @@ func adjustedChatScrollTop(scrollTop, active, total, visible int) int {
 
 func (m Model) renderMessages(width, height int) string {
 	chat := m.currentChat()
-	title := chat.Title
+	title := chat.DisplayTitle()
 	if title == "" {
 		title = "Messages"
 	}
@@ -729,7 +731,7 @@ func (m Model) visibleMessageRange(count, height int) (int, int) {
 	if count <= 0 {
 		return 0, 0
 	}
-	window := max(80, height*6)
+	window := min(count, max(24, min(maxMessageRenderWindow, max(1, height)*3)))
 	cursor := clamp(m.messageCursor, 0, count-1)
 	scrollTop := clamp(m.messageScrollTop, 0, count-1)
 
@@ -737,10 +739,16 @@ func (m Model) visibleMessageRange(count, height int) (int, int) {
 		return max(0, count-window), count
 	}
 
-	start := max(0, min(scrollTop, cursor)-max(8, height))
-	end := min(count, max(scrollTop, cursor)+window)
-	if end <= start {
-		end = min(count, start+1)
+	overscan := max(4, min(height, window/3))
+	start := max(0, min(scrollTop, cursor)-overscan)
+	end := min(count, start+window)
+	if cursor >= end {
+		end = min(count, cursor+overscan+1)
+		start = max(0, end-window)
+	}
+	if scrollTop >= end {
+		end = min(count, scrollTop+overscan+1)
+		start = max(0, end-window)
 	}
 	return start, end
 }
@@ -1218,7 +1226,7 @@ func alignMessageBubble(bubble string, width int, outgoing bool) string {
 
 func (m Model) renderInfo(width int) string {
 	chat := m.currentChat()
-	chatTitle := chat.Title
+	chatTitle := chat.DisplayTitle()
 	if chatTitle == "" {
 		chatTitle = "none"
 	}
@@ -1302,8 +1310,8 @@ func (m Model) renderStatus() string {
 	mode := strings.ToUpper(string(m.mode))
 	focus := strings.ToUpper(string(m.focus))
 	chatTitle := "no chat"
-	if chat := m.currentChat(); chat.Title != "" {
-		chatTitle = chat.Title
+	if chat := m.currentChat(); chat.DisplayTitle() != "" {
+		chatTitle = chat.DisplayTitle()
 	}
 	left := strings.Join([]string{
 		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
@@ -1502,7 +1510,7 @@ func renderFooterHelpLine(width int) string {
 }
 
 func (m Model) footerChatTitle() string {
-	chat := m.currentChat().Title
+	chat := m.currentChat().DisplayTitle()
 	if chat == "" {
 		return "no chat"
 	}

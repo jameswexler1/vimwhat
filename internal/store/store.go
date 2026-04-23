@@ -131,6 +131,12 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		name: "0005_chat_title_source",
+		sql: []string{
+			`ALTER TABLE chats ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

@@ -53,6 +53,7 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.id,
 			c.jid,
 			c.title,
+			c.title_source,
 			c.kind,
 			c.unread_count,
 			c.pinned,
@@ -238,6 +239,7 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 			c.id,
 			c.jid,
 			c.title,
+			c.title_source,
 			c.kind,
 			c.unread_count,
 			c.pinned,
@@ -339,6 +341,38 @@ func (s *Store) UpsertChatPreserveUnread(ctx context.Context, chat Chat) error {
 	return s.upsertChat(ctx, chat, true)
 }
 
+func (s *Store) UpdateChatTitleIfExists(ctx context.Context, chat Chat) (bool, error) {
+	if strings.TrimSpace(chat.ID) == "" {
+		return false, fmt.Errorf("chat id is required")
+	}
+	if strings.TrimSpace(chat.Title) == "" {
+		return false, fmt.Errorf("chat title is required")
+	}
+	existing, ok, err := s.chatTitleState(ctx, chat.ID)
+	if err != nil || !ok {
+		return false, err
+	}
+	if strings.TrimSpace(chat.Kind) == "" {
+		chat.Kind = existing.Kind
+	}
+	if strings.TrimSpace(chat.JID) == "" {
+		chat.JID = existing.JID
+	}
+	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
+	if !shouldReplaceChatTitle(existing, chat) {
+		return false, nil
+	}
+	now := time.Now().Unix()
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE chats
+		SET title = ?, title_source = ?, updated_at = ?
+		WHERE id = ?
+	`, chat.Title, chat.TitleSource, now, chat.ID); err != nil {
+		return false, fmt.Errorf("update chat title %s: %w", chat.ID, err)
+	}
+	return true, nil
+}
+
 func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdate bool) error {
 	if strings.TrimSpace(chat.ID) == "" {
 		return fmt.Errorf("chat id is required")
@@ -352,6 +386,13 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 	if strings.TrimSpace(chat.JID) == "" {
 		chat.JID = chat.ID
 	}
+	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
+	if existing, ok, err := s.chatTitleState(ctx, chat.ID); err != nil {
+		return err
+	} else if ok && !shouldReplaceChatTitle(existing, chat) {
+		chat.Title = existing.Title
+		chat.TitleSource = existing.TitleSource
+	}
 
 	now := time.Now().Unix()
 	lastMessageAt := chat.LastMessageAt.Unix()
@@ -361,11 +402,12 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO chats (
-			id, jid, title, kind, unread_count, pinned, muted, last_message_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, jid, title, title_source, kind, unread_count, pinned, muted, last_message_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			jid = excluded.jid,
 			title = excluded.title,
+			title_source = excluded.title_source,
 			kind = excluded.kind,
 			unread_count = CASE
 				WHEN ? THEN chats.unread_count
@@ -382,6 +424,7 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 		chat.ID,
 		chat.JID,
 		chat.Title,
+		chat.TitleSource,
 		chat.Kind,
 		chat.Unread,
 		boolToInt(chat.Pinned),
@@ -396,6 +439,29 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 	}
 
 	return nil
+}
+
+func (s *Store) chatTitleState(ctx context.Context, id string) (Chat, bool, error) {
+	var chat Chat
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, jid, title, title_source, kind
+		FROM chats
+		WHERE id = ?
+	`, id).Scan(&chat.ID, &chat.JID, &chat.Title, &chat.TitleSource, &chat.Kind)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Chat{}, false, nil
+		}
+		return Chat{}, false, fmt.Errorf("load chat title state %s: %w", id, err)
+	}
+	if chat.JID == "" {
+		chat.JID = chat.ID
+	}
+	if chat.Kind == "" {
+		chat.Kind = "direct"
+	}
+	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
+	return chat, true, nil
 }
 
 func (s *Store) AddMessage(ctx context.Context, message Message) error {
@@ -781,12 +847,12 @@ func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
 			avatar_thumb_path, avatar_updated_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(jid) DO UPDATE SET
-			display_name = excluded.display_name,
-			notify_name = excluded.notify_name,
-			phone = excluded.phone,
-			avatar_path = excluded.avatar_path,
-			avatar_thumb_path = excluded.avatar_thumb_path,
-			avatar_updated_at = excluded.avatar_updated_at,
+			display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE contacts.display_name END,
+			notify_name = CASE WHEN excluded.notify_name <> '' THEN excluded.notify_name ELSE contacts.notify_name END,
+			phone = CASE WHEN excluded.phone <> '' THEN excluded.phone ELSE contacts.phone END,
+			avatar_path = CASE WHEN excluded.avatar_path <> '' THEN excluded.avatar_path ELSE contacts.avatar_path END,
+			avatar_thumb_path = CASE WHEN excluded.avatar_thumb_path <> '' THEN excluded.avatar_thumb_path ELSE contacts.avatar_thumb_path END,
+			avatar_updated_at = CASE WHEN excluded.avatar_updated_at > 0 THEN excluded.avatar_updated_at ELSE contacts.avatar_updated_at END,
 			updated_at = excluded.updated_at
 	`,
 		contact.JID,
@@ -1217,6 +1283,7 @@ func scanChat(row scanner) (Chat, error) {
 		&chat.ID,
 		&chat.JID,
 		&chat.Title,
+		&chat.TitleSource,
 		&chat.Kind,
 		&chat.Unread,
 		&pinned,
@@ -1240,6 +1307,7 @@ func scanChat(row scanner) (Chat, error) {
 	if chat.JID == "" {
 		chat.JID = chat.ID
 	}
+	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
 
 	return chat, nil
 }

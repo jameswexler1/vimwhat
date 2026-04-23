@@ -23,6 +23,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			ID:            event.Chat.ID,
 			JID:           event.Chat.JID,
 			Title:         event.Chat.Title,
+			TitleSource:   event.Chat.TitleSource,
 			Kind:          event.Chat.Kind,
 			Unread:        event.Chat.Unread,
 			Pinned:        event.Chat.Pinned,
@@ -86,6 +87,37 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			return i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), value)
 		}
 		return nil
+	case EventContactUpsert:
+		contact := store.Contact{
+			JID:         event.Contact.JID,
+			DisplayName: event.Contact.DisplayName,
+			NotifyName:  event.Contact.NotifyName,
+			Phone:       event.Contact.Phone,
+			UpdatedAt:   event.Contact.UpdatedAt,
+		}
+		if err := i.Store.UpsertContact(ctx, contact); err != nil {
+			return err
+		}
+		title := strings.TrimSpace(event.Contact.DisplayName)
+		source := store.ChatTitleSourceContactDisplay
+		if title == "" {
+			title = strings.TrimSpace(event.Contact.NotifyName)
+			source = event.Contact.TitleSource
+			if source == "" {
+				source = store.ChatTitleSourcePushName
+			}
+		}
+		if title == "" {
+			return nil
+		}
+		_, err := i.Store.UpdateChatTitleIfExists(ctx, store.Chat{
+			ID:          event.Contact.JID,
+			JID:         event.Contact.JID,
+			Title:       title,
+			TitleSource: source,
+			Kind:        "direct",
+		})
+		return err
 	case EventConnectionState:
 		return nil
 	default:
