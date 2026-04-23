@@ -2,12 +2,12 @@
 
 ## Current Stage
 
-Implementation is in the local-shell phase, not the protocol-complete phase.
+Implementation is past the local-shell phase and currently sits at a DB-first, live read-only WhatsApp client with remote history/media support. The next major protocol gap is real outbound send.
 
 ### Implemented now
 
 - Go CLI entrypoint with `vimwhat`, `doctor`, `demo seed`, and `demo clear`.
-- XDG config/data/cache path resolution and config loading.
+- XDG config/data/cache path resolution and config loading, including emoji rendering mode and per-mode status indicator color overrides.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
@@ -17,13 +17,14 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and cached local files.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
-- Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
+- Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
+- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, non-redundant mode prompts, search match counts in the status bar, and `Esc` clearing active search state from both search and normal mode.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
 
 - Manual validation and polish of remote media download against real WhatsApp media.
-- Ongoing TUI polish as real protocol features add more loaded state.
+- Short regression pass on the recent TUI hardening before starting outbound send.
 
 ### Not implemented yet
 
@@ -34,7 +35,7 @@ Implementation is in the local-shell phase, not the protocol-complete phase.
 
 Build a personal, Linux-first WhatsApp TUI in `Go` using `whatsmeow` for protocol access, `Bubble Tea` for the event loop/UI runtime, `Lip Gloss` only for styling, and `SQLite + FTS5` for local state, indexing, and lazy history. The product is a fully modal client, not a terminal chat app with vi-flavored shortcuts.
 
-The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keyboard navigation, explicit modes, repeatable actions, registers, visual selection, `/` search with context-specific behavior, command-line actions via `:`, optional inline composition, optional `nvim` composition for long messages, and adaptive media previews that work in `st` first but degrade cleanly elsewhere.
+The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keyboard navigation, explicit modes, repeatable actions, registers, visual selection, `/` search with context-specific behavior and visible match counts, command-line actions via `:`, optional inline composition, optional `nvim` composition for long messages, and adaptive media/emoji rendering that works in `st` first but degrades cleanly elsewhere.
 
 ## Key Changes
 
@@ -64,6 +65,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   `vimwhat media open <message-id>`
   `vimwhat export chat <jid>`
 - Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml`.
+- Config supports `emoji_mode = "auto" | "full" | "compat"` and per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, each defaulting to `"pywal"` with hex overrides allowed.
 - Data dir: `$XDG_DATA_HOME/vimwhat/`.
 - Cache dir: `$XDG_CACHE_HOME/vimwhat/`.
 - State file groups:
@@ -104,7 +106,9 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   `/` in chat list searches chats,
   `/` in message pane searches current chat contents,
   `n`/`N` repeat movement,
-  results are incremental and backed by FTS.
+  results are incremental and backed by FTS,
+  the status bar shows the current match count,
+  `Esc` clears the active search after a search has been submitted.
 - Registers:
   unnamed register plus named registers `a-z` for yanked message text or selected message blocks;
   optional system clipboard integration through configured external command.
@@ -155,10 +159,10 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 ## Near-Term Execution Order
 
-1. Keep polishing the local TUI shell as protocol behavior lands, especially message navigation, previews, composer behavior, and pane/layout rules.
-2. Use the working `whatsmeow` session to connect on demand, restore an existing paired session, subscribe to protocol events, and expose visible connection status.
-3. Replace demo-only data flow with protocol-backed ingestion into SQLite while keeping the UI DB-first.
-4. Validate remote media download on live WhatsApp traffic, then implement real text send.
+1. Run a quick manual regression pass over the recent TUI hardening: big group scrolling, emoji-heavy messages, search counts/clearance, and custom mode indicators.
+2. Validate remote media download on live WhatsApp traffic.
+3. Implement real text send for plain text composer submissions.
+4. Add protocol-backed read receipts, reactions, presence, replies/quote-jump, and attachment send after text send is stable.
 5. Expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
 
 ### Current protocol milestone
@@ -201,6 +205,14 @@ The large-chat and title-correctness hardening milestone is implemented:
 - Refresh joined group/contact metadata after the live WhatsApp connection comes online, without blocking TUI startup.
 - Display neutral group placeholders when old rows contain phone-like/JID-derived group titles.
 - Debounce live DB snapshot refreshes and bound message render windows for chats with hundreds of loaded messages.
+
+The TUI stability and modal polish milestone is implemented:
+
+- Message scrolling now keeps the cursor moving inside the viewport until it reaches a viewport edge, matching chat-list navigation instead of pinning the selected message to the bottom.
+- Emoji rendering is configurable through `emoji_mode`; `auto` preserves full emoji on capable UTF-8 terminals and falls back to compatibility rendering for terminals such as `st`.
+- The status bar has a single authoritative mode indicator, keeps pywal colors by default, and supports per-mode hex overrides.
+- `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
+- Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, and search clearing.
 
 The next protocol milestone is real text send after live validation of media download.
 
@@ -318,6 +330,10 @@ The next protocol milestone is real text send after live validation of media dow
   snapshot tests for major panes and narrow-width layouts,
   mode line/status line updates,
   search overlays,
+  search match counts and `Esc` clearing,
+  emoji width/sanitization behavior,
+  mode indicator config overrides,
+  large chat scrolling,
   visual selection rendering.
 - Manual acceptance scenarios:
   first login and QR pairing,
@@ -347,6 +363,8 @@ The next protocol milestone is real text send after live validation of media dow
 - Default UX favors a complete Vim model over beginner discoverability.
 - Default compose mode is inline; external `nvim` compose is optional per message and never mandatory.
 - Default preview mode is auto-detect with graceful fallback.
+- Default emoji mode is `auto`; terminals known to misreport complex emoji widths should use the compatibility renderer unless explicitly forced to `full`.
+- Default mode indicator colors come from pywal; users can override each mode with a hex color in config.
 - v1 supports DMs and groups only.
 - v1 includes replies, reactions, media send/receive, lazy history, search, visual selection, registers, drafts, and notifications.
 - v1 excludes calls, channels/status, and broad WhatsApp surface-area parity.
