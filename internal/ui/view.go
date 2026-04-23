@@ -232,9 +232,23 @@ type messageBlock struct {
 	lines []string
 }
 
+type messageBlockSpan struct {
+	index int
+	start int
+	end   int
+}
+
 const maxMessageRenderWindow = 48
 
 func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []string {
+	spans := messageViewportSpans(blocks, scrollTop, cursor, height)
+	if len(spans) == 0 {
+		return nil
+	}
+	return messageLinesForSpans(blocks, spans)
+}
+
+func messageViewportSpans(blocks []messageBlock, scrollTop, cursor, height int) []messageBlockSpan {
 	height = max(1, height)
 	if len(blocks) == 0 {
 		return nil
@@ -242,58 +256,92 @@ func messageViewport(blocks []messageBlock, scrollTop, cursor, height int) []str
 
 	selected := clamp(cursor, 0, len(blocks)-1)
 	if selected == len(blocks)-1 {
-		return bottomMessageViewport(blocks, height)
+		return bottomMessageViewportSpans(blocks, height)
+	}
+	if clamp(scrollTop, 0, len(blocks)-1) > selected {
+		return bottomMessageViewportSpans(blocks, height)
 	}
 	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
 	scrollTop = clampMessageScrollTop(blocks, scrollTop, height)
-	var out []string
+	spans := make([]messageBlockSpan, 0, len(blocks)-scrollTop)
 	used := 0
 
 	for i := scrollTop; i < len(blocks) && used < height; i++ {
-		block := blocks[i].lines
-		if used+len(block) > height {
+		blockHeight := len(blocks[i].lines)
+		if blockHeight == 0 {
+			continue
+		}
+		if used+blockHeight > height {
 			remaining := height - used
-			if remaining > 0 {
-				if i == selected || i == len(blocks)-1 {
-					out = append(out, tailLines(block, remaining)...)
-				} else {
-					out = append(out, block[:remaining]...)
-				}
+			if remaining > 0 && i == selected {
+				end := min(blockHeight, remaining)
+				spans = append(spans, messageBlockSpan{index: i, start: 0, end: end})
 			}
 			break
 		}
-		out = append(out, block...)
-		used += len(block)
+		spans = append(spans, messageBlockSpan{index: i, start: 0, end: blockHeight})
+		used += blockHeight
 	}
 
-	if len(out) > height {
-		return tailLines(out, height)
+	if len(spans) == 0 {
+		blockHeight := len(blocks[selected].lines)
+		if blockHeight == 0 {
+			return nil
+		}
+		spans = append(spans, messageBlockSpan{index: selected, start: 0, end: min(blockHeight, height)})
+	}
+	return spans
+}
+
+func messageLinesForSpans(blocks []messageBlock, spans []messageBlockSpan) []string {
+	var out []string
+	for _, span := range spans {
+		if span.index < 0 || span.index >= len(blocks) {
+			continue
+		}
+		lines := blocks[span.index].lines
+		start := clamp(span.start, 0, len(lines))
+		end := clamp(span.end, start, len(lines))
+		out = append(out, lines[start:end]...)
 	}
 	return out
 }
 
-func bottomMessageViewport(blocks []messageBlock, height int) []string {
+func bottomMessageViewportSpans(blocks []messageBlock, height int) []messageBlockSpan {
 	height = max(1, height)
 	if messageBlocksHeight(blocks) <= height {
-		return flattenMessageBlocks(blocks)
+		spans := make([]messageBlockSpan, 0, len(blocks))
+		for i, block := range blocks {
+			if len(block.lines) > 0 {
+				spans = append(spans, messageBlockSpan{index: i, start: 0, end: len(block.lines)})
+			}
+		}
+		return spans
 	}
 
-	var out []string
+	var spans []messageBlockSpan
 	used := 0
 
 	for i := len(blocks) - 1; i >= 0; i-- {
-		block := blocks[i].lines
-		if used+len(block) > height {
+		blockHeight := len(blocks[i].lines)
+		if blockHeight == 0 {
+			continue
+		}
+		if used+blockHeight > height {
 			remaining := height - used
 			if remaining > 0 {
-				out = append(tailLines(block, remaining), out...)
+				spans = append([]messageBlockSpan{{
+					index: i,
+					start: blockHeight - remaining,
+					end:   blockHeight,
+				}}, spans...)
 			}
 			break
 		}
-		out = append(block, out...)
-		used += len(block)
+		spans = append([]messageBlockSpan{{index: i, start: 0, end: blockHeight}}, spans...)
+		used += blockHeight
 	}
-	return out
+	return spans
 }
 
 func clampMessageScrollTop(blocks []messageBlock, scrollTop, height int) int {
@@ -313,14 +361,6 @@ func messageBlocksHeight(blocks []messageBlock) int {
 		total += len(block.lines)
 	}
 	return total
-}
-
-func flattenMessageBlocks(blocks []messageBlock) []string {
-	var out []string
-	for _, block := range blocks {
-		out = append(out, block.lines...)
-	}
-	return out
 }
 
 func adjustedMessageScrollTop(blocks []messageBlock, scrollTop, selected, height int) int {
@@ -348,14 +388,6 @@ func messageBlockFullyVisible(blocks []messageBlock, scrollTop, selected, height
 		used += blockHeight
 	}
 	return false
-}
-
-func tailLines(lines []string, height int) []string {
-	height = max(1, height)
-	if len(lines) <= height {
-		return lines
-	}
-	return lines[len(lines)-height:]
 }
 
 func alignDisplay(value string, width int, right bool) string {

@@ -283,6 +283,61 @@ func TestVisibleMessageRangeBoundsLargeLoadedChat(t *testing.T) {
 	}
 }
 
+func TestMessageViewportClipsTallSelectedBlockFromTop(t *testing.T) {
+	blocks := []messageBlock{
+		{lines: []string{"older-1", "older-2"}},
+		{lines: []string{"selected-top", "selected-sender", "selected-body-1", "selected-body-2", "selected-meta", "selected-bottom"}},
+		{lines: []string{"newer-1", "newer-2"}},
+	}
+
+	got := messageViewport(blocks, 1, 1, 4)
+	want := []string{"selected-top", "selected-sender", "selected-body-1", "selected-body-2"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("messageViewport() = %q, want %q", got, want)
+	}
+}
+
+func TestMessageViewportDoesNotSplitOrdinaryBlocks(t *testing.T) {
+	blocks := []messageBlock{
+		{lines: []string{"selected-top", "selected-bottom"}},
+		{lines: []string{"next-top", "next-sender", "next-body", "next-bottom"}},
+	}
+
+	got := messageViewport(blocks, 0, 0, 3)
+	want := []string{"selected-top", "selected-bottom"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("messageViewport() = %q, want %q", got, want)
+	}
+}
+
+func TestMessageViewportRefsFollowBlockAwareClipping(t *testing.T) {
+	blocks := []messageLayoutBlock{
+		{
+			lines: []string{"selected-top", "selected-bottom"},
+			refs:  []messageLineRef{{}, {}},
+		},
+		{
+			lines: []string{"media-top", "media-row-1", "media-row-2", "media-bottom"},
+			refs: []messageLineRef{
+				{},
+				{target: "preview", row: 0},
+				{target: "preview", row: 1},
+				{},
+			},
+		},
+	}
+
+	refs := messageViewportRefs(blocks, 0, 0, 3)
+	if len(refs) != 2 {
+		t.Fatalf("messageViewportRefs() length = %d, want 2", len(refs))
+	}
+	for _, ref := range refs {
+		if ref.target != "" {
+			t.Fatalf("messageViewportRefs() included clipped preview ref %+v", ref)
+		}
+	}
+}
+
 func TestLargeMixedChatScrollKeepsViewBounded(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	messages := make([]store.Message, 0, 600)
@@ -325,6 +380,63 @@ func TestLargeMixedChatScrollKeepsViewBounded(t *testing.T) {
 	}
 	for i := 0; i < 120; i++ {
 		model.moveCursor(1)
+		assertViewWithinBounds(t, model)
+	}
+}
+
+func TestLargeGroupChatScrollUpKeepsViewBounded(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	messages := make([]store.Message, 0, 700)
+	for i := 0; i < cap(messages); i++ {
+		message := store.Message{
+			ID:        fmt.Sprintf("m-%03d", i),
+			ChatID:    "chat-1",
+			ChatJID:   "family@g.us",
+			Sender:    fmt.Sprintf("Member %02d", i%17),
+			SenderJID: fmt.Sprintf("member-%02d@s.whatsapp.net", i%17),
+			Body:      fmt.Sprintf("group message %03d with enough wrapped text to exercise sender rows and scrolling through a large conversation", i),
+			Timestamp: now.Add(time.Duration(i) * time.Second),
+		}
+		if i%6 == 0 {
+			message.Body += "\nsecond paragraph to make this group message taller than the direct-chat baseline"
+		}
+		if i%8 == 0 {
+			message.IsOutgoing = true
+			message.Sender = "me"
+			message.SenderJID = "me"
+			message.Status = "sent"
+		}
+		if i%13 == 0 {
+			message.Media = []store.MediaMetadata{{
+				MessageID:     message.ID,
+				MIMEType:      "image/jpeg",
+				FileName:      fmt.Sprintf("group-photo-%03d.jpg", i),
+				DownloadState: "remote",
+				UpdatedAt:     message.Timestamp,
+			}}
+		}
+		messages = append(messages, message)
+	}
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:    "chat-1",
+				JID:   "family@g.us",
+				Title: "Family",
+				Kind:  "group",
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 30
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+
+	for i := 0; i < 260; i++ {
+		model.moveCursor(-1)
 		assertViewWithinBounds(t, model)
 	}
 }

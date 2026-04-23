@@ -241,84 +241,30 @@ func (m Model) previewLineOffset(message store.Message, item store.MediaMetadata
 }
 
 func messageViewportRefs(blocks []messageLayoutBlock, scrollTop, cursor, height int) []messageLineRef {
-	height = max(1, height)
 	if len(blocks) == 0 {
 		return nil
 	}
-
-	selected := clamp(cursor, 0, len(blocks)-1)
-	if selected == len(blocks)-1 {
-		return bottomMessageViewportRefs(blocks, height)
-	}
 	plainBlocks := make([]messageBlock, len(blocks))
 	for i, block := range blocks {
 		plainBlocks[i] = messageBlock{lines: block.lines}
 	}
-	scrollTop = adjustedMessageScrollTop(plainBlocks, scrollTop, selected, height)
-	scrollTop = clampMessageScrollTop(plainBlocks, scrollTop, height)
+
+	spans := messageViewportSpans(plainBlocks, scrollTop, cursor, height)
 	var out []messageLineRef
-	used := 0
-
-	for i := scrollTop; i < len(blocks) && used < height; i++ {
-		block := blocks[i]
-		if used+len(block.lines) > height {
-			remaining := height - used
-			if remaining > 0 {
-				if i == selected || i == len(blocks)-1 {
-					out = append(out, tailRefs(block.refs, remaining)...)
-				} else {
-					out = append(out, block.refs[:remaining]...)
-				}
-			}
-			break
+	for _, span := range spans {
+		if span.index < 0 || span.index >= len(blocks) {
+			continue
 		}
-		out = append(out, block.refs...)
-		used += len(block.lines)
-	}
-
-	if len(out) > height {
-		return tailRefs(out, height)
+		refs := blocks[span.index].refs
+		before := len(out)
+		start := clamp(span.start, 0, len(refs))
+		end := clamp(span.end, start, len(refs))
+		out = append(out, refs[start:end]...)
+		for len(out)-before < span.end-span.start {
+			out = append(out, messageLineRef{})
+		}
 	}
 	return out
-}
-
-func bottomMessageViewportRefs(blocks []messageLayoutBlock, height int) []messageLineRef {
-	height = max(1, height)
-	plainBlocks := make([]messageBlock, len(blocks))
-	for i, block := range blocks {
-		plainBlocks[i] = messageBlock{lines: block.lines}
-	}
-	if messageBlocksHeight(plainBlocks) <= height {
-		var out []messageLineRef
-		for _, block := range blocks {
-			out = append(out, block.refs...)
-		}
-		return out
-	}
-
-	var out []messageLineRef
-	used := 0
-	for i := len(blocks) - 1; i >= 0; i-- {
-		block := blocks[i]
-		if used+len(block.lines) > height {
-			remaining := height - used
-			if remaining > 0 {
-				out = append(tailRefs(block.refs, remaining), out...)
-			}
-			break
-		}
-		out = append(block.refs, out...)
-		used += len(block.lines)
-	}
-	return out
-}
-
-func tailRefs(refs []messageLineRef, height int) []messageLineRef {
-	height = max(1, height)
-	if len(refs) <= height {
-		return refs
-	}
-	return refs[len(refs)-height:]
 }
 
 func maxRenderedWidth(value string) int {
