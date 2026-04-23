@@ -465,13 +465,29 @@ func sanitizeDisplayText(value string, allowNewlines bool) string {
 		case '\r', '\t':
 			out.WriteRune(' ')
 		default:
-			if unicode.IsControl(r) {
+			if unicode.IsControl(r) || terminalUnsafeZeroWidthRune(r) {
 				continue
 			}
 			out.WriteRune(r)
 		}
 	}
 	return out.String()
+}
+
+func terminalUnsafeZeroWidthRune(r rune) bool {
+	if unicode.Is(unicode.Cf, r) {
+		return true
+	}
+	if r >= 0xFE00 && r <= 0xFE0F {
+		return true
+	}
+	if r >= 0xE0100 && r <= 0xE01EF {
+		return true
+	}
+	if r >= 0x1F3FB && r <= 0x1F3FF {
+		return true
+	}
+	return false
 }
 
 type searchSegment struct {

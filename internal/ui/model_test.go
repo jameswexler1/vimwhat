@@ -1466,6 +1466,34 @@ func TestGroupSenderLabelSanitizesControlText(t *testing.T) {
 	}
 }
 
+func TestMessageBubbleSanitizesTerminalHostileEmojiModifiers(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	bubble := model.renderMessageBubble(store.Message{
+		ID:      "m-1",
+		ChatID:  "chat-1",
+		ChatJID: "group@g.us",
+		Sender:  "Doctor 👩🏻‍⚕️",
+		Body:    "tem que ter um desse na bolsa🙏🏻",
+	}, 80, false, false)
+	plain := stripANSI(bubble)
+
+	for _, unsafe := range []rune{'\u200d', '\ufe0f', '\U0001f3fb'} {
+		if strings.ContainsRune(plain, unsafe) {
+			t.Fatalf("rendered bubble kept terminal-hostile rune %U\n%s", unsafe, plain)
+		}
+	}
+	if !strings.Contains(plain, "Doctor 👩⚕") || !strings.Contains(plain, "bolsa🙏") {
+		t.Fatalf("rendered bubble lost sanitized emoji bases\n%s", plain)
+	}
+}
+
 func TestMessageStatusTicks(t *testing.T) {
 	tests := map[string]string{
 		"":           "",
