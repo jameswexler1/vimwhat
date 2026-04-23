@@ -65,14 +65,18 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 		}, err
 	case EventMediaMetadata:
 		metadata := store.MediaMetadata{
-			MessageID:     event.Media.MessageID,
-			MIMEType:      event.Media.MIMEType,
-			FileName:      event.Media.FileName,
-			SizeBytes:     event.Media.SizeBytes,
-			LocalPath:     event.Media.LocalPath,
-			ThumbnailPath: event.Media.ThumbnailPath,
-			DownloadState: event.Media.DownloadState,
-			UpdatedAt:     event.Media.UpdatedAt,
+			MessageID:          event.Media.MessageID,
+			Kind:               event.Media.Kind,
+			MIMEType:           event.Media.MIMEType,
+			FileName:           event.Media.FileName,
+			SizeBytes:          event.Media.SizeBytes,
+			LocalPath:          event.Media.LocalPath,
+			ThumbnailPath:      event.Media.ThumbnailPath,
+			DownloadState:      event.Media.DownloadState,
+			IsAnimated:         event.Media.IsAnimated,
+			IsLottie:           event.Media.IsLottie,
+			AccessibilityLabel: event.Media.AccessibilityLabel,
+			UpdatedAt:          event.Media.UpdatedAt,
 		}
 		descriptor := storeMediaDownloadDescriptor(event.Media.Download, event.Media.MessageID)
 		if descriptor.MessageID != "" {

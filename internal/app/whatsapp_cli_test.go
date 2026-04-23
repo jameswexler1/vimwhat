@@ -224,6 +224,10 @@ func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor wh
 	return os.WriteFile(targetPath, []byte("downloaded media"), 0o644)
 }
 
+func (s *fakeLiveWhatsAppSession) GetChatAvatar(context.Context, string, string) (whatsapp.ChatAvatarResult, error) {
+	return whatsapp.ChatAvatarResult{}, nil
+}
+
 func (s *fakeMetadataLiveWhatsAppSession) RefreshChatMetadata(context.Context) ([]whatsapp.Event, error) {
 	return s.metadataEvents, s.metadataErr
 }
@@ -299,7 +303,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -399,7 +403,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -456,7 +460,7 @@ func TestRunLiveWhatsAppNotifiesInactiveIncomingMessage(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -571,7 +575,7 @@ func TestRunLiveWhatsAppSuppressesNotificationsForActiveMutedAndDuplicateMessage
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat)
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -716,7 +720,7 @@ func TestRunLiveWhatsAppSuppressesHistoricalOutgoingAndReactionNotifications(t *
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {

@@ -28,6 +28,9 @@ func TestResolvePathsUsesTempForTransientMediaCache(t *testing.T) {
 	if !strings.HasPrefix(paths.LogFile, paths.CacheDir) {
 		t.Fatalf("LogFile = %q, want under %q", paths.LogFile, paths.CacheDir)
 	}
+	if !strings.HasPrefix(paths.AvatarCacheDir, paths.CacheDir) {
+		t.Fatalf("AvatarCacheDir = %q, want under %q", paths.AvatarCacheDir, paths.CacheDir)
+	}
 	if !strings.HasPrefix(paths.TransientDir, os.TempDir()) {
 		t.Fatalf("TransientDir = %q, want under temp dir %q", paths.TransientDir, os.TempDir())
 	}
@@ -48,6 +51,7 @@ func TestPathsEnsureCreatesTransientDirectories(t *testing.T) {
 		ConfigDir:       filepath.Join(root, "config"),
 		DataDir:         filepath.Join(root, "data"),
 		CacheDir:        filepath.Join(root, "cache"),
+		AvatarCacheDir:  filepath.Join(root, "cache", "avatars"),
 		TransientDir:    filepath.Join(root, "transient"),
 		MediaDir:        filepath.Join(root, "transient", "media"),
 		PreviewCacheDir: filepath.Join(root, "transient", "preview"),
@@ -57,7 +61,7 @@ func TestPathsEnsureCreatesTransientDirectories(t *testing.T) {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
-	for _, dir := range []string{paths.ConfigDir, paths.DataDir, paths.CacheDir, paths.TransientDir, paths.MediaDir, paths.PreviewCacheDir} {
+	for _, dir := range []string{paths.ConfigDir, paths.DataDir, paths.CacheDir, paths.AvatarCacheDir, paths.TransientDir, paths.MediaDir, paths.PreviewCacheDir} {
 		info, err := os.Stat(dir)
 		if err != nil {
 			t.Fatalf("Stat(%q) error = %v", dir, err)
@@ -72,6 +76,7 @@ func TestIsManagedCachePathRecognizesCurrentAndLegacyCacheRoots(t *testing.T) {
 	root := t.TempDir()
 	paths := Paths{
 		CacheDir:        filepath.Join(root, "cache"),
+		AvatarCacheDir:  filepath.Join(root, "cache", "avatars"),
 		TransientDir:    filepath.Join(root, "transient"),
 		MediaDir:        filepath.Join(root, "transient", "media"),
 		PreviewCacheDir: filepath.Join(root, "transient", "preview"),
@@ -81,6 +86,7 @@ func TestIsManagedCachePathRecognizesCurrentAndLegacyCacheRoots(t *testing.T) {
 		path string
 		want bool
 	}{
+		{path: filepath.Join(paths.AvatarCacheDir, "avatar.png"), want: true},
 		{path: filepath.Join(paths.MediaDir, "wa-photo.jpg"), want: true},
 		{path: filepath.Join(paths.PreviewCacheDir, "thumbs", "abc.jpg"), want: true},
 		{path: filepath.Join(paths.LegacyMediaDir(), "wa-photo.jpg"), want: true},

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -137,6 +139,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	activeChatNotifications := make(chan string, 16)
+	visibleChatNotifications := make(chan []string, 16)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -145,7 +148,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -373,6 +376,12 @@ func runTUI(env Environment, stderr io.Writer) int {
 			default:
 			}
 		}
+		opts.VisibleChatsChanged = func(chatIDs []string) {
+			select {
+			case visibleChatNotifications <- slices.Clone(chatIDs):
+			default:
+			}
+		}
 	}
 
 	if err := ui.Run(opts); err != nil {
@@ -415,6 +424,8 @@ const (
 	mediaDownloadWorkers    = 2
 	mediaDownloadQueueSize  = 16
 	mediaDownloadTimeout    = 5 * time.Minute
+	avatarRefreshQueueSize  = 32
+	avatarRefreshTimeout    = 30 * time.Second
 )
 
 type textSendRequest struct {
@@ -493,6 +504,17 @@ type mediaDownloadResult struct {
 	Err   error
 }
 
+type avatarRefreshRequest struct {
+	ChatID string
+}
+
+type avatarRefreshResult struct {
+	ChatID  string
+	Refresh bool
+	Status  string
+	Err     error
+}
+
 func runLiveWhatsApp(
 	ctx context.Context,
 	env Environment,
@@ -506,6 +528,7 @@ func runLiveWhatsApp(
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
 	activeChatUpdates <-chan string,
+	visibleChatUpdates <-chan []string,
 ) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
 
@@ -575,8 +598,22 @@ func runLiveWhatsApp(
 		downloadWG.Wait()
 	}()
 
+	avatarJobs := make(chan avatarRefreshRequest, avatarRefreshQueueSize)
+	avatarResults := make(chan avatarRefreshResult, avatarRefreshQueueSize)
+	var avatarWG sync.WaitGroup
+	avatarWG.Add(1)
+	go func() {
+		defer avatarWG.Done()
+		avatarRefreshWorker(ctx, env.Store, live, env.Paths, avatarJobs, avatarResults)
+	}()
+	defer func() {
+		close(avatarJobs)
+		avatarWG.Wait()
+	}()
+
 	ingestor := whatsapp.Ingestor{Store: env.Store}
 	historyInflight := map[string]time.Time{}
+	avatarInflight := map[string]bool{}
 	metadataResults := refreshChatMetadata(ctx, live)
 	activeChatID := ""
 	online := true
@@ -595,6 +632,20 @@ func runLiveWhatsApp(
 			if event.Kind == whatsapp.EventPresenceUpdate {
 				sendLiveUpdate(ctx, updates, liveUpdateForPresenceEvent(event.Presence))
 				continue
+			}
+			if event.Kind == whatsapp.EventChatAvatarUpdate {
+				handleAvatarEvent(ctx, env.Store, env.Paths, avatarJobs, avatarInflight, updates, event.Avatar)
+				continue
+			}
+			if event.Kind == whatsapp.EventMediaMetadata {
+				prepared, err := prepareIncomingMediaEvent(env.Paths, event.Media)
+				if err != nil {
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Status: fmt.Sprintf("media cache failed: %s", shortStatusError(err)),
+					})
+				} else {
+					event.Media = prepared
+				}
 			}
 			result, err := ingestor.Apply(ctx, event)
 			if err != nil {
@@ -690,6 +741,36 @@ func runLiveWhatsApp(
 				continue
 			}
 			activeChatID = chatID
+			enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+		case chatIDs, ok := <-visibleChatUpdates:
+			if !ok {
+				visibleChatUpdates = nil
+				continue
+			}
+			if activeChatID != "" {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, activeChatID)
+			}
+			for _, chatID := range chatIDs {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+			}
+		case result, ok := <-avatarResults:
+			if !ok {
+				avatarResults = nil
+				continue
+			}
+			delete(avatarInflight, result.ChatID)
+			if result.Err != nil {
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: fmt.Sprintf("avatar refresh failed: %s", shortStatusError(result.Err)),
+				})
+				continue
+			}
+			if result.Refresh || strings.TrimSpace(result.Status) != "" {
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Refresh: result.Refresh,
+					Status:  result.Status,
+				})
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -1386,6 +1467,280 @@ func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, 
 	}
 }
 
+func enqueueAvatarRefresh(ctx context.Context, jobs chan<- avatarRefreshRequest, inflight map[string]bool, chatID string) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" || inflight[chatID] {
+		return
+	}
+	inflight[chatID] = true
+	select {
+	case jobs <- avatarRefreshRequest{ChatID: chatID}:
+	case <-ctx.Done():
+		delete(inflight, chatID)
+	default:
+		delete(inflight, chatID)
+	}
+}
+
+func handleAvatarEvent(
+	ctx context.Context,
+	db *store.Store,
+	paths config.Paths,
+	jobs chan<- avatarRefreshRequest,
+	inflight map[string]bool,
+	updates chan<- ui.LiveUpdate,
+	event whatsapp.AvatarEvent,
+) {
+	chatID := strings.TrimSpace(event.ChatID)
+	if chatID == "" {
+		chatID = strings.TrimSpace(event.ChatJID)
+	}
+	if chatID == "" {
+		return
+	}
+	if event.Remove {
+		changed, err := clearStoredChatAvatar(ctx, db, paths, chatID, event.UpdatedAt)
+		if err != nil {
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+				Status: fmt.Sprintf("avatar cleanup failed: %s", shortStatusError(err)),
+			})
+			return
+		}
+		if changed {
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+				Refresh: true,
+				Status:  "chat avatar removed",
+			})
+		}
+		return
+	}
+	enqueueAvatarRefresh(ctx, jobs, inflight, chatID)
+}
+
+func avatarRefreshWorker(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	paths config.Paths,
+	jobs <-chan avatarRefreshRequest,
+	results chan<- avatarRefreshResult,
+) {
+	for {
+		select {
+		case request, ok := <-jobs:
+			if !ok {
+				return
+			}
+			result := refreshChatAvatar(ctx, db, live, paths, request.ChatID)
+			select {
+			case results <- result:
+			case <-ctx.Done():
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func refreshChatAvatar(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, chatID string) avatarRefreshResult {
+	if db == nil {
+		return avatarRefreshResult{ChatID: chatID, Err: fmt.Errorf("store is required")}
+	}
+	if live == nil {
+		return avatarRefreshResult{ChatID: chatID, Err: fmt.Errorf("whatsapp live session unavailable")}
+	}
+	chat, ok, err := db.ChatByID(ctx, chatID)
+	if err != nil {
+		return avatarRefreshResult{ChatID: chatID, Err: err}
+	}
+	if !ok || strings.TrimSpace(chat.JID) == "" {
+		return avatarRefreshResult{ChatID: chatID}
+	}
+
+	refreshCtx, cancel := context.WithTimeout(ctx, avatarRefreshTimeout)
+	defer cancel()
+	avatar, err := live.GetChatAvatar(refreshCtx, chat.JID, chat.AvatarID)
+	if err != nil {
+		return avatarRefreshResult{ChatID: chatID, Err: err}
+	}
+	if avatar.Cleared {
+		changed, err := clearStoredChatAvatar(ctx, db, paths, chatID, avatar.UpdatedAt)
+		if err != nil {
+			return avatarRefreshResult{ChatID: chatID, Err: err}
+		}
+		if !changed {
+			return avatarRefreshResult{ChatID: chatID}
+		}
+		return avatarRefreshResult{
+			ChatID:  chatID,
+			Refresh: true,
+			Status:  "chat avatar removed",
+		}
+	}
+	if !avatar.Changed || strings.TrimSpace(avatar.URL) == "" {
+		return avatarRefreshResult{ChatID: chatID}
+	}
+
+	localPath, err := downloadChatAvatar(refreshCtx, paths.AvatarCacheDir, chatID, avatar)
+	if err != nil {
+		return avatarRefreshResult{ChatID: chatID, Err: err}
+	}
+	if err := db.SetChatAvatar(ctx, chatID, avatar.AvatarID, localPath, localPath, avatar.UpdatedAt); err != nil {
+		return avatarRefreshResult{ChatID: chatID, Err: err}
+	}
+	if oldPath := strings.TrimSpace(chat.AvatarPath); oldPath != "" && oldPath != localPath && paths.IsManagedCachePath(oldPath) {
+		_ = os.Remove(oldPath)
+	}
+	if oldThumb := strings.TrimSpace(chat.AvatarThumbPath); oldThumb != "" && oldThumb != localPath && oldThumb != chat.AvatarPath && paths.IsManagedCachePath(oldThumb) {
+		_ = os.Remove(oldThumb)
+	}
+	return avatarRefreshResult{
+		ChatID:  chatID,
+		Refresh: true,
+		Status:  "chat avatar updated",
+	}
+}
+
+func clearStoredChatAvatar(ctx context.Context, db *store.Store, paths config.Paths, chatID string, updatedAt time.Time) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("store is required")
+	}
+	chat, ok, err := db.ChatByID(ctx, chatID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := db.SetChatAvatar(ctx, chatID, "", "", "", updatedAt); err != nil {
+		return false, err
+	}
+	for _, candidate := range []string{chat.AvatarPath, chat.AvatarThumbPath} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || !paths.IsManagedCachePath(candidate) {
+			continue
+		}
+		_ = os.Remove(candidate)
+	}
+	return chat.AvatarID != "" || chat.AvatarPath != "" || chat.AvatarThumbPath != "", nil
+}
+
+func downloadChatAvatar(ctx context.Context, cacheDir, chatID string, avatar whatsapp.ChatAvatarResult) (string, error) {
+	if strings.TrimSpace(cacheDir) == "" {
+		return "", fmt.Errorf("avatar cache dir is required")
+	}
+	if strings.TrimSpace(avatar.URL) == "" {
+		return "", fmt.Errorf("avatar url is required")
+	}
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return "", fmt.Errorf("create avatar cache dir: %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, avatar.URL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create avatar request: %w", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("download avatar: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("download avatar: unexpected status %s", response.Status)
+	}
+
+	ext := avatarFileExtension(response.Header.Get("Content-Type"), avatar.URL)
+	finalPath := avatarCachePath(cacheDir, chatID, avatar.AvatarID, ext)
+	tmp, err := os.CreateTemp(cacheDir, "avatar-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create avatar temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	written, err := io.Copy(tmp, response.Body)
+	closeErr := tmp.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return "", fmt.Errorf("write avatar file: %w", err)
+	}
+	if written <= 0 {
+		return "", fmt.Errorf("avatar download was empty")
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return "", fmt.Errorf("store avatar file: %w", err)
+	}
+	return finalPath, nil
+}
+
+func avatarCachePath(cacheDir, chatID, avatarID, ext string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{chatID, avatarID}, "\x00")))
+	return filepath.Join(cacheDir, "avatar-"+hex.EncodeToString(sum[:])[:20]+ext)
+}
+
+func avatarFileExtension(contentType, rawURL string) string {
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if exts, _ := mime.ExtensionsByType(contentType); len(exts) > 0 && validMediaExtension(exts[0]) {
+		return exts[0]
+	}
+	if parsed, err := neturl.Parse(strings.TrimSpace(rawURL)); err == nil {
+		if ext := strings.ToLower(filepath.Ext(parsed.Path)); validMediaExtension(ext) {
+			return ext
+		}
+	}
+	return ".jpg"
+}
+
+func prepareIncomingMediaEvent(paths config.Paths, event whatsapp.MediaEvent) (whatsapp.MediaEvent, error) {
+	if !strings.EqualFold(strings.TrimSpace(event.Kind), "sticker") || len(event.ThumbnailData) == 0 || strings.TrimSpace(event.ThumbnailPath) != "" {
+		event.ThumbnailData = nil
+		return event, nil
+	}
+	thumbnailPath, err := storeStickerThumbnail(paths.MediaDir, event)
+	if err != nil {
+		return event, err
+	}
+	event.ThumbnailPath = thumbnailPath
+	event.ThumbnailData = nil
+	return event, nil
+}
+
+func storeStickerThumbnail(mediaDir string, event whatsapp.MediaEvent) (string, error) {
+	if strings.TrimSpace(mediaDir) == "" {
+		return "", fmt.Errorf("media dir is required")
+	}
+	if len(event.ThumbnailData) == 0 {
+		return "", fmt.Errorf("sticker thumbnail is empty")
+	}
+	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
+		return "", fmt.Errorf("create media dir: %w", err)
+	}
+	sum := sha256.Sum256(append([]byte(event.MessageID), event.ThumbnailData...))
+	finalPath := filepath.Join(mediaDir, "sticker-thumb-"+hex.EncodeToString(sum[:])[:20]+".png")
+	if mediaPathAvailable(finalPath) {
+		return finalPath, nil
+	}
+	tmp, err := os.CreateTemp(mediaDir, "sticker-thumb-*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("create sticker thumbnail temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(event.ThumbnailData); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write sticker thumbnail: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close sticker thumbnail: %w", err)
+	}
+	defer os.Remove(tmpPath)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return "", fmt.Errorf("store sticker thumbnail: %w", err)
+	}
+	return finalPath, nil
+}
+
 func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, request mediaDownloadRequest) (store.MediaMetadata, error) {
 	if db == nil {
 		return request.Media, fmt.Errorf("store is required")
@@ -1502,6 +1857,9 @@ func mergeAppMediaMetadata(existing, next store.MediaMetadata) store.MediaMetada
 	if strings.TrimSpace(next.MessageID) == "" {
 		next.MessageID = existing.MessageID
 	}
+	if strings.TrimSpace(next.Kind) == "" {
+		next.Kind = existing.Kind
+	}
 	if strings.TrimSpace(next.MIMEType) == "" {
 		next.MIMEType = existing.MIMEType
 	}
@@ -1522,6 +1880,15 @@ func mergeAppMediaMetadata(existing, next store.MediaMetadata) store.MediaMetada
 	}
 	if !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "" {
 		next.DownloadState = existing.DownloadState
+	}
+	if !next.IsAnimated {
+		next.IsAnimated = existing.IsAnimated
+	}
+	if !next.IsLottie {
+		next.IsLottie = existing.IsLottie
+	}
+	if strings.TrimSpace(next.AccessibilityLabel) == "" {
+		next.AccessibilityLabel = existing.AccessibilityLabel
 	}
 	if next.UpdatedAt.IsZero() {
 		next.UpdatedAt = existing.UpdatedAt

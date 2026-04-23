@@ -49,6 +49,15 @@ type MediaDownloadDescriptor struct {
 	UpdatedAt     time.Time
 }
 
+type ChatAvatarResult struct {
+	ChatJID   string
+	AvatarID  string
+	URL       string
+	Changed   bool
+	Cleared   bool
+	UpdatedAt time.Time
+}
+
 type Adapter interface {
 	Connect(ctx context.Context) error
 	Login(ctx context.Context, handleQR QRHandler) error
@@ -63,6 +72,7 @@ type Adapter interface {
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
+	GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error)
 	RefreshChatMetadata(ctx context.Context) ([]Event, error)
 }
 
@@ -857,9 +867,58 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 	return nil
 }
 
+func (c *Client) GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error) {
+	if c == nil || c.client == nil {
+		return ChatAvatarResult{}, ErrClientNotOpen
+	}
+	chatJID = strings.TrimSpace(chatJID)
+	if chatJID == "" {
+		return ChatAvatarResult{}, fmt.Errorf("chat jid is required")
+	}
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return ChatAvatarResult{}, fmt.Errorf("parse chat jid: %w", err)
+	}
+	if !supportedChat(jid) {
+		return ChatAvatarResult{}, fmt.Errorf("unsupported avatar chat jid %s", chatJID)
+	}
+
+	info, err := c.client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
+		Preview:    true,
+		ExistingID: strings.TrimSpace(existingID),
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, whatsmeow.ErrProfilePictureNotSet), errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized):
+		return ChatAvatarResult{
+			ChatJID:   jid.String(),
+			Cleared:   true,
+			UpdatedAt: time.Now(),
+		}, nil
+	default:
+		return ChatAvatarResult{}, fmt.Errorf("get profile picture info for %s: %w", chatJID, err)
+	}
+	if info == nil {
+		return ChatAvatarResult{
+			ChatJID:   jid.String(),
+			AvatarID:  strings.TrimSpace(existingID),
+			UpdatedAt: time.Now(),
+		}, nil
+	}
+	return ChatAvatarResult{
+		ChatJID:   jid.String(),
+		AvatarID:  strings.TrimSpace(info.ID),
+		URL:       strings.TrimSpace(info.URL),
+		Changed:   true,
+		UpdatedAt: time.Now(),
+	}, nil
+}
+
 func mediaTypeForDownloadKind(kind string) (whatsmeow.MediaType, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "image":
+		return whatsmeow.MediaImage, nil
+	case "sticker":
 		return whatsmeow.MediaImage, nil
 	case "video":
 		return whatsmeow.MediaVideo, nil
@@ -940,15 +999,16 @@ type SendResult struct {
 type EventKind string
 
 const (
-	EventChatUpsert      EventKind = "chat_upsert"
-	EventMessageUpsert   EventKind = "message_upsert"
-	EventReceiptUpdate   EventKind = "receipt_update"
-	EventReactionUpdate  EventKind = "reaction_update"
-	EventPresenceUpdate  EventKind = "presence_update"
-	EventMediaMetadata   EventKind = "media_metadata"
-	EventConnectionState EventKind = "connection_state"
-	EventHistoryStatus   EventKind = "history_status"
-	EventContactUpsert   EventKind = "contact_upsert"
+	EventChatUpsert       EventKind = "chat_upsert"
+	EventMessageUpsert    EventKind = "message_upsert"
+	EventReceiptUpdate    EventKind = "receipt_update"
+	EventReactionUpdate   EventKind = "reaction_update"
+	EventPresenceUpdate   EventKind = "presence_update"
+	EventMediaMetadata    EventKind = "media_metadata"
+	EventConnectionState  EventKind = "connection_state"
+	EventHistoryStatus    EventKind = "history_status"
+	EventContactUpsert    EventKind = "contact_upsert"
+	EventChatAvatarUpdate EventKind = "chat_avatar_update"
 )
 
 type ConnectionState string
@@ -973,6 +1033,7 @@ type Event struct {
 	Connection ConnectionEvent
 	History    HistoryEvent
 	Contact    ContactEvent
+	Avatar     AvatarEvent
 }
 
 type ApplyResult struct {
@@ -1056,15 +1117,28 @@ type PresenceEvent struct {
 	UpdatedAt time.Time
 }
 
+type AvatarEvent struct {
+	ChatID    string
+	ChatJID   string
+	AvatarID  string
+	Remove    bool
+	UpdatedAt time.Time
+}
+
 type MediaEvent struct {
-	MessageID     string
-	MIMEType      string
-	FileName      string
-	SizeBytes     int64
-	LocalPath     string
-	ThumbnailPath string
-	DownloadState string
-	UpdatedAt     time.Time
-	Download      MediaDownloadDescriptor
-	Historical    bool
+	MessageID          string
+	Kind               string
+	MIMEType           string
+	FileName           string
+	SizeBytes          int64
+	LocalPath          string
+	ThumbnailPath      string
+	ThumbnailData      []byte
+	DownloadState      string
+	IsAnimated         bool
+	IsLottie           bool
+	AccessibilityLabel string
+	UpdatedAt          time.Time
+	Download           MediaDownloadDescriptor
+	Historical         bool
 }

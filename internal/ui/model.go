@@ -182,103 +182,106 @@ type Options struct {
 	SaveMedia            func(media store.MediaMetadata) error
 	DownloadMedia        func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 	ActiveChatChanged    func(chatID string)
+	VisibleChatsChanged  func(chatIDs []string)
 }
 
 type Model struct {
-	width                  int
-	height                 int
-	mode                   Mode
-	focus                  Focus
-	allChats               []store.Chat
-	chats                  []store.Chat
-	messagesByChat         map[string][]store.Message
-	draftsByChat           map[string]string
-	activeChat             int
-	chatScrollTop          int
-	messageCursor          int
-	messageScrollTop       int
-	visualAnchor           int
-	previewReport          media.Report
-	previewCache           map[string]media.Preview
-	previewInflight        map[string]bool
-	previewRequested       map[string]bool
-	previewGeneration      int
-	overlay                *media.OverlayManager
-	overlaySignature       string
-	mediaDownloadInflight  map[string]bool
-	suppressOverlay        bool
-	audioProcess           AudioProcess
-	audioSession           int
-	audioMessageID         string
-	audioMediaKey          string
-	audioDisplayName       string
-	paths                  config.Paths
-	config                 config.Config
-	status                 string
-	connectionState        ConnectionState
-	commandLine            string
-	searchLine             string
-	composer               string
-	attachments            []Attachment
-	lastSearch             string
-	lastSearchFocus        Focus
-	activeSearch           string
-	searchChatSource       []store.Chat
-	searchMatches          []int
-	searchIndex            int
-	messageFilter          string
-	unfilteredByChat       map[string][]store.Message
-	pendingCount           int
-	leaderPending          bool
-	leaderSequence         string
-	yankRegister           string
-	quitting               bool
-	compactLayout          bool
-	infoPaneVisible        bool
-	helpVisible            bool
-	unreadOnly             bool
-	pinnedFirst            bool
-	commandHistory         []string
-	searchHistory          []string
-	deleteConfirmID        string
-	replyTo                *store.Message
-	presenceByChat         map[string]PresenceUpdate
-	readReceiptInflight    map[string]bool
-	presenceSubscribed     map[string]bool
-	ownPresenceChatID      string
-	ownPresenceComposing   bool
-	ownPresenceGeneration  int
-	persistMessage         func(OutgoingMessage) (store.Message, error)
-	retryMessage           func(message store.Message) (store.Message, error)
-	markRead               func(chat store.Chat, messages []store.Message) error
-	sendReaction           func(message store.Message, emoji string) error
-	sendPresence           func(chatID string, composing bool) error
-	subscribePresence      func(chatID string) error
-	loadMessages           func(chatID string, limit int) ([]store.Message, error)
-	loadOlderMessages      func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	requestHistory         func(chatID string) error
-	reloadSnapshot         func(activeChatID string, limit int) (store.Snapshot, error)
-	saveDraft              func(chatID, body string) error
-	searchChats            func(query string) ([]store.Chat, error)
-	searchMessages         func(chatID, query string, limit int) ([]store.Message, error)
-	copyToClipboard        func(text string) error
-	pickAttachment         func() tea.Cmd
-	openMedia              func(media store.MediaMetadata) tea.Cmd
-	startAudio             func(media store.MediaMetadata) (AudioProcess, error)
-	deleteMessage          func(messageID string) error
-	saveMedia              func(media store.MediaMetadata) error
-	downloadMedia          func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	activeChatChanged      func(chatID string)
-	lastReportedActiveChat string
-	liveUpdates            <-chan LiveUpdate
-	reloadInFlight         bool
-	refreshQueued          bool
-	refreshDebouncePending bool
-	blockSending           bool
-	blockAttachments       bool
-	requireOnlineForSend   bool
-	messageLimitsByChat    map[string]int
-	historyRequestedByChat map[string]bool
+	width                    int
+	height                   int
+	mode                     Mode
+	focus                    Focus
+	allChats                 []store.Chat
+	chats                    []store.Chat
+	messagesByChat           map[string][]store.Message
+	draftsByChat             map[string]string
+	activeChat               int
+	chatScrollTop            int
+	messageCursor            int
+	messageScrollTop         int
+	visualAnchor             int
+	previewReport            media.Report
+	previewCache             map[string]media.Preview
+	previewInflight          map[string]bool
+	previewRequested         map[string]bool
+	previewGeneration        int
+	overlay                  *media.OverlayManager
+	overlaySignature         string
+	mediaDownloadInflight    map[string]bool
+	suppressOverlay          bool
+	audioProcess             AudioProcess
+	audioSession             int
+	audioMessageID           string
+	audioMediaKey            string
+	audioDisplayName         string
+	paths                    config.Paths
+	config                   config.Config
+	status                   string
+	connectionState          ConnectionState
+	commandLine              string
+	searchLine               string
+	composer                 string
+	attachments              []Attachment
+	lastSearch               string
+	lastSearchFocus          Focus
+	activeSearch             string
+	searchChatSource         []store.Chat
+	searchMatches            []int
+	searchIndex              int
+	messageFilter            string
+	unfilteredByChat         map[string][]store.Message
+	pendingCount             int
+	leaderPending            bool
+	leaderSequence           string
+	yankRegister             string
+	quitting                 bool
+	compactLayout            bool
+	infoPaneVisible          bool
+	helpVisible              bool
+	unreadOnly               bool
+	pinnedFirst              bool
+	commandHistory           []string
+	searchHistory            []string
+	deleteConfirmID          string
+	replyTo                  *store.Message
+	presenceByChat           map[string]PresenceUpdate
+	readReceiptInflight      map[string]bool
+	presenceSubscribed       map[string]bool
+	ownPresenceChatID        string
+	ownPresenceComposing     bool
+	ownPresenceGeneration    int
+	persistMessage           func(OutgoingMessage) (store.Message, error)
+	retryMessage             func(message store.Message) (store.Message, error)
+	markRead                 func(chat store.Chat, messages []store.Message) error
+	sendReaction             func(message store.Message, emoji string) error
+	sendPresence             func(chatID string, composing bool) error
+	subscribePresence        func(chatID string) error
+	loadMessages             func(chatID string, limit int) ([]store.Message, error)
+	loadOlderMessages        func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	requestHistory           func(chatID string) error
+	reloadSnapshot           func(activeChatID string, limit int) (store.Snapshot, error)
+	saveDraft                func(chatID, body string) error
+	searchChats              func(query string) ([]store.Chat, error)
+	searchMessages           func(chatID, query string, limit int) ([]store.Message, error)
+	copyToClipboard          func(text string) error
+	pickAttachment           func() tea.Cmd
+	openMedia                func(media store.MediaMetadata) tea.Cmd
+	startAudio               func(media store.MediaMetadata) (AudioProcess, error)
+	deleteMessage            func(messageID string) error
+	saveMedia                func(media store.MediaMetadata) error
+	downloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	activeChatChanged        func(chatID string)
+	lastReportedActiveChat   string
+	visibleChatsChanged      func(chatIDs []string)
+	lastReportedVisibleChats string
+	liveUpdates              <-chan LiveUpdate
+	reloadInFlight           bool
+	refreshQueued            bool
+	refreshDebouncePending   bool
+	blockSending             bool
+	blockAttachments         bool
+	requireOnlineForSend     bool
+	messageLimitsByChat      map[string]int
+	historyRequestedByChat   map[string]bool
 }
 
 const messageLoadLimit = 200
@@ -342,6 +345,7 @@ func NewModel(opts Options) Model {
 		saveMedia:              opts.SaveMedia,
 		downloadMedia:          opts.DownloadMedia,
 		activeChatChanged:      opts.ActiveChatChanged,
+		visibleChatsChanged:    opts.VisibleChatsChanged,
 		markRead:               opts.MarkRead,
 		sendReaction:           opts.SendReaction,
 		sendPresence:           opts.SendPresence,
@@ -358,6 +362,7 @@ func NewModel(opts Options) Model {
 		historyRequestedByChat: map[string]bool{},
 	}
 	model.reportActiveChatChanged()
+	model.reportVisibleChatsChanged()
 	return model
 }
 
@@ -2185,13 +2190,16 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, batchCmds(cmd, m.clearOverlayCmd())
 	}
-	next, previewCmd := m.queueRequestedPreviewCmd()
+	next := m
+	next.reportVisibleChatsChanged()
+	next, stickerCmd := next.ensureVisibleStickerMedia()
+	next, previewCmd := next.queueRequestedPreviewCmd()
 	if next.suppressOverlay {
 		next.suppressOverlay = false
-		return next, batchCmds(cmd, previewCmd, next.clearOverlayCmd())
+		return next, batchCmds(cmd, stickerCmd, previewCmd, next.clearOverlayCmd())
 	}
 	overlayCmd := next.syncOverlayCmd()
-	return next, batchCmds(cmd, previewCmd, overlayCmd)
+	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd)
 }
 
 func batchCmds(cmds ...tea.Cmd) tea.Cmd {
@@ -2211,7 +2219,7 @@ func batchCmds(cmds ...tea.Cmd) tea.Cmd {
 }
 
 func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
-	requests := m.requestedPreviewRequests()
+	requests := append(m.requestedPreviewRequests(), m.requestedAvatarPreviewRequests()...)
 	if len(requests) == 0 {
 		return m, nil
 	}
@@ -2253,6 +2261,47 @@ func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) ensureVisibleStickerMedia() (Model, tea.Cmd) {
+	if len(m.currentMessages()) == 0 {
+		return *m, nil
+	}
+	if m.previewRequested == nil {
+		m.previewRequested = map[string]bool{}
+	}
+
+	start, end := 0, len(m.currentMessages())
+	if geometry, ok := m.messagePaneGeometry(); ok {
+		start, end = m.visibleMessageRange(len(m.currentMessages()), max(1, geometry.height-2))
+	}
+	var cmds []tea.Cmd
+	for _, message := range m.currentMessages()[start:end] {
+		for _, item := range message.Media {
+			if !strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+				continue
+			}
+			key := mediaActivationKey(message, item)
+			m.previewRequested[key] = true
+			if strings.TrimSpace(item.LocalPath) != "" || m.downloadMedia == nil || strings.EqualFold(strings.TrimSpace(item.DownloadState), "failed") {
+				continue
+			}
+			if !m.startMediaDownload(message, item, "downloading sticker") {
+				continue
+			}
+			messageCopy := message
+			itemCopy := item
+			cmds = append(cmds, func() tea.Msg {
+				downloaded, err := m.downloadMedia(messageCopy, itemCopy)
+				return mediaDownloadedMsg{
+					MessageID: messageCopy.ID,
+					Media:     downloaded,
+					Err:       err,
+				}
+			})
+		}
+	}
+	return *m, batchCmds(cmds...)
 }
 
 func (m *Model) syncOverlayCmd() tea.Cmd {
@@ -2361,9 +2410,50 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 	return requests
 }
 
+func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
+	if m.width <= 0 || m.height <= 0 {
+		return nil
+	}
+	if m.previewReport.Selected == media.BackendNone || m.previewReport.Selected == media.BackendExternal || m.previewReport.Selected == media.BackendUeberzugPP {
+		return nil
+	}
+	chatIDs := m.visibleChatIDs()
+	if len(chatIDs) == 0 {
+		return nil
+	}
+
+	requests := make([]media.PreviewRequest, 0, len(chatIDs))
+	for _, chatID := range chatIDs {
+		chat := m.chatByID(chatID)
+		request, ok := m.chatAvatarPreviewRequest(chat)
+		if !ok {
+			continue
+		}
+		requests = append(requests, request)
+		if len(requests) >= 8 {
+			break
+		}
+	}
+	return requests
+}
+
 func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {
 	item, _ = normalizeManagedMediaMetadata(m.paths, item)
 	kind := media.MediaKind(item.MIMEType, item.FileName)
+	requestMIMEType := item.MIMEType
+	requestFileName := item.FileName
+	requestLocalPath := item.LocalPath
+	requestThumbnailPath := item.ThumbnailPath
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		kind = media.KindImage
+		if media.MediaKind(requestMIMEType, requestFileName) == media.KindUnsupported {
+			requestMIMEType = "image/png"
+			requestFileName = "sticker.png"
+			if strings.TrimSpace(requestThumbnailPath) != "" {
+				requestLocalPath = ""
+			}
+		}
+	}
 	if kind != media.KindImage && kind != media.KindVideo {
 		return media.PreviewRequest{}, false
 	}
@@ -2376,10 +2466,10 @@ func (m Model) previewRequestForMedia(message store.Message, item store.MediaMet
 
 	request := media.PreviewRequest{
 		MessageID:     item.MessageID,
-		MIMEType:      item.MIMEType,
-		FileName:      item.FileName,
-		LocalPath:     item.LocalPath,
-		ThumbnailPath: item.ThumbnailPath,
+		MIMEType:      requestMIMEType,
+		FileName:      requestFileName,
+		LocalPath:     requestLocalPath,
+		ThumbnailPath: requestThumbnailPath,
 		CacheDir:      m.paths.PreviewCacheDir,
 		Backend:       m.previewReport.Selected,
 		Width:         width,
@@ -2389,6 +2479,25 @@ func (m Model) previewRequestForMedia(message store.Message, item store.MediaMet
 		request.MessageID = message.ID
 	}
 	return request, true
+}
+
+func (m Model) chatAvatarPreviewRequest(chat store.Chat) (media.PreviewRequest, bool) {
+	avatarPath := strings.TrimSpace(chat.AvatarPath)
+	avatarThumbPath := strings.TrimSpace(chat.AvatarThumbPath)
+	if avatarPath == "" && avatarThumbPath == "" {
+		return media.PreviewRequest{}, false
+	}
+	return media.PreviewRequest{
+		MessageID:     "chat-avatar:" + chat.ID,
+		MIMEType:      "image/png",
+		FileName:      "avatar.png",
+		LocalPath:     avatarPath,
+		ThumbnailPath: avatarThumbPath,
+		CacheDir:      m.paths.PreviewCacheDir,
+		Backend:       m.previewReport.Selected,
+		Width:         4,
+		Height:        2,
+	}, true
 }
 
 func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
@@ -3253,6 +3362,9 @@ func mergeMediaMetadata(existing, next store.MediaMetadata) store.MediaMetadata 
 	if strings.TrimSpace(next.MessageID) == "" {
 		next.MessageID = existing.MessageID
 	}
+	if strings.TrimSpace(next.Kind) == "" {
+		next.Kind = existing.Kind
+	}
 	if strings.TrimSpace(next.MIMEType) == "" {
 		next.MIMEType = existing.MIMEType
 	}
@@ -3273,6 +3385,15 @@ func mergeMediaMetadata(existing, next store.MediaMetadata) store.MediaMetadata 
 	}
 	if !incomingLocalPath && strings.TrimSpace(next.DownloadState) == "" {
 		next.DownloadState = existing.DownloadState
+	}
+	if !next.IsAnimated {
+		next.IsAnimated = existing.IsAnimated
+	}
+	if !next.IsLottie {
+		next.IsLottie = existing.IsLottie
+	}
+	if strings.TrimSpace(next.AccessibilityLabel) == "" {
+		next.AccessibilityLabel = existing.AccessibilityLabel
 	}
 	if next.UpdatedAt.IsZero() {
 		next.UpdatedAt = existing.UpdatedAt
@@ -3346,6 +3467,12 @@ func leaderDisplay(leader string) string {
 }
 
 func (m Model) mediaDisplayName(item store.MediaMetadata) string {
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		if label := strings.TrimSpace(m.sanitizeDisplayLine(item.AccessibilityLabel)); label != "" {
+			return label
+		}
+		return "sticker"
+	}
 	name := strings.TrimSpace(m.sanitizeDisplayLine(item.FileName))
 	if name == "" {
 		name = strings.TrimSpace(m.sanitizeDisplayLine(item.LocalPath))
@@ -3357,6 +3484,12 @@ func (m Model) mediaDisplayName(item store.MediaMetadata) string {
 }
 
 func mediaDisplayName(item store.MediaMetadata) string {
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		if label := strings.TrimSpace(sanitizeDisplayLine(item.AccessibilityLabel)); label != "" {
+			return label
+		}
+		return "sticker"
+	}
 	name := strings.TrimSpace(sanitizeDisplayLine(item.FileName))
 	if name == "" {
 		name = strings.TrimSpace(sanitizeDisplayLine(item.LocalPath))
@@ -3379,6 +3512,56 @@ func mediaDownloadUnavailableStatus(item store.MediaMetadata) string {
 		return fmt.Sprintf("%s only has a thumbnail; full media download is not implemented", mediaDisplayName(item))
 	}
 	return fmt.Sprintf("%s is not downloaded yet; WhatsApp media download is not implemented", mediaDisplayName(item))
+}
+
+func (m *Model) reportVisibleChatsChanged() {
+	if m.visibleChatsChanged == nil {
+		return
+	}
+	chatIDs := m.visibleChatIDs()
+	signature := strings.Join(chatIDs, "\n")
+	if signature == m.lastReportedVisibleChats {
+		return
+	}
+	m.lastReportedVisibleChats = signature
+	m.visibleChatsChanged(slices.Clone(chatIDs))
+}
+
+func (m Model) visibleChatIDs() []string {
+	if len(m.chats) == 0 {
+		return nil
+	}
+	visible := visibleChatCellCount(m.chatPaneContentHeight())
+	if visible <= 0 {
+		visible = 1
+	}
+	start := adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visible)
+	end := min(len(m.chats), start+visible)
+	chatIDs := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		if chatID := strings.TrimSpace(m.chats[i].ID); chatID != "" {
+			chatIDs = append(chatIDs, chatID)
+		}
+	}
+	return chatIDs
+}
+
+func (m Model) chatByID(chatID string) store.Chat {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return store.Chat{}
+	}
+	for _, chat := range m.chats {
+		if chat.ID == chatID {
+			return chat
+		}
+	}
+	for _, chat := range m.allChats {
+		if chat.ID == chatID {
+			return chat
+		}
+	}
+	return store.Chat{}
 }
 
 func previewRequestName(request media.PreviewRequest) string {

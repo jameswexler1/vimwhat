@@ -20,6 +20,7 @@ type Paths struct {
 	DatabaseFile    string
 	SessionFile     string
 	LogFile         string
+	AvatarCacheDir  string
 	MediaDir        string
 	PreviewCacheDir string
 }
@@ -59,6 +60,7 @@ func ResolvePaths() (Paths, error) {
 		DatabaseFile:    filepath.Join(dataDir, "state.sqlite3"),
 		SessionFile:     filepath.Join(dataDir, "whatsapp-session.sqlite3"),
 		LogFile:         filepath.Join(cacheDir, "vimwhat.log"),
+		AvatarCacheDir:  filepath.Join(cacheDir, "avatars"),
 		MediaDir:        filepath.Join(transientDir, "media"),
 		PreviewCacheDir: filepath.Join(transientDir, "preview"),
 	}, nil
@@ -72,6 +74,7 @@ func (p Paths) Ensure() error {
 		{path: p.ConfigDir, perm: 0o755},
 		{path: p.DataDir, perm: 0o755},
 		{path: p.CacheDir, perm: 0o755},
+		{path: p.AvatarCacheDir, perm: 0o700},
 		{path: p.TransientDir, perm: 0o700},
 		{path: p.MediaDir, perm: 0o700},
 		{path: p.PreviewCacheDir, perm: 0o700},
@@ -108,7 +111,7 @@ func (p Paths) IsManagedCachePath(path string) bool {
 	if path == "" {
 		return false
 	}
-	for _, root := range []string{p.MediaDir, p.PreviewCacheDir, p.LegacyMediaDir(), p.LegacyPreviewCacheDir()} {
+	for _, root := range []string{p.AvatarCacheDir, p.MediaDir, p.PreviewCacheDir, p.LegacyMediaDir(), p.LegacyPreviewCacheDir()} {
 		root = strings.TrimSpace(root)
 		if root == "" {
 			continue

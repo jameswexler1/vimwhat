@@ -153,6 +153,19 @@ var migrations = []migration{
 				ON message_reactions (message_id, updated_at ASC, sender_jid ASC)`,
 		},
 	},
+	{
+		name: "0007_chat_avatars_and_sticker_metadata",
+		sql: []string{
+			`ALTER TABLE chats ADD COLUMN avatar_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE chats ADD COLUMN avatar_path TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE chats ADD COLUMN avatar_thumb_path TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE chats ADD COLUMN avatar_updated_at INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE media_metadata ADD COLUMN media_kind TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE media_metadata ADD COLUMN is_animated INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE media_metadata ADD COLUMN is_lottie INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE media_metadata ADD COLUMN accessibility_label TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

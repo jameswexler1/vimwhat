@@ -56,6 +56,8 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return normalizeMessageEvent(event)
 	case *events.Receipt:
 		return normalizeReceiptEvent(event)
+	case *events.Picture:
+		return normalizePictureEvent(event)
 	case *events.ChatPresence:
 		return normalizeChatPresenceEvent(event)
 	case *events.GroupInfo:
@@ -250,7 +252,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 	messageID := localMessageID(chatID, string(event.Info.ID))
 	reaction, hasReaction := reactionEvent(chatID, event)
 	body := messageBody(event.Message)
-	media, hasMedia := mediaMetadata(messageID, event.Message, event.Info.Timestamp)
+	media, hasMedia := mediaMetadata(messageID, event, event.Info.Timestamp)
 	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
 	notificationPreview := messageNotificationPreview(body, media, hasMedia)
 
@@ -311,6 +313,13 @@ func messageNotificationPreview(body string, item MediaEvent, hasMedia bool) str
 	}
 	if !hasMedia {
 		return ""
+	}
+
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		if label := strings.TrimSpace(item.AccessibilityLabel); label != "" {
+			return "Sticker: " + label
+		}
+		return "Sticker"
 	}
 
 	switch media.MediaKind(item.MIMEType, item.FileName) {
@@ -415,6 +424,27 @@ func normalizeChatPresenceEvent(event *events.ChatPresence) []Event {
 			Sender:    display,
 			Typing:    event.State == types.ChatPresenceComposing,
 			UpdatedAt: time.Now(),
+		},
+	}}
+}
+
+func normalizePictureEvent(event *events.Picture) []Event {
+	if event == nil || event.JID.IsEmpty() || !supportedChat(event.JID) {
+		return nil
+	}
+	updatedAt := event.Timestamp
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	chatID := event.JID.String()
+	return []Event{{
+		Kind: EventChatAvatarUpdate,
+		Avatar: AvatarEvent{
+			ChatID:    chatID,
+			ChatJID:   chatID,
+			AvatarID:  strings.TrimSpace(event.PictureID),
+			Remove:    event.Remove,
+			UpdatedAt: updatedAt,
 		},
 	}}
 }
@@ -608,18 +638,20 @@ func messageBody(message *waE2E.Message) string {
 	return ""
 }
 
-func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time) (MediaEvent, bool) {
-	if message == nil {
+func mediaMetadata(messageID string, event *events.Message, timestamp time.Time) (MediaEvent, bool) {
+	if event == nil || event.Message == nil {
 		return MediaEvent{}, false
 	}
 	updatedAt := timestamp
 	if updatedAt.IsZero() {
 		updatedAt = time.Now()
 	}
+	message := event.Message
 
 	if image := message.GetImageMessage(); image != nil {
 		return MediaEvent{
 			MessageID:     messageID,
+			Kind:          "image",
 			MIMEType:      image.GetMimetype(),
 			SizeBytes:     int64(image.GetFileLength()),
 			DownloadState: "remote",
@@ -640,6 +672,7 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 	if video := message.GetVideoMessage(); video != nil {
 		return MediaEvent{
 			MessageID:     messageID,
+			Kind:          "video",
 			MIMEType:      video.GetMimetype(),
 			SizeBytes:     int64(video.GetFileLength()),
 			DownloadState: "remote",
@@ -660,6 +693,7 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 	if audio := message.GetAudioMessage(); audio != nil {
 		return MediaEvent{
 			MessageID:     messageID,
+			Kind:          "audio",
 			MIMEType:      audio.GetMimetype(),
 			SizeBytes:     int64(audio.GetFileLength()),
 			DownloadState: "remote",
@@ -684,6 +718,7 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 		}
 		return MediaEvent{
 			MessageID:     messageID,
+			Kind:          "document",
 			MIMEType:      document.GetMimetype(),
 			FileName:      fileName,
 			SizeBytes:     int64(document.GetFileLength()),
@@ -698,6 +733,39 @@ func mediaMetadata(messageID string, message *waE2E.Message, timestamp time.Time
 				document.GetFileSHA256(),
 				document.GetFileEncSHA256(),
 				document.GetFileLength(),
+				updatedAt,
+			),
+		}, true
+	}
+	if sticker := message.GetStickerMessage(); sticker != nil {
+		fileName := "sticker.webp"
+		switch {
+		case sticker.GetIsLottie() || event.IsLottieSticker:
+			fileName = "sticker.tgs"
+		case sticker.GetMimetype() != "":
+			fileName = stickerFileName(sticker.GetMimetype())
+		}
+		return MediaEvent{
+			MessageID:          messageID,
+			Kind:               "sticker",
+			MIMEType:           sticker.GetMimetype(),
+			FileName:           fileName,
+			SizeBytes:          int64(sticker.GetFileLength()),
+			ThumbnailData:      cloneBytes(sticker.GetPngThumbnail()),
+			DownloadState:      "remote",
+			IsAnimated:         sticker.GetIsAnimated(),
+			IsLottie:           sticker.GetIsLottie() || event.IsLottieSticker,
+			AccessibilityLabel: strings.TrimSpace(sticker.GetAccessibilityLabel()),
+			UpdatedAt:          updatedAt,
+			Download: mediaDownloadDescriptor(
+				messageID,
+				"sticker",
+				sticker.GetURL(),
+				sticker.GetDirectPath(),
+				sticker.GetMediaKey(),
+				sticker.GetFileSHA256(),
+				sticker.GetFileEncSHA256(),
+				sticker.GetFileLength(),
 				updatedAt,
 			),
 		}, true
@@ -764,7 +832,24 @@ func messageContextInfo(message *waE2E.Message) *waE2E.ContextInfo {
 	if contextInfo := message.GetDocumentMessage().GetContextInfo(); contextInfo != nil {
 		return contextInfo
 	}
+	if contextInfo := message.GetStickerMessage().GetContextInfo(); contextInfo != nil {
+		return contextInfo
+	}
 	return nil
+}
+
+func stickerFileName(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch mimeType {
+	case "image/webp":
+		return "sticker.webp"
+	case "image/png":
+		return "sticker.png"
+	case "application/x-tgsticker", "application/x-tgs", "application/gzip":
+		return "sticker.tgs"
+	default:
+		return "sticker"
+	}
 }
 
 func receiptStatus(receiptType types.ReceiptType) string {

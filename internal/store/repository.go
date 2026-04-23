@@ -16,6 +16,28 @@ const (
 					FROM media_metadata visible_mm
 					WHERE visible_mm.message_id = m.id
 				))`
+	chatLastPreviewSQL = `COALESCE((
+					SELECT CASE
+						WHEN trim(m.body) <> '' THEN m.body
+						ELSE COALESCE((
+							SELECT CASE
+								WHEN trim(mm.media_kind) = 'sticker' AND trim(mm.accessibility_label) <> '' THEN 'Sticker: ' || mm.accessibility_label
+								WHEN trim(mm.media_kind) = 'sticker' THEN 'Sticker'
+								ELSE COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
+							END
+							FROM media_metadata mm
+							WHERE mm.message_id = m.id
+							ORDER BY mm.file_name ASC
+							LIMIT 1
+						), '')
+				END
+					FROM messages m
+					WHERE m.chat_id = c.id
+						AND m.deleted_at = 0
+						AND ` + renderableMessageWhereSQL + `
+					ORDER BY m.timestamp_unix DESC, m.id DESC
+					LIMIT 1
+				), '') AS last_preview`
 )
 
 func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, error) {
@@ -62,28 +84,15 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.title,
 			c.title_source,
 			c.kind,
+			c.avatar_id,
+			c.avatar_path,
+			c.avatar_thumb_path,
+			c.avatar_updated_at,
 			c.unread_count,
 			c.pinned,
 			c.muted,
 			c.last_message_at,
-			COALESCE((
-					SELECT CASE
-						WHEN trim(m.body) <> '' THEN m.body
-						ELSE COALESCE((
-							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
-							FROM media_metadata mm
-							WHERE mm.message_id = m.id
-							ORDER BY mm.file_name ASC
-							LIMIT 1
-						), '')
-				END
-					FROM messages m
-					WHERE m.chat_id = c.id
-						AND m.deleted_at = 0
-						AND `+renderableMessageWhereSQL+`
-					ORDER BY m.timestamp_unix DESC, m.id DESC
-					LIMIT 1
-				), '') AS last_preview,
+			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -123,28 +132,15 @@ func (s *Store) ChatByJID(ctx context.Context, jid string) (Chat, bool, error) {
 			c.title,
 			c.title_source,
 			c.kind,
+			c.avatar_id,
+			c.avatar_path,
+			c.avatar_thumb_path,
+			c.avatar_updated_at,
 			c.unread_count,
 			c.pinned,
 			c.muted,
 			c.last_message_at,
-			COALESCE((
-					SELECT CASE
-						WHEN trim(m.body) <> '' THEN m.body
-						ELSE COALESCE((
-							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
-							FROM media_metadata mm
-							WHERE mm.message_id = m.id
-							ORDER BY mm.file_name ASC
-							LIMIT 1
-						), '')
-				END
-					FROM messages m
-					WHERE m.chat_id = c.id
-						AND m.deleted_at = 0
-						AND `+renderableMessageWhereSQL+`
-					ORDER BY m.timestamp_unix DESC, m.id DESC
-					LIMIT 1
-				), '') AS last_preview,
+			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -174,28 +170,15 @@ func (s *Store) ChatByID(ctx context.Context, id string) (Chat, bool, error) {
 			c.title,
 			c.title_source,
 			c.kind,
+			c.avatar_id,
+			c.avatar_path,
+			c.avatar_thumb_path,
+			c.avatar_updated_at,
 			c.unread_count,
 			c.pinned,
 			c.muted,
 			c.last_message_at,
-			COALESCE((
-					SELECT CASE
-						WHEN trim(m.body) <> '' THEN m.body
-						ELSE COALESCE((
-							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
-							FROM media_metadata mm
-							WHERE mm.message_id = m.id
-							ORDER BY mm.file_name ASC
-							LIMIT 1
-						), '')
-				END
-					FROM messages m
-					WHERE m.chat_id = c.id
-						AND m.deleted_at = 0
-						AND `+renderableMessageWhereSQL+`
-					ORDER BY m.timestamp_unix DESC, m.id DESC
-					LIMIT 1
-				), '') AS last_preview,
+			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -420,28 +403,15 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 			c.title,
 			c.title_source,
 			c.kind,
+			c.avatar_id,
+			c.avatar_path,
+			c.avatar_thumb_path,
+			c.avatar_updated_at,
 			c.unread_count,
 			c.pinned,
 			c.muted,
 			c.last_message_at,
-			COALESCE((
-					SELECT CASE
-						WHEN trim(m.body) <> '' THEN m.body
-						ELSE COALESCE((
-							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
-							FROM media_metadata mm
-							WHERE mm.message_id = m.id
-							ORDER BY mm.file_name ASC
-							LIMIT 1
-						), '')
-				END
-					FROM messages m
-					WHERE m.chat_id = c.id
-						AND m.deleted_at = 0
-						AND `+renderableMessageWhereSQL+`
-					ORDER BY m.timestamp_unix DESC, m.id DESC
-					LIMIT 1
-				), '') AS last_preview,
+			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -580,16 +550,37 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 	if chat.LastMessageAt.IsZero() {
 		lastMessageAt = 0
 	}
+	avatarUpdatedAt := chat.AvatarUpdatedAt.Unix()
+	if chat.AvatarUpdatedAt.IsZero() {
+		avatarUpdatedAt = 0
+	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO chats (
-			id, jid, title, title_source, kind, unread_count, pinned, muted, last_message_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, jid, title, title_source, kind, avatar_id, avatar_path, avatar_thumb_path,
+			avatar_updated_at, unread_count, pinned, muted, last_message_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			jid = excluded.jid,
 			title = excluded.title,
 			title_source = excluded.title_source,
 			kind = excluded.kind,
+			avatar_id = CASE
+				WHEN excluded.avatar_id != '' THEN excluded.avatar_id
+				ELSE chats.avatar_id
+			END,
+			avatar_path = CASE
+				WHEN excluded.avatar_path != '' THEN excluded.avatar_path
+				ELSE chats.avatar_path
+			END,
+			avatar_thumb_path = CASE
+				WHEN excluded.avatar_thumb_path != '' THEN excluded.avatar_thumb_path
+				ELSE chats.avatar_thumb_path
+			END,
+			avatar_updated_at = CASE
+				WHEN excluded.avatar_updated_at > 0 THEN excluded.avatar_updated_at
+				ELSE chats.avatar_updated_at
+			END,
 			unread_count = CASE
 				WHEN ? THEN chats.unread_count
 				ELSE excluded.unread_count
@@ -607,6 +598,10 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 		chat.Title,
 		chat.TitleSource,
 		chat.Kind,
+		chat.AvatarID,
+		chat.AvatarPath,
+		chat.AvatarThumbPath,
+		avatarUpdatedAt,
 		chat.Unread,
 		boolToInt(chat.Pinned),
 		boolToInt(chat.Muted),
@@ -619,6 +614,24 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 		return fmt.Errorf("upsert chat %s: %w", chat.ID, err)
 	}
 
+	return nil
+}
+
+func (s *Store) SetChatAvatar(ctx context.Context, chatID, avatarID, avatarPath, avatarThumbPath string, updatedAt time.Time) error {
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("chat id is required")
+	}
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE chats
+		SET avatar_id = ?, avatar_path = ?, avatar_thumb_path = ?, avatar_updated_at = ?, updated_at = ?
+		WHERE id = ?
+	`, avatarID, avatarPath, avatarThumbPath, updatedAt.Unix(), updatedAt.Unix(), chatID)
+	if err != nil {
+		return fmt.Errorf("set chat avatar %s: %w", chatID, err)
+	}
 	return nil
 }
 
@@ -1228,10 +1241,14 @@ func upsertMediaMetadata(ctx context.Context, execer mediaMetadataExecer, media 
 
 	_, err := execer.ExecContext(ctx, `
 		INSERT INTO media_metadata (
-			message_id, mime_type, file_name, size_bytes, local_path,
-			thumbnail_path, download_state, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			message_id, media_kind, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, is_animated, is_lottie, accessibility_label, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(message_id) DO UPDATE SET
+			media_kind = CASE
+				WHEN excluded.media_kind != '' THEN excluded.media_kind
+				ELSE media_metadata.media_kind
+			END,
 			mime_type = CASE
 				WHEN excluded.mime_type != '' THEN excluded.mime_type
 				ELSE media_metadata.mime_type
@@ -1257,15 +1274,31 @@ func upsertMediaMetadata(ctx context.Context, execer mediaMetadataExecer, media 
 				WHEN excluded.download_state != '' THEN excluded.download_state
 				ELSE media_metadata.download_state
 			END,
+			is_animated = CASE
+				WHEN excluded.media_kind != '' OR excluded.is_animated != 0 THEN excluded.is_animated
+				ELSE media_metadata.is_animated
+			END,
+			is_lottie = CASE
+				WHEN excluded.media_kind != '' OR excluded.is_lottie != 0 THEN excluded.is_lottie
+				ELSE media_metadata.is_lottie
+			END,
+			accessibility_label = CASE
+				WHEN excluded.accessibility_label != '' THEN excluded.accessibility_label
+				ELSE media_metadata.accessibility_label
+			END,
 			updated_at = excluded.updated_at
 	`,
 		media.MessageID,
+		media.Kind,
 		media.MIMEType,
 		media.FileName,
 		media.SizeBytes,
 		media.LocalPath,
 		media.ThumbnailPath,
 		media.DownloadState,
+		boolToInt(media.IsAnimated),
+		boolToInt(media.IsLottie),
+		media.AccessibilityLabel,
 		media.UpdatedAt.Unix(),
 	)
 	if err != nil {
@@ -1279,20 +1312,26 @@ func (s *Store) MediaMetadata(ctx context.Context, messageID string) (MediaMetad
 	var (
 		media       MediaMetadata
 		updatedUnix int64
+		isAnimated  int
+		isLottie    int
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT message_id, mime_type, file_name, size_bytes, local_path,
-			thumbnail_path, download_state, updated_at
+		SELECT message_id, media_kind, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, is_animated, is_lottie, accessibility_label, updated_at
 		FROM media_metadata
 		WHERE message_id = ?
 	`, messageID).Scan(
 		&media.MessageID,
+		&media.Kind,
 		&media.MIMEType,
 		&media.FileName,
 		&media.SizeBytes,
 		&media.LocalPath,
 		&media.ThumbnailPath,
 		&media.DownloadState,
+		&isAnimated,
+		&isLottie,
+		&media.AccessibilityLabel,
 		&updatedUnix,
 	)
 	if err != nil {
@@ -1301,6 +1340,8 @@ func (s *Store) MediaMetadata(ctx context.Context, messageID string) (MediaMetad
 		}
 		return MediaMetadata{}, fmt.Errorf("load media metadata for %s: %w", messageID, err)
 	}
+	media.IsAnimated = isAnimated == 1
+	media.IsLottie = isLottie == 1
 	media.UpdatedAt = time.Unix(updatedUnix, 0)
 
 	return media, nil
@@ -1453,8 +1494,8 @@ func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT message_id, mime_type, file_name, size_bytes, local_path,
-			thumbnail_path, download_state, updated_at
+		SELECT message_id, media_kind, mime_type, file_name, size_bytes, local_path,
+			thumbnail_path, download_state, is_animated, is_lottie, accessibility_label, updated_at
 		FROM media_metadata
 		WHERE message_id IN (`+placeholders+`)
 		ORDER BY file_name ASC
@@ -1469,19 +1510,27 @@ func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]
 		var (
 			media       MediaMetadata
 			updatedUnix int64
+			isAnimated  int
+			isLottie    int
 		)
 		if err := rows.Scan(
 			&media.MessageID,
+			&media.Kind,
 			&media.MIMEType,
 			&media.FileName,
 			&media.SizeBytes,
 			&media.LocalPath,
 			&media.ThumbnailPath,
 			&media.DownloadState,
+			&isAnimated,
+			&isLottie,
+			&media.AccessibilityLabel,
 			&updatedUnix,
 		); err != nil {
 			return nil, fmt.Errorf("scan media metadata: %w", err)
 		}
+		media.IsAnimated = isAnimated == 1
+		media.IsLottie = isLottie == 1
 		media.UpdatedAt = time.Unix(updatedUnix, 0)
 		byMessage[media.MessageID] = append(byMessage[media.MessageID], media)
 	}
@@ -1616,11 +1665,12 @@ type scanner interface {
 
 func scanChat(row scanner) (Chat, error) {
 	var (
-		chat            Chat
-		pinned          int
-		muted           int
-		hasDraft        int
-		lastMessageUnix int64
+		chat              Chat
+		pinned            int
+		muted             int
+		hasDraft          int
+		lastMessageUnix   int64
+		avatarUpdatedUnix int64
 	)
 	if err := row.Scan(
 		&chat.ID,
@@ -1628,6 +1678,10 @@ func scanChat(row scanner) (Chat, error) {
 		&chat.Title,
 		&chat.TitleSource,
 		&chat.Kind,
+		&chat.AvatarID,
+		&chat.AvatarPath,
+		&chat.AvatarThumbPath,
+		&avatarUpdatedUnix,
 		&chat.Unread,
 		&pinned,
 		&muted,
@@ -1643,6 +1697,9 @@ func scanChat(row scanner) (Chat, error) {
 	chat.HasDraft = hasDraft == 1
 	if lastMessageUnix > 0 {
 		chat.LastMessageAt = time.Unix(lastMessageUnix, 0)
+	}
+	if avatarUpdatedUnix > 0 {
+		chat.AvatarUpdatedAt = time.Unix(avatarUpdatedUnix, 0)
 	}
 	if chat.Kind == "" {
 		chat.Kind = "direct"

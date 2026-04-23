@@ -3,17 +3,21 @@ package store
 import "time"
 
 type Chat struct {
-	ID            string
-	JID           string
-	Title         string
-	TitleSource   string
-	Kind          string
-	Unread        int
-	Pinned        bool
-	Muted         bool
-	HasDraft      bool
-	LastPreview   string
-	LastMessageAt time.Time
+	ID              string
+	JID             string
+	Title           string
+	TitleSource     string
+	Kind            string
+	AvatarID        string
+	AvatarPath      string
+	AvatarThumbPath string
+	AvatarUpdatedAt time.Time
+	Unread          int
+	Pinned          bool
+	Muted           bool
+	HasDraft        bool
+	LastPreview     string
+	LastMessageAt   time.Time
 }
 
 type Message struct {
@@ -56,14 +60,18 @@ type Contact struct {
 }
 
 type MediaMetadata struct {
-	MessageID     string
-	MIMEType      string
-	FileName      string
-	SizeBytes     int64
-	LocalPath     string
-	ThumbnailPath string
-	DownloadState string
-	UpdatedAt     time.Time
+	MessageID          string
+	Kind               string
+	MIMEType           string
+	FileName           string
+	SizeBytes          int64
+	LocalPath          string
+	ThumbnailPath      string
+	DownloadState      string
+	IsAnimated         bool
+	IsLottie           bool
+	AccessibilityLabel string
+	UpdatedAt          time.Time
 }
 
 type MediaDownloadDescriptor struct {

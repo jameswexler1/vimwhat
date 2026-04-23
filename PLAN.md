@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, desktop notifications, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, and audio/document fallback behavior, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering, first-class sticker receive/render/download behavior, desktop notifications, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -16,6 +16,8 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and temp-backed cached local files.
+- Visible-first chat avatar sync and compact chat-list rendering, backed by WhatsApp profile-picture refreshes, cached local avatar files, and initials fallback when inline image rendering is unavailable.
+- First-class sticker receive/render support: sticker messages are ingested into SQLite with explicit media kind/flags, remote sticker downloads work through the existing media pipeline, PNG sticker thumbnails are cached immediately when provided by WhatsApp, sticker previews auto-inline in the message pane, and chat/notification preview text uses sticker-specific labels instead of generic file names.
 - Real outbound send from the inline composer for plain text plus one local attachment per message, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, captions for image/video/document sends, audio-caption rejection before queueing, ffprobe-backed generic audio send, and document fallback when audio metadata is unavailable.
 - CLI helpers for persisted data: `vimwhat media open <message-id>` reuses the normal opener flow and auto-downloads remote media when possible, while `vimwhat export chat <jid>` writes a local-only Markdown transcript into the configured downloads directory.
 - Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, text replies with quoted metadata, quote-jump into loaded history, a right-edge `l` reply gesture from the message pane when no further pane exists to the right, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
@@ -28,7 +30,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 ### In progress
 
-- Manual validation and polish of desktop notifications, remote media download, outbound text/media send, the new audio fallback behavior, and failed-media retry against real WhatsApp traffic, including a fresh-config check that notification delivery still works when `notification_backend` relies on its intended default `auto` value.
+- Manual validation and polish of desktop notifications, remote media download, outbound text/media send, visible-first avatar refresh, sticker auto-render/download behavior, the new audio fallback behavior, and failed-media retry against real WhatsApp traffic, including a fresh-config check that notification delivery still works when `notification_backend` relies on its intended default `auto` value.
 - Follow-on UX around attachment draft persistence, broader resend flows, and any export/open polish discovered during live usage.
 
 ### Not implemented yet
@@ -167,7 +169,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 ## Near-Term Execution Order
 
 1. Run a manual notification pass first: inactive-chat delivery, active-chat suppression, muted-chat suppression, Linux native backend selection, `notification_command` override behavior, and a fresh-config verification that `notification_backend` truly defaults to `auto` without requiring an explicit config entry.
-2. Validate remote media download on live WhatsApp traffic.
+2. Validate remote media download plus sticker auto-render/download and chat-avatar refresh on live WhatsApp traffic.
 3. Validate real text send for plain text composer submissions against live direct and group chats.
 4. Validate protocol-backed read receipts, reactions, presence, replies/quote-jump, and the right-edge `l` reply gesture against real chats.
 5. Validate attachment upload/send and failed-media retry on real chats, especially generic audio and document fallback cases, then decide the attachment-draft persistence and text-retry batch based on real usage.
@@ -176,7 +178,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 The QR pairing milestone is complete as of 2026-04-22: `vimwhat login` can pair successfully, `vimwhat logout` clears the local/remote session plus app state back to first-use, rejected partial sessions are cleaned up, and `doctor` reports local pairing state.
 
-The live read-only sync milestone is implemented and has been manually validated against real inbound text, image, and file metadata traffic:
+The live read-only sync milestone is implemented and has been manually validated against real inbound text, image, sticker, file metadata, and profile-picture change traffic:
 
 - Bootstrap a `whatsmeow` client from the paired session when the TUI starts.
 - Show connection/auth state in the status line without blocking cached DB rendering.

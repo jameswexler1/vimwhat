@@ -198,7 +198,7 @@ func TestMediaMetadataExtractsDownloadDescriptorsByKind(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			media, ok := mediaMetadata("msg-1", tt.message, when)
+			media, ok := mediaMetadata("msg-1", &events.Message{Message: tt.message}, when)
 			if !ok {
 				t.Fatal("mediaMetadata() ok = false")
 			}
@@ -214,6 +214,70 @@ func TestMediaMetadataExtractsDownloadDescriptorsByKind(t *testing.T) {
 				t.Fatalf("FileName = %q, want %q", media.FileName, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestNormalizeMessageEventExtractsStickerMetadata(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: chat,
+			},
+			ID:        "STICKER1",
+			PushName:  "Alice",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{
+			StickerMessage: &waE2E.StickerMessage{
+				Mimetype:           proto.String("image/webp"),
+				URL:                proto.String("https://example/sticker"),
+				DirectPath:         proto.String("/sticker"),
+				MediaKey:           []byte{1},
+				FileSHA256:         []byte{2},
+				FileEncSHA256:      []byte{3},
+				FileLength:         proto.Uint64(77),
+				IsAnimated:         proto.Bool(true),
+				AccessibilityLabel: proto.String("thumbs up"),
+				PngThumbnail:       []byte{0x89, 'P', 'N', 'G'},
+			},
+		},
+	})
+
+	if len(normalized) != 3 {
+		t.Fatalf("len(normalized) = %d, want 3: %+v", len(normalized), normalized)
+	}
+	if normalized[1].Kind != EventMessageUpsert || normalized[1].Message.NotificationPreview != "Sticker: thumbs up" {
+		t.Fatalf("message event = %+v", normalized[1])
+	}
+	media := normalized[2].Media
+	if normalized[2].Kind != EventMediaMetadata ||
+		media.Kind != "sticker" ||
+		media.FileName != "sticker.webp" ||
+		media.Download.Kind != "sticker" ||
+		!media.IsAnimated ||
+		media.IsLottie ||
+		media.AccessibilityLabel != "thumbs up" ||
+		len(media.ThumbnailData) == 0 {
+		t.Fatalf("media event = %+v", normalized[2])
+	}
+}
+
+func TestNormalizePictureEvent(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	when := time.Unix(1_700_000_000, 0)
+	normalized := normalizeWhatsmeowEvent(&events.Picture{
+		JID:       chat,
+		Timestamp: when,
+		PictureID: "avatar-1",
+	})
+	if len(normalized) != 1 || normalized[0].Kind != EventChatAvatarUpdate {
+		t.Fatalf("normalized = %+v", normalized)
+	}
+	if normalized[0].Avatar.ChatID != chat.String() || normalized[0].Avatar.AvatarID != "avatar-1" || normalized[0].Avatar.Remove {
+		t.Fatalf("avatar event = %+v", normalized[0].Avatar)
 	}
 }
 

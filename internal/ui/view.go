@@ -689,20 +689,51 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	if title == "" {
 		title = "unknown"
 	}
-	avatar := chatAvatarBadge(title, chat.Kind)
-	textWidth := max(1, contentWidth-lipgloss.Width(avatar)-1)
+	avatarLines := m.renderChatAvatarLines(chat, title, border)
+	avatarWidth := displayWidth(avatarLines[0])
+	textWidth := max(1, contentWidth-avatarWidth-1)
 	chatSearchQuery := m.chatSearchQuery()
 	titleLine := renderChatTitleLine(title, chatSuffix(chat), textWidth, chatSearchQuery, active)
 	previewLine := truncateDisplay(m.chatPreview(chat), textWidth)
 
-	avatarStyle := lipgloss.NewStyle().Foreground(border)
 	previewStyle := lipgloss.NewStyle().Foreground(previewFG)
 	content := strings.Join([]string{
-		avatarStyle.Render(avatar) + " " + titleLine,
-		avatarStyle.Render(strings.Repeat(" ", lipgloss.Width(avatar))) + " " + previewStyle.Render(previewLine),
+		avatarLines[0] + " " + titleLine,
+		avatarLines[1] + " " + previewStyle.Render(previewLine),
 	}, "\n")
 
 	return style.Width(panelBoxWidth(style, width)).Render(content)
+}
+
+func (m Model) renderChatAvatarLines(chat store.Chat, title string, border lipgloss.Color) []string {
+	if preview, ok := m.chatAvatarPreview(chat); ok {
+		lines := append([]string{}, preview.Lines...)
+		if len(lines) > 2 {
+			lines = lines[:2]
+		}
+		width := 0
+		for _, line := range lines {
+			width = max(width, displayWidth(line))
+		}
+		if width <= 0 {
+			width = 4
+		}
+		for len(lines) < 2 {
+			lines = append(lines, "")
+		}
+		for i := range lines {
+			lines[i] = padDisplay(lines[i], width)
+		}
+		return lines
+	}
+
+	badge := chatAvatarBadge(title, chat.Kind)
+	width := lipgloss.Width(badge)
+	style := lipgloss.NewStyle().Foreground(border)
+	return []string{
+		style.Render(badge),
+		style.Render(strings.Repeat(" ", width)),
+	}
 }
 
 func renderChatTitleLine(title, suffix string, width int, query string, current bool) string {
@@ -737,6 +768,18 @@ func chatAvatarBadge(title, kind string) string {
 		initials = "?"
 	}
 	return "[" + truncateDisplay(initials, 2) + "]"
+}
+
+func (m Model) chatAvatarPreview(chat store.Chat) (media.Preview, bool) {
+	request, ok := m.chatAvatarPreviewRequest(chat)
+	if !ok {
+		return media.Preview{}, false
+	}
+	preview, ok := m.previewCache[media.PreviewKey(request)]
+	if !ok || !preview.Ready() || preview.Display == media.PreviewDisplayOverlay {
+		return media.Preview{}, false
+	}
+	return preview, true
 }
 
 func chatInitials(title string) string {
@@ -1100,11 +1143,27 @@ func (m Model) messageQuoteLine(message store.Message, width int) string {
 		}
 		if body := strings.TrimSpace(m.sanitizeDisplayLine(firstLine(quoted.Body))); body != "" {
 			label = "reply " + sender + ": " + body
+		} else if summary := strings.TrimSpace(m.quotedMessageSummary(quoted)); summary != "" {
+			label = "reply " + sender + ": " + summary
 		} else {
 			label = "reply " + sender
 		}
 	}
 	return truncateDisplay(label, width)
+}
+
+func (m Model) quotedMessageSummary(message store.Message) string {
+	if len(message.Media) == 0 {
+		return ""
+	}
+	item := message.Media[0]
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		if label := strings.TrimSpace(m.sanitizeDisplayLine(item.AccessibilityLabel)); label != "" {
+			return "Sticker: " + label
+		}
+		return "Sticker"
+	}
+	return m.attachmentLabel(item)
 }
 
 func (m Model) messageByID(messageID string) store.Message {
@@ -1371,15 +1430,8 @@ func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active
 }
 
 func (m Model) attachmentLabel(media store.MediaMetadata) string {
-	name := strings.TrimSpace(m.sanitizeDisplayLine(media.FileName))
-	if name == "" {
-		name = strings.TrimSpace(m.sanitizeDisplayLine(media.LocalPath))
-	}
-	if name == "" {
-		name = "attachment"
-	}
-
-	kind := attachmentKind(media.MIMEType, name)
+	name := m.attachmentName(media)
+	kind := attachmentKind(media)
 	size := humanSize(media.SizeBytes)
 	state := strings.TrimSpace(m.sanitizeDisplayLine(media.DownloadState))
 	var parts []string
@@ -1393,7 +1445,29 @@ func (m Model) attachmentLabel(media store.MediaMetadata) string {
 	return strings.Join(parts, " ")
 }
 
-func attachmentKind(mimeType, name string) string {
+func (m Model) attachmentName(media store.MediaMetadata) string {
+	if strings.EqualFold(strings.TrimSpace(media.Kind), "sticker") {
+		if label := strings.TrimSpace(m.sanitizeDisplayLine(media.AccessibilityLabel)); label != "" {
+			return label
+		}
+		return "sticker"
+	}
+	name := strings.TrimSpace(m.sanitizeDisplayLine(media.FileName))
+	if name == "" {
+		name = strings.TrimSpace(m.sanitizeDisplayLine(media.LocalPath))
+	}
+	if name == "" {
+		name = "attachment"
+	}
+	return name
+}
+
+func attachmentKind(item store.MediaMetadata) string {
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		return "[stk]"
+	}
+	mimeType := item.MIMEType
+	name := item.FileName
 	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
 	switch {
 	case strings.HasPrefix(mimeType, "image/"):

@@ -25,6 +25,7 @@ func clearLocalState(env Environment) error {
 	}
 
 	for _, path := range uniqueNonEmptyPaths(
+		env.Paths.AvatarCacheDir,
 		env.Paths.MediaDir,
 		env.Paths.PreviewCacheDir,
 		env.Paths.LegacyMediaDir(),

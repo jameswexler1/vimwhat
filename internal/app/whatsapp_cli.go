@@ -31,6 +31,7 @@ type WhatsAppLiveSession interface {
 	SubscribeEvents(context.Context) (<-chan whatsapp.Event, error)
 	RequestHistoryBefore(context.Context, whatsapp.HistoryAnchor, int) error
 	DownloadMedia(context.Context, whatsapp.MediaDownloadDescriptor, string) error
+	GetChatAvatar(context.Context, string, string) (whatsapp.ChatAvatarResult, error)
 }
 
 type WhatsAppMetadataSession interface {

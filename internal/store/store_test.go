@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 6 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=6", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 7 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=7", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -759,6 +759,82 @@ func TestMessageMediaAndLocalDelete(t *testing.T) {
 	}
 }
 
+func TestListChatsUsesStickerPreviewLabel(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := store.UpsertMediaMetadata(ctx, MediaMetadata{
+		MessageID:          "m-1",
+		Kind:               "sticker",
+		MIMEType:           "image/webp",
+		FileName:           "sticker.webp",
+		DownloadState:      "remote",
+		IsAnimated:         true,
+		AccessibilityLabel: "laughing cat",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadata() error = %v", err)
+	}
+
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "Sticker: laughing cat" {
+		t.Fatalf("ListChats() = %+v, want sticker preview label", chats)
+	}
+}
+
+func TestSetChatAvatarPersistsFields(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", JID: "alice@s.whatsapp.net", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	when := time.Unix(1_700_000_123, 0)
+	if err := store.SetChatAvatar(ctx, "chat-1", "avatar-1", "/tmp/avatar.png", "/tmp/avatar-thumb.png", when); err != nil {
+		t.Fatalf("SetChatAvatar() error = %v", err)
+	}
+
+	chat, ok, err := store.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() ok = false")
+	}
+	if chat.AvatarID != "avatar-1" || chat.AvatarPath != "/tmp/avatar.png" || chat.AvatarThumbPath != "/tmp/avatar-thumb.png" || !chat.AvatarUpdatedAt.Equal(when) {
+		t.Fatalf("chat avatar fields = %+v", chat)
+	}
+}
+
 func TestUpsertMediaMetadataPreservesExistingLocalFileWhenUpdateOnlyHasThumbnail(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
@@ -1107,8 +1183,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 6 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want six applied and none pending", applied, pending)
+	if len(applied) != 7 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want seven applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
