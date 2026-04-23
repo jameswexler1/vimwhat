@@ -415,6 +415,73 @@ func TestListMessagesBeforeAndOldestMessage(t *testing.T) {
 	}
 }
 
+func TestMessageQueriesHideEmptyRowsWithoutMedia(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Group", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	if err := db.AddMessage(ctx, Message{ID: "empty-old", ChatID: "chat-1", Sender: "Alice", Body: "", Timestamp: base}); err != nil {
+		t.Fatalf("AddMessage(empty-old) error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, Message{ID: "media", ChatID: "chat-1", Sender: "Alice", Body: "", Timestamp: base.Add(time.Minute)}, []MediaMetadata{{
+		FileName:      "photo.jpg",
+		MIMEType:      "image/jpeg",
+		DownloadState: "remote",
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia(media) error = %v", err)
+	}
+	if err := db.AddMessage(ctx, Message{ID: "body", ChatID: "chat-1", Sender: "Alice", Body: "visible body", Timestamp: base.Add(2 * time.Minute)}); err != nil {
+		t.Fatalf("AddMessage(body) error = %v", err)
+	}
+	if err := db.AddMessage(ctx, Message{ID: "empty-new", ChatID: "chat-1", Sender: "Alice", Body: "", Timestamp: base.Add(3 * time.Minute)}); err != nil {
+		t.Fatalf("AddMessage(empty-new) error = %v", err)
+	}
+
+	messages, err := db.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 2 || messages[0].ID != "media" || messages[1].ID != "body" {
+		t.Fatalf("visible messages = %+v, want media,body only", messages)
+	}
+	if len(messages[0].Media) != 1 || messages[0].Media[0].FileName != "photo.jpg" {
+		t.Fatalf("media-only message metadata = %+v, want photo.jpg", messages[0].Media)
+	}
+
+	oldest, ok, err := db.OldestMessage(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("OldestMessage() error = %v", err)
+	}
+	if !ok || oldest.ID != "media" {
+		t.Fatalf("OldestMessage() = %+v ok=%v, want media", oldest, ok)
+	}
+
+	older, err := db.ListMessagesBefore(ctx, "chat-1", Message{ID: "body", Timestamp: base.Add(2 * time.Minute)}, 10)
+	if err != nil {
+		t.Fatalf("ListMessagesBefore() error = %v", err)
+	}
+	if len(older) != 1 || older[0].ID != "media" {
+		t.Fatalf("older messages = %+v, want only media", older)
+	}
+
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "visible body" {
+		t.Fatalf("chat preview = %+v, want newest renderable body", chats)
+	}
+}
+
 func TestMessageMediaAndLocalDelete(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

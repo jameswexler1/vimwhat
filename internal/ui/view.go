@@ -264,6 +264,7 @@ func messageViewportSpans(blocks []messageBlock, scrollTop, cursor, height int) 
 	}
 	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
 	scrollTop = clampMessageScrollTop(blocks, scrollTop, height)
+	scrollTop = adjustedMessageScrollTop(blocks, scrollTop, selected, height)
 	spans := make([]messageBlockSpan, 0, len(blocks)-scrollTop)
 	used := 0
 
@@ -277,6 +278,7 @@ func messageViewportSpans(blocks []messageBlock, scrollTop, cursor, height int) 
 			if remaining > 0 && i == selected {
 				end := min(blockHeight, remaining)
 				spans = append(spans, messageBlockSpan{index: i, start: 0, end: end})
+				used += end
 			}
 			break
 		}
@@ -289,7 +291,26 @@ func messageViewportSpans(blocks []messageBlock, scrollTop, cursor, height int) 
 		if blockHeight == 0 {
 			return nil
 		}
-		spans = append(spans, messageBlockSpan{index: selected, start: 0, end: min(blockHeight, height)})
+		end := min(blockHeight, height)
+		spans = append(spans, messageBlockSpan{index: selected, start: 0, end: end})
+		used = end
+	}
+	for i := spans[0].index - 1; i >= 0 && used < height; i-- {
+		blockHeight := len(blocks[i].lines)
+		if blockHeight == 0 {
+			continue
+		}
+		remaining := height - used
+		if blockHeight > remaining {
+			spans = append([]messageBlockSpan{{
+				index: i,
+				start: blockHeight - remaining,
+				end:   blockHeight,
+			}}, spans...)
+			break
+		}
+		spans = append([]messageBlockSpan{{index: i, start: 0, end: blockHeight}}, spans...)
+		used += blockHeight
 	}
 	return spans
 }

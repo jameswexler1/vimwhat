@@ -82,6 +82,67 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageEventSkipsEmptyUnsupportedMessages(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: chat,
+			},
+			ID:        "EMPTY1",
+			PushName:  "Alice",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{},
+	})
+
+	if len(normalized) != 1 {
+		t.Fatalf("len(normalized) = %d, want chat event only: %+v", len(normalized), normalized)
+	}
+	if normalized[0].Kind != EventChatUpsert || normalized[0].Chat.ID != "12345@s.whatsapp.net" {
+		t.Fatalf("chat event = %+v", normalized[0])
+	}
+}
+
+func TestNormalizeMessageEventKeepsBodylessMediaMessages(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: chat,
+			},
+			ID:        "MEDIA1",
+			PushName:  "Alice",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{
+			ImageMessage: &waE2E.ImageMessage{
+				URL:           proto.String("https://mmg.whatsapp.net/file"),
+				Mimetype:      proto.String("image/jpeg"),
+				FileLength:    proto.Uint64(42),
+				MediaKey:      []byte{1},
+				FileSHA256:    []byte{2},
+				FileEncSHA256: []byte{3},
+				DirectPath:    proto.String("/v/t62.7118-24/example"),
+			},
+		},
+	})
+
+	if len(normalized) != 3 {
+		t.Fatalf("len(normalized) = %d, want chat,message,media: %+v", len(normalized), normalized)
+	}
+	if normalized[1].Kind != EventMessageUpsert || normalized[1].Message.Body != "" {
+		t.Fatalf("message event = %+v", normalized[1])
+	}
+	if normalized[2].Kind != EventMediaMetadata || normalized[2].Media.MessageID != normalized[1].Message.ID {
+		t.Fatalf("media event = %+v", normalized[2])
+	}
+}
+
 func TestMediaMetadataExtractsDownloadDescriptorsByKind(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	tests := []struct {

@@ -235,19 +235,20 @@ func normalizeMessageEvent(event *events.Message) []Event {
 	media, hasMedia := mediaMetadata(messageID, event.Message, event.Info.Timestamp)
 	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
 
-	normalized := []Event{
-		{
-			Kind: EventChatUpsert,
-			Chat: ChatEvent{
-				ID:            chatID,
-				JID:           chatID,
-				Title:         chatTitle(event.Info),
-				TitleSource:   chatTitleSource(event.Info),
-				Kind:          chatKind(event.Info.Chat),
-				LastMessageAt: event.Info.Timestamp,
-			},
+	normalized := []Event{{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:            chatID,
+			JID:           chatID,
+			Title:         chatTitle(event.Info),
+			TitleSource:   chatTitleSource(event.Info),
+			Kind:          chatKind(event.Info.Chat),
+			LastMessageAt: event.Info.Timestamp,
 		},
-		{
+	}}
+
+	if strings.TrimSpace(body) != "" || hasMedia {
+		normalized = append(normalized, Event{
 			Kind: EventMessageUpsert,
 			Message: MessageEvent{
 				ID:              messageID,
@@ -263,7 +264,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 				QuotedMessageID: quotedMessageID,
 				QuotedRemoteID:  quotedRemoteID,
 			},
-		},
+		})
 	}
 
 	if hasMedia {

@@ -9,7 +9,14 @@ import (
 	"time"
 )
 
-const defaultMessageWindow = 200
+const (
+	defaultMessageWindow      = 200
+	renderableMessageWhereSQL = `(trim(m.body) <> '' OR EXISTS (
+					SELECT 1
+					FROM media_metadata visible_mm
+					WHERE visible_mm.message_id = m.id
+				))`
+)
 
 func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, error) {
 	if messageLimit <= 0 {
@@ -60,22 +67,23 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.muted,
 			c.last_message_at,
 			COALESCE((
-				SELECT CASE
-					WHEN m.body <> '' THEN m.body
-					ELSE COALESCE((
-						SELECT mm.file_name
-						FROM media_metadata mm
-						WHERE mm.message_id = m.id
-						ORDER BY mm.file_name ASC
-						LIMIT 1
-					), '')
+					SELECT CASE
+						WHEN trim(m.body) <> '' THEN m.body
+						ELSE COALESCE((
+							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
+							FROM media_metadata mm
+							WHERE mm.message_id = m.id
+							ORDER BY mm.file_name ASC
+							LIMIT 1
+						), '')
 				END
-				FROM messages m
-				WHERE m.chat_id = c.id
-					AND m.deleted_at = 0
-				ORDER BY m.timestamp_unix DESC, m.id DESC
-				LIMIT 1
-			), '') AS last_preview,
+					FROM messages m
+					WHERE m.chat_id = c.id
+						AND m.deleted_at = 0
+						AND `+renderableMessageWhereSQL+`
+					ORDER BY m.timestamp_unix DESC, m.id DESC
+					LIMIT 1
+				), '') AS last_preview,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -118,13 +126,14 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
 				deleted_at, deleted_reason
-			FROM messages
-			WHERE chat_id = ?
-				AND deleted_at = 0
-			ORDER BY timestamp_unix DESC, id DESC
-			LIMIT ?
-		)
-		ORDER BY timestamp_unix ASC, id ASC
+				FROM messages m
+				WHERE m.chat_id = ?
+					AND m.deleted_at = 0
+					AND `+renderableMessageWhereSQL+`
+				ORDER BY m.timestamp_unix DESC, m.id DESC
+				LIMIT ?
+			)
+			ORDER BY timestamp_unix ASC, id ASC
 	`, chatID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list messages for %s: %w", chatID, err)
@@ -166,17 +175,18 @@ func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Me
 			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
 				deleted_at, deleted_reason
-			FROM messages
-			WHERE chat_id = ?
-				AND deleted_at = 0
-				AND (
-					timestamp_unix < ?
-					OR (timestamp_unix = ? AND id < ?)
-				)
-			ORDER BY timestamp_unix DESC, id DESC
-			LIMIT ?
-		)
-		ORDER BY timestamp_unix ASC, id ASC
+				FROM messages m
+				WHERE m.chat_id = ?
+					AND m.deleted_at = 0
+					AND `+renderableMessageWhereSQL+`
+					AND (
+						m.timestamp_unix < ?
+						OR (m.timestamp_unix = ? AND m.id < ?)
+					)
+				ORDER BY m.timestamp_unix DESC, m.id DESC
+				LIMIT ?
+			)
+			ORDER BY timestamp_unix ASC, id ASC
 	`, chatID, before.Timestamp.Unix(), before.Timestamp.Unix(), before.ID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list messages before %s for %s: %w", before.ID, chatID, err)
@@ -208,12 +218,13 @@ func (s *Store) OldestMessage(ctx context.Context, chatID string) (Message, bool
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
 			deleted_at, deleted_reason
-		FROM messages
-		WHERE chat_id = ?
-			AND deleted_at = 0
-		ORDER BY timestamp_unix ASC, id ASC
-		LIMIT 1
-	`, chatID)
+			FROM messages m
+			WHERE m.chat_id = ?
+				AND m.deleted_at = 0
+				AND `+renderableMessageWhereSQL+`
+			ORDER BY m.timestamp_unix ASC, m.id ASC
+			LIMIT 1
+		`, chatID)
 
 	message, err := scanMessage(row)
 	if err != nil {
@@ -246,22 +257,23 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 			c.muted,
 			c.last_message_at,
 			COALESCE((
-				SELECT CASE
-					WHEN m.body <> '' THEN m.body
-					ELSE COALESCE((
-						SELECT mm.file_name
-						FROM media_metadata mm
-						WHERE mm.message_id = m.id
-						ORDER BY mm.file_name ASC
-						LIMIT 1
-					), '')
+					SELECT CASE
+						WHEN trim(m.body) <> '' THEN m.body
+						ELSE COALESCE((
+							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
+							FROM media_metadata mm
+							WHERE mm.message_id = m.id
+							ORDER BY mm.file_name ASC
+							LIMIT 1
+						), '')
 				END
-				FROM messages m
-				WHERE m.chat_id = c.id
-					AND m.deleted_at = 0
-				ORDER BY m.timestamp_unix DESC, m.id DESC
-				LIMIT 1
-			), '') AS last_preview,
+					FROM messages m
+					WHERE m.chat_id = c.id
+						AND m.deleted_at = 0
+						AND `+renderableMessageWhereSQL+`
+					ORDER BY m.timestamp_unix DESC, m.id DESC
+					LIMIT 1
+				), '') AS last_preview,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
@@ -305,12 +317,13 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
 			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
 			m.deleted_at, m.deleted_reason
-		FROM message_fts
-		JOIN messages m ON m.id = message_fts.message_id
-		WHERE message_fts.chat_id = ?
-			AND m.deleted_at = 0
-			AND message_fts MATCH ?
-		ORDER BY m.timestamp_unix ASC, m.id ASC
+			FROM message_fts
+			JOIN messages m ON m.id = message_fts.message_id
+			WHERE message_fts.chat_id = ?
+				AND m.deleted_at = 0
+				AND `+renderableMessageWhereSQL+`
+				AND message_fts MATCH ?
+			ORDER BY m.timestamp_unix ASC, m.id ASC
 		LIMIT ?
 	`, chatID, quoteFTSQuery(query), limit)
 	if err != nil {

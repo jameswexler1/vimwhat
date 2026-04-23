@@ -297,6 +297,20 @@ func TestMessageViewportClipsTallSelectedBlockFromTop(t *testing.T) {
 	}
 }
 
+func TestMessageViewportBackfillsOlderBlocksAboveCursor(t *testing.T) {
+	blocks := []messageBlock{
+		{lines: []string{"older-1", "older-2", "older-3", "older-4", "older-5"}},
+		{lines: []string{"selected-top", "selected-bottom"}},
+		{lines: []string{"newer-top", "newer-bottom"}},
+	}
+
+	got := messageViewport(blocks, 1, 1, 6)
+	want := []string{"older-4", "older-5", "selected-top", "selected-bottom", "newer-top", "newer-bottom"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("messageViewport() = %q, want %q", got, want)
+	}
+}
+
 func TestMessageViewportDoesNotSplitOrdinaryBlocks(t *testing.T) {
 	blocks := []messageBlock{
 		{lines: []string{"selected-top", "selected-bottom"}},
