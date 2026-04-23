@@ -730,12 +730,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.beginInsert(nil)
 	case "r":
-		message, ok := m.focusedMessage()
-		if !ok {
-			m.status = "no message selected"
-			return m, nil
-		}
-		return m.beginInsert(&message)
+		return m.beginReplyToFocusedMessage()
 	case "R":
 		m.retryFocusedMediaMessage()
 	case "v":
@@ -759,6 +754,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h":
 		m.moveFocus(-1)
 	case "l":
+		if m.focus == FocusMessages && (!m.infoPaneVisible || m.compactLayout) {
+			return m.beginReplyToFocusedMessage()
+		}
 		m.moveFocus(1)
 	case "j":
 		m.moveCursor(count)
@@ -842,6 +840,15 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) beginReplyToFocusedMessage() (tea.Model, tea.Cmd) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	return m.beginInsert(&message)
 }
 
 func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
@@ -2355,6 +2362,7 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 }
 
 func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {
+	item, _ = normalizeManagedMediaMetadata(m.paths, item)
 	kind := media.MediaKind(item.MIMEType, item.FileName)
 	if kind != media.KindImage && kind != media.KindVideo {
 		return media.PreviewRequest{}, false
@@ -2392,6 +2400,11 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 	item, ok := firstMessageMedia(message)
 	if !ok {
 		m.status = "no media on focused message"
+		return m, nil
+	}
+	message, item, err := m.repairManagedMediaCache(message, item)
+	if err != nil {
+		m.status = fmt.Sprintf("repair media metadata failed: %v", err)
 		return m, nil
 	}
 
@@ -2478,6 +2491,11 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 		m.status = "no media on focused message"
 		return m, nil
 	}
+	message, item, err := m.repairManagedMediaCache(message, item)
+	if err != nil {
+		m.status = fmt.Sprintf("repair media metadata failed: %v", err)
+		return m, nil
+	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
 			if !m.startMediaDownload(message, item, "downloading media") {
@@ -2516,6 +2534,11 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 		m.status = "no media on focused message"
 		return m, nil
 	}
+	message, item, err := m.repairManagedMediaCache(message, item)
+	if err != nil {
+		m.status = fmt.Sprintf("repair media metadata failed: %v", err)
+		return m, nil
+	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
 			if !m.startMediaDownload(message, item, "downloading media") {
@@ -2541,6 +2564,11 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) toggleFocusedAudio(message store.Message, item store.MediaMetadata) (tea.Model, tea.Cmd) {
+	message, item, err := m.repairManagedMediaCache(message, item)
+	if err != nil {
+		m.status = fmt.Sprintf("repair media metadata failed: %v", err)
+		return m, nil
+	}
 	if m.audioMediaKey != "" && m.audioMediaKey == mediaActivationKey(message, item) {
 		return m.stopAudio("audio stopped")
 	}

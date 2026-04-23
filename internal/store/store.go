@@ -182,7 +182,9 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
-	return s.db.Close()
+	db := s.db
+	s.db = nil
+	return db.Close()
 }
 
 func (s *Store) initialize(ctx context.Context) error {

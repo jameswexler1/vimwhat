@@ -567,7 +567,7 @@ func runLiveWhatsApp(
 		downloadWG.Add(1)
 		go func() {
 			defer downloadWG.Done()
-			mediaDownloadWorker(ctx, env.Store, live, env.Paths.MediaDir, downloadJobs)
+			mediaDownloadWorker(ctx, env.Store, live, env.Paths, downloadJobs)
 		}()
 	}
 	defer func() {
@@ -1361,14 +1361,14 @@ func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest,
 	}
 }
 
-func mediaDownloadWorker(ctx context.Context, db *store.Store, live WhatsAppLiveSession, mediaDir string, jobs <-chan mediaDownloadRequest) {
+func mediaDownloadWorker(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, jobs <-chan mediaDownloadRequest) {
 	for {
 		select {
 		case request, ok := <-jobs:
 			if !ok {
 				return
 			}
-			media, err := downloadRemoteMedia(ctx, db, live, mediaDir, request)
+			media, err := downloadRemoteMedia(ctx, db, live, paths, request)
 			sendMediaDownloadResult(ctx, request, media, err)
 		case <-ctx.Done():
 			return
@@ -1386,7 +1386,7 @@ func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, 
 	}
 }
 
-func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLiveSession, mediaDir string, request mediaDownloadRequest) (store.MediaMetadata, error) {
+func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, request mediaDownloadRequest) (store.MediaMetadata, error) {
 	if db == nil {
 		return request.Media, fmt.Errorf("store is required")
 	}
@@ -1409,6 +1409,10 @@ func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLive
 		return mediaItem, err
 	}
 	mediaItem = mergeAppMediaMetadata(current, mediaItem)
+	mediaItem, _, err = repairManagedMediaMetadata(ctx, db, paths, mediaItem)
+	if err != nil {
+		return mediaItem, err
+	}
 	if mediaPathAvailable(mediaItem.LocalPath) {
 		mediaItem.DownloadState = "downloaded"
 		mediaItem.UpdatedAt = time.Now()
@@ -1432,10 +1436,10 @@ func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLive
 		return mediaItem, err
 	}
 
-	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
+	if err := os.MkdirAll(paths.MediaDir, 0o700); err != nil {
 		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media cache dir: %w", err))
 	}
-	finalPath := mediaCachePath(mediaDir, messageID, mediaItem)
+	finalPath := mediaCachePath(paths.MediaDir, messageID, mediaItem)
 	if mediaPathAvailable(finalPath) {
 		mediaItem.LocalPath = finalPath
 		mediaItem.DownloadState = "downloaded"
@@ -1449,7 +1453,7 @@ func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLive
 		return mediaItem, nil
 	}
 
-	tmp, err := os.CreateTemp(mediaDir, "download-*.tmp")
+	tmp, err := os.CreateTemp(paths.MediaDir, "download-*.tmp")
 	if err != nil {
 		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media temp file: %w", err))
 	}
@@ -1885,8 +1889,11 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("config file: %s", env.Paths.ConfigFile),
 		fmt.Sprintf("data dir: %s", env.Paths.DataDir),
 		fmt.Sprintf("cache dir: %s", env.Paths.CacheDir),
+		fmt.Sprintf("transient dir: %s", env.Paths.TransientDir),
 		fmt.Sprintf("database path: %s", env.Paths.DatabaseFile),
 		fmt.Sprintf("session path: %s", env.Paths.SessionFile),
+		fmt.Sprintf("media cache dir: %s", env.Paths.MediaDir),
+		fmt.Sprintf("preview cache dir: %s", env.Paths.PreviewCacheDir),
 		fmt.Sprintf("session status: %s", sessionStatus),
 		fmt.Sprintf("editor: %s", env.Config.Editor),
 		fmt.Sprintf("preview max: %dx%d delay=%dms", env.Config.PreviewMaxWidth, env.Config.PreviewMaxHeight, env.Config.PreviewDelayMS),

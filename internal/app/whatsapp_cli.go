@@ -108,29 +108,41 @@ func runLogin(env Environment, stdout, stderr io.Writer) int {
 }
 
 func runLogout(env Environment, stdout, stderr io.Writer) int {
-	status, err := checkWhatsAppSession(context.Background(), env)
-	if err != nil {
-		fmt.Fprintf(stderr, "vimwhat: check whatsapp session: %v\n", err)
+	status, statusErr := checkWhatsAppSession(context.Background(), env)
+	if statusErr != nil {
+		fmt.Fprintf(stderr, "vimwhat: warning: check whatsapp session: %v; clearing local state anyway\n", statusErr)
+	}
+
+	var remoteErr error
+	if statusErr == nil && status.Paired {
+		session, err := openWhatsAppSession(context.Background(), env)
+		if err != nil {
+			remoteErr = fmt.Errorf("open whatsapp session: %w", err)
+		} else {
+			remoteErr = session.Logout(context.Background())
+			if closeErr := session.Close(); closeErr != nil && remoteErr == nil {
+				remoteErr = fmt.Errorf("close whatsapp session: %w", closeErr)
+			}
+		}
+	}
+
+	if err := clearLocalState(env); err != nil {
+		fmt.Fprintf(stderr, "vimwhat: clear local state: %v\n", err)
 		return 1
 	}
-	if !status.Paired {
-		fmt.Fprintln(stdout, "vimwhat: not logged in")
+
+	if remoteErr != nil {
+		fmt.Fprintf(stderr, "vimwhat: warning: remote logout failed: %v; local state was still cleared\n", remoteErr)
+		fmt.Fprintln(stdout, "vimwhat: local state cleared")
 		return 0
 	}
 
-	session, err := openWhatsAppSession(context.Background(), env)
-	if err != nil {
-		fmt.Fprintf(stderr, "vimwhat: open whatsapp session: %v\n", err)
-		return 1
-	}
-	defer session.Close()
-
-	if err := session.Logout(context.Background()); err != nil {
-		fmt.Fprintf(stderr, "vimwhat: logout: %v\n", err)
-		return 1
+	if statusErr == nil && status.Paired {
+		fmt.Fprintln(stdout, "vimwhat: logged out; local state cleared")
+		return 0
 	}
 
-	fmt.Fprintln(stdout, "vimwhat: logged out")
+	fmt.Fprintln(stdout, "vimwhat: local state cleared")
 	return 0
 }
 

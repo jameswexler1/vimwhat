@@ -1398,7 +1398,8 @@ func TestDownloadRemoteMediaWritesFileAndUpdatesMetadata(t *testing.T) {
 	}
 
 	session := &fakeLiveWhatsAppSession{downloads: make(chan fakeDownloadRequest, 1)}
-	media, err := downloadRemoteMedia(ctx, db, session, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+	paths := config.Paths{MediaDir: filepath.Join(t.TempDir(), "media")}
+	media, err := downloadRemoteMedia(ctx, db, session, paths, mediaDownloadRequest{
 		Message: store.Message{ID: "chat-1/msg-1"},
 		Media: store.MediaMetadata{
 			MessageID:     "chat-1/msg-1",
@@ -1460,7 +1461,7 @@ func TestDownloadRemoteMediaReportsMissingDescriptor(t *testing.T) {
 		t.Fatalf("AddMessageWithMedia() error = %v", err)
 	}
 
-	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{}, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{}, config.Paths{MediaDir: filepath.Join(t.TempDir(), "media")}, mediaDownloadRequest{
 		Message: store.Message{ID: "chat-1/msg-1"},
 		Media: store.MediaMetadata{
 			MessageID:     "chat-1/msg-1",
@@ -1508,7 +1509,7 @@ func TestDownloadRemoteMediaMarksFailedOnProtocolError(t *testing.T) {
 		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
 	}
 
-	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{downloadErr: errors.New("boom")}, filepath.Join(t.TempDir(), "media"), mediaDownloadRequest{
+	_, err = downloadRemoteMedia(ctx, db, &fakeLiveWhatsAppSession{downloadErr: errors.New("boom")}, config.Paths{MediaDir: filepath.Join(t.TempDir(), "media")}, mediaDownloadRequest{
 		Message: store.Message{ID: "chat-1/msg-1"},
 		Media: store.MediaMetadata{
 			MessageID:     "chat-1/msg-1",
@@ -1526,6 +1527,99 @@ func TestDownloadRemoteMediaMarksFailedOnProtocolError(t *testing.T) {
 	}
 	if stored.DownloadState != "failed" {
 		t.Fatalf("DownloadState = %q, want failed", stored.DownloadState)
+	}
+}
+
+func TestRunMediaOpenRepairsStaleManagedCacheAndDownloadsAgain(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	mediaDir := filepath.Join(t.TempDir(), "media")
+	stalePath := filepath.Join(mediaDir, "missing-report.pdf")
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "docs@g.us", Title: "Docs", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "docs@g.us",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Timestamp: time.Unix(1_700_200_000, 0),
+	}, []store.MediaMetadata{{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		LocalPath:     stalePath,
+		DownloadState: "downloaded",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+	if err := db.UpsertMediaMetadataWithDownload(ctx, store.MediaMetadata{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		LocalPath:     stalePath,
+		DownloadState: "downloaded",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}, &store.MediaDownloadDescriptor{
+		MessageID:  "m-1",
+		Kind:       "document",
+		URL:        "https://example.invalid/report.pdf",
+		DirectPath: "/v/t62.7118-24/example",
+		MediaKey:   []byte("media-key"),
+		FileLength: 32,
+		UpdatedAt:  time.Unix(1_700_200_000, 0),
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{downloads: make(chan fakeDownloadRequest, 1)}
+	env := Environment{
+		Store: db,
+		Config: config.Config{
+			FileOpenerCommand: "true {path}",
+		},
+		Paths: config.Paths{
+			TransientDir: filepath.Join(t.TempDir(), "transient"),
+			MediaDir:     mediaDir,
+			SessionFile:  filepath.Join(t.TempDir(), "session.sqlite3"),
+		},
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
+			return WhatsAppSessionStatus{Label: "paired", Paired: true}, nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run media open exit = %d, stderr = %q", code, stderr.String())
+	}
+	request := <-session.downloads
+	if request.descriptor.Kind != "document" {
+		t.Fatalf("download descriptor = %+v, want document", request.descriptor)
+	}
+	stored, err := db.MediaMetadata(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if stored.LocalPath == "" || stored.LocalPath == stalePath || stored.DownloadState != "downloaded" {
+		t.Fatalf("stored media = %+v, want repaired downloaded local path", stored)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != stored.LocalPath {
+		t.Fatalf("stdout path = %q, want %q", got, stored.LocalPath)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -1591,6 +1685,124 @@ func assertNotificationCount(t *testing.T, notifications <-chan notify.Notificat
 	}
 }
 
+func logoutTestEnvironment(t *testing.T) (Environment, string) {
+	t.Helper()
+	root := t.TempDir()
+	paths := config.Paths{
+		ConfigDir:       filepath.Join(root, "config"),
+		DataDir:         filepath.Join(root, "data"),
+		CacheDir:        filepath.Join(root, "cache"),
+		TransientDir:    filepath.Join(root, "transient"),
+		ConfigFile:      filepath.Join(root, "config", "config.toml"),
+		DatabaseFile:    filepath.Join(root, "data", "state.sqlite3"),
+		SessionFile:     filepath.Join(root, "data", "whatsapp-session.sqlite3"),
+		LogFile:         filepath.Join(root, "cache", "vimwhat.log"),
+		MediaDir:        filepath.Join(root, "transient", "media"),
+		PreviewCacheDir: filepath.Join(root, "transient", "preview"),
+	}
+	if err := paths.Ensure(); err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+
+	downloadsDir := filepath.Join(root, "Downloads")
+	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(downloads) error = %v", err)
+	}
+	savedPath := filepath.Join(downloadsDir, "saved-report.pdf")
+	if err := os.WriteFile(savedPath, []byte("saved"), 0o644); err != nil {
+		t.Fatalf("WriteFile(saved) error = %v", err)
+	}
+
+	db, err := store.Open(paths.DatabaseFile)
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "alice@s.whatsapp.net", Title: "Alice", Kind: "direct"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "alice@s.whatsapp.net",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := db.SaveDraft(ctx, "chat-1", "draft"); err != nil {
+		t.Fatalf("SaveDraft() error = %v", err)
+	}
+
+	for _, file := range []string{
+		paths.DatabaseFile + "-wal",
+		paths.DatabaseFile + "-shm",
+		paths.SessionFile,
+		paths.SessionFile + "-wal",
+		paths.SessionFile + "-shm",
+		paths.LogFile,
+		filepath.Join(paths.MediaDir, "cached.bin"),
+		filepath.Join(paths.PreviewCacheDir, "thumb.jpg"),
+		filepath.Join(paths.LegacyMediaDir(), "legacy.bin"),
+		filepath.Join(paths.LegacyPreviewCacheDir(), "legacy-thumb.jpg"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(file), err)
+		}
+		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", file, err)
+		}
+	}
+
+	return Environment{
+		Paths:  paths,
+		Config: config.Config{DownloadsDir: downloadsDir},
+		Store:  db,
+	}, savedPath
+}
+
+func assertLocalStateCleared(t *testing.T, paths config.Paths, savedPath string) {
+	t.Helper()
+	for _, path := range []string{
+		paths.DatabaseFile,
+		paths.DatabaseFile + "-wal",
+		paths.DatabaseFile + "-shm",
+		paths.SessionFile,
+		paths.SessionFile + "-wal",
+		paths.SessionFile + "-shm",
+		paths.LogFile,
+		paths.MediaDir,
+		paths.PreviewCacheDir,
+		paths.LegacyMediaDir(),
+		paths.LegacyPreviewCacheDir(),
+	} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Stat(%q) error = %v, want not exists", path, err)
+		}
+	}
+	if _, err := os.Stat(savedPath); err != nil {
+		t.Fatalf("saved download missing after logout: %v", err)
+	}
+}
+
+func assertFreshStateAfterLogout(t *testing.T, dbPath string) {
+	t.Helper()
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open() after logout error = %v", err)
+	}
+	defer db.Close()
+	snapshot, err := db.LoadSnapshot(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("LoadSnapshot() after logout error = %v", err)
+	}
+	if len(snapshot.Chats) != 0 || len(snapshot.MessagesByChat) != 0 || len(snapshot.DraftsByChat) != 0 || snapshot.ActiveChatID != "" {
+		t.Fatalf("snapshot after logout = %+v, want empty first-use state", snapshot)
+	}
+}
+
 func TestRunLoginSkipsAlreadyLoggedInSession(t *testing.T) {
 	session := &fakeWhatsAppSession{loggedIn: true}
 	env := Environment{
@@ -1616,17 +1828,15 @@ func TestRunLoginSkipsAlreadyLoggedInSession(t *testing.T) {
 	}
 }
 
-func TestRunLogoutDoesNotOpenMissingSession(t *testing.T) {
+func TestRunLogoutClearsLocalStateWithoutOpeningUnpairedSession(t *testing.T) {
+	env, savedPath := logoutTestEnvironment(t)
 	var openCalled bool
-	env := Environment{
-		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
-		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
-			openCalled = true
-			return nil, errors.New("unexpected open")
-		},
-		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
-			return WhatsAppSessionStatus{Label: "not configured", Paired: false}, nil
-		},
+	env.OpenWhatsAppSession = func(context.Context, string) (WhatsAppSession, error) {
+		openCalled = true
+		return nil, errors.New("unexpected open")
+	}
+	env.CheckWhatsAppSession = func(context.Context, string) (WhatsAppSessionStatus, error) {
+		return WhatsAppSessionStatus{Label: "not configured", Paired: false}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -1634,23 +1844,26 @@ func TestRunLogoutDoesNotOpenMissingSession(t *testing.T) {
 		t.Fatalf("run logout exit = %d, stderr = %q", code, stderr.String())
 	}
 	if openCalled {
-		t.Fatalf("session was opened for a missing login")
+		t.Fatalf("session was opened for an unpaired logout")
 	}
-	if !strings.Contains(stdout.String(), "not logged in") {
-		t.Fatalf("stdout = %q, want not logged in", stdout.String())
+	if !strings.Contains(stdout.String(), "local state cleared") {
+		t.Fatalf("stdout = %q, want local state cleared", stdout.String())
 	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertLocalStateCleared(t, env.Paths, savedPath)
+	assertFreshStateAfterLogout(t, env.Paths.DatabaseFile)
 }
 
-func TestRunLogoutLogsOutPairedSession(t *testing.T) {
+func TestRunLogoutLogsOutPairedSessionAndClearsLocalState(t *testing.T) {
+	env, savedPath := logoutTestEnvironment(t)
 	session := &fakeWhatsAppSession{loggedIn: true}
-	env := Environment{
-		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
-		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
-			return session, nil
-		},
-		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
-			return WhatsAppSessionStatus{Label: "paired locally (123@s.whatsapp.net)", Paired: true}, nil
-		},
+	env.OpenWhatsAppSession = func(context.Context, string) (WhatsAppSession, error) {
+		return session, nil
+	}
+	env.CheckWhatsAppSession = func(context.Context, string) (WhatsAppSessionStatus, error) {
+		return WhatsAppSessionStatus{Label: "paired locally (123@s.whatsapp.net)", Paired: true}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -1663,9 +1876,39 @@ func TestRunLogoutLogsOutPairedSession(t *testing.T) {
 	if !session.closeCalled {
 		t.Fatalf("Close was not called")
 	}
-	if !strings.Contains(stdout.String(), "logged out") {
-		t.Fatalf("stdout = %q, want logged out", stdout.String())
+	if !strings.Contains(stdout.String(), "logged out; local state cleared") {
+		t.Fatalf("stdout = %q, want logged out + local reset", stdout.String())
 	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	assertLocalStateCleared(t, env.Paths, savedPath)
+}
+
+func TestRunLogoutWarnsOnRemoteFailureButStillClearsLocalState(t *testing.T) {
+	env, savedPath := logoutTestEnvironment(t)
+	session := &fakeWhatsAppSession{loggedIn: true, logoutErr: errors.New("boom")}
+	env.OpenWhatsAppSession = func(context.Context, string) (WhatsAppSession, error) {
+		return session, nil
+	}
+	env.CheckWhatsAppSession = func(context.Context, string) (WhatsAppSessionStatus, error) {
+		return WhatsAppSessionStatus{Label: "paired locally (123@s.whatsapp.net)", Paired: true}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"logout"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run logout exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !session.logoutCalled || !session.closeCalled {
+		t.Fatalf("session logout/close = %v/%v, want true/true", session.logoutCalled, session.closeCalled)
+	}
+	if !strings.Contains(stdout.String(), "local state cleared") {
+		t.Fatalf("stdout = %q, want local state cleared", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "remote logout failed") {
+		t.Fatalf("stderr = %q, want remote logout warning", stderr.String())
+	}
+	assertLocalStateCleared(t, env.Paths, savedPath)
 }
 
 func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
@@ -1677,11 +1920,14 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 
 	env := Environment{
 		Paths: config.Paths{
-			SessionFile:  "/tmp/vimwhat-session.sqlite3",
-			ConfigFile:   "/tmp/config.toml",
-			DataDir:      "/tmp/data",
-			CacheDir:     "/tmp/cache",
-			DatabaseFile: "/tmp/state.sqlite3",
+			SessionFile:     "/tmp/vimwhat-session.sqlite3",
+			ConfigFile:      "/tmp/config.toml",
+			DataDir:         "/tmp/data",
+			CacheDir:        "/tmp/cache",
+			TransientDir:    "/tmp/vimwhat-u-test",
+			DatabaseFile:    "/tmp/state.sqlite3",
+			MediaDir:        "/tmp/vimwhat-u-test/media",
+			PreviewCacheDir: "/tmp/vimwhat-u-test/preview",
 		},
 		Store: db,
 		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
@@ -1696,6 +1942,11 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "emoji mode:") {
 		t.Fatalf("doctor output = %q, want emoji mode line", out.String())
+	}
+	for _, want := range []string{"transient dir: /tmp/vimwhat-u-test", "media cache dir: /tmp/vimwhat-u-test/media", "preview cache dir: /tmp/vimwhat-u-test/preview"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("doctor output = %q, want %q", out.String(), want)
+		}
 	}
 	if !strings.Contains(out.String(), "requested notification backend:") || !strings.Contains(out.String(), "notification delivery path:") {
 		t.Fatalf("doctor output = %q, want notification diagnostics", out.String())

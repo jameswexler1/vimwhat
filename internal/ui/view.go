@@ -1295,6 +1295,7 @@ func (m Model) mediaPreviewShouldReserve(message store.Message, item store.Media
 }
 
 func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetadata) string {
+	item, _ = normalizeManagedMediaMetadata(m.paths, item)
 	kind := media.MediaKind(item.MIMEType, item.FileName)
 	if kind == media.KindAudio {
 		return m.audioAttachmentState(message, item)
@@ -1337,6 +1338,7 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 }
 
 func (m Model) audioAttachmentState(message store.Message, item store.MediaMetadata) string {
+	item, _ = normalizeManagedMediaMetadata(m.paths, item)
 	key := mediaActivationKey(message, item)
 	if m.audioMediaKey == key {
 		if m.audioProcess != nil {
@@ -1500,6 +1502,7 @@ func (m Model) renderInfo(width int) string {
 		focused := messages[clamp(m.messageCursor, 0, len(messages)-1)]
 		message = m.sanitizeDisplayBody(focused.Body)
 		if item, ok := firstMessageMedia(focused); ok {
+			item, _ = normalizeManagedMediaMetadata(m.paths, item)
 			mediaLines = append(mediaLines,
 				"media:",
 				lipgloss.NewStyle().Foreground(softFG).Width(width).Render(fmt.Sprintf("file: %s", m.mediaDisplayName(item))),
@@ -1906,7 +1909,7 @@ func (m Model) renderHelp(width int) string {
 	lines := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("vimwhat help"),
 		"",
-		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
+		"normal:  j/k move    5j count    g/G top/bottom    h pane    l right/edge-reply    tab cycle",
 		"         enter preview/open  o open media  <leader>s save  <leader>hf unload previews",
 		"         i insert    r reply    R retry failed media    v visual    / search    : command    u unread    p sort",
 		"         n/N next search   ? help      q quit",

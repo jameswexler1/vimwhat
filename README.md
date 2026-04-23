@@ -9,6 +9,7 @@
 - Demo seeding commands for local development without a live WhatsApp session.
 - Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa`, and focused audio playback through `mpv`.
 - WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, inactive-chat desktop notifications, `media open`, and `export chat` exist.
+- `vimwhat logout` clears local app/session state and returns the client to first-use state while leaving config and explicit Downloads saves intact.
 
 ## Commands
 
@@ -41,9 +42,11 @@ Runtime state is kept out of the repository:
 - Config: `$XDG_CONFIG_HOME/vimwhat/config.toml`
 - App database: `$XDG_DATA_HOME/vimwhat/state.sqlite3`
 - WhatsApp session placeholder: `$XDG_DATA_HOME/vimwhat/whatsapp-session.sqlite3`
-- Logs/cache/media previews: `$XDG_CACHE_HOME/vimwhat/`
+- Logs: `$XDG_CACHE_HOME/vimwhat/`
+- Non-exported chat media cache: `$TMPDIR/vimwhat-*/media`
+- Generated preview cache: `$TMPDIR/vimwhat-*/preview`
 
-Do not commit session files, SQLite databases, logs, media caches, or generated preview assets.
+Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Files saved explicitly with `leader s` still go to the configured downloads directory and are not part of the transient cache.
 
 ## Emoji rendering
 

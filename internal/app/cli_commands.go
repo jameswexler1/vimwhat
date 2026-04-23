@@ -70,6 +70,14 @@ func runMediaOpen(ctx context.Context, env Environment, messageID string, stdout
 	}
 
 	item := message.Media[0]
+	if strings.TrimSpace(item.MessageID) == "" {
+		item.MessageID = message.ID
+	}
+	repaired, _, err := repairManagedMediaMetadata(ctx, env.Store, env.Paths, item)
+	if err != nil {
+		return err
+	}
+	item = repaired
 	if !mediaPathAvailable(item.LocalPath) {
 		if _, ok, err := env.Store.MediaDownloadDescriptor(ctx, message.ID); err != nil {
 			return err
@@ -95,7 +103,7 @@ func runMediaOpen(ctx context.Context, env Environment, messageID string, stdout
 			return fmt.Errorf("connect whatsapp session: %w", err)
 		}
 
-		item, err = downloadRemoteMedia(ctx, env.Store, live, env.Paths.MediaDir, mediaDownloadRequest{
+		item, err = downloadRemoteMedia(ctx, env.Store, live, env.Paths, mediaDownloadRequest{
 			Message: message,
 			Media:   item,
 		})
