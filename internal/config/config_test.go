@@ -30,6 +30,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.EmojiMode != EmojiModeAuto {
 		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeAuto)
 	}
+	if cfg.IndicatorNormal != IndicatorPywal || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != IndicatorPywal || cfg.IndicatorCommand != IndicatorPywal || cfg.IndicatorSearch != IndicatorPywal {
+		t.Fatalf("indicator defaults = normal %q insert %q visual %q command %q search %q, want all %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch, IndicatorPywal)
+	}
 	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
@@ -50,6 +53,11 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`editor = "nvim"`,
 		`preview_backend = "chafa"`,
 		`emoji_mode = "full"`,
+		`indicator_normal = "#112233"`,
+		`indicator_insert = "pywal"`,
+		`indicator_visual = "#abc"`,
+		`indicator_command = "#AABBCC"`,
+		`indicator_search = "PYWAL"`,
 		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
@@ -81,6 +89,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.EmojiMode != EmojiModeFull {
 		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeFull)
+	}
+	if cfg.IndicatorNormal != "#112233" || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != "#abc" || cfg.IndicatorCommand != "#AABBCC" || cfg.IndicatorSearch != IndicatorPywal {
+		t.Fatalf("indicators = normal %q insert %q visual %q command %q search %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch)
 	}
 	if cfg.NotificationCommand != "notify-send vimwhat" {
 		t.Fatalf("NotificationCommand = %q", cfg.NotificationCommand)
@@ -155,6 +166,23 @@ func TestLoadRejectsInvalidEmojiMode(t *testing.T) {
 	_, err := Load(Paths{ConfigFile: path})
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid emoji mode error")
+	}
+}
+
+func TestLoadRejectsInvalidModeIndicator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`indicator_insert = "magenta"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid indicator error")
+	}
+	if !strings.Contains(err.Error(), "indicator_insert") {
+		t.Fatalf("Load() error = %v, want indicator_insert context", err)
 	}
 }
 

@@ -1498,7 +1498,7 @@ func (m Model) renderStatus() string {
 		chatTitle = m.sanitizeDisplayLine(chat.DisplayTitle())
 	}
 	left := strings.Join([]string{
-		statusSegment(" "+mode+" ", uiTheme.BarBG, modeStatusColor(m.mode), true),
+		statusSegment(" "+mode+" ", uiTheme.BarBG, m.modeStatusColor(m.mode), true),
 		statusSegment(" "+focus+" ", primaryFG, borderColor, false),
 		m.renderConnectionStatus(),
 		statusSegment(" "+truncateDisplay(chatTitle, max(8, m.width/5))+" ", primaryFG, "", false),
@@ -1599,7 +1599,30 @@ func connectionStatusColor(state ConnectionState) lipgloss.Color {
 	}
 }
 
-func modeStatusColor(mode Mode) lipgloss.Color {
+func (m Model) modeStatusColor(mode Mode) lipgloss.Color {
+	value := strings.TrimSpace(modeIndicatorConfigValue(m.config, mode))
+	if value == "" || strings.EqualFold(value, config.IndicatorPywal) {
+		return defaultModeStatusColor(mode)
+	}
+	return lipgloss.Color(value)
+}
+
+func modeIndicatorConfigValue(cfg config.Config, mode Mode) string {
+	switch mode {
+	case ModeInsert:
+		return cfg.IndicatorInsert
+	case ModeVisual:
+		return cfg.IndicatorVisual
+	case ModeCommand:
+		return cfg.IndicatorCommand
+	case ModeSearch:
+		return cfg.IndicatorSearch
+	default:
+		return cfg.IndicatorNormal
+	}
+}
+
+func defaultModeStatusColor(mode Mode) lipgloss.Color {
 	switch mode {
 	case ModeInsert:
 		return uiTheme.InsertModeBG

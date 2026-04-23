@@ -949,6 +949,66 @@ func TestClearSearchOnlyClearsSearchState(t *testing.T) {
 	}
 }
 
+func TestEscapeInSearchModeClearsActiveSearch(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "needle first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "needle second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEnter})
+	searchModel := searched.(Model)
+	if status := stripANSI(searchModel.renderStatus()); !strings.Contains(status, "/needle 1/2") {
+		t.Fatalf("status before escape = %q, want active search count", status)
+	}
+	searchModel.mode = ModeSearch
+	searchModel.searchLine = "replacement"
+
+	escaped, _ := searchModel.updateSearch(tea.KeyMsg{Type: tea.KeyEsc})
+	got := escaped.(Model)
+	if got.mode != ModeNormal {
+		t.Fatalf("mode = %s, want normal", got.mode)
+	}
+	if got.activeSearch != "" || got.lastSearch != "" || got.searchLine != "" || len(got.searchMatches) != 0 || got.searchIndex != -1 || got.lastSearchFocus != "" || got.searchChatSource != nil {
+		t.Fatalf("search state after escape = active %q last %q line %q matches %v index %d focus %q source %v", got.activeSearch, got.lastSearch, got.searchLine, got.searchMatches, got.searchIndex, got.lastSearchFocus, got.searchChatSource)
+	}
+	if status := stripANSI(got.renderStatus()); strings.Contains(status, "/needle") || strings.Contains(status, "/replacement") {
+		t.Fatalf("status after escape retained search state: %q", status)
+	}
+}
+
+func TestEscapeInSearchModeClearsUnsubmittedSearch(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeSearch
+	model.searchLine = "needle"
+
+	escaped, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyEsc})
+	got := escaped.(Model)
+	if got.mode != ModeNormal || got.searchLine != "" || got.activeSearch != "" || got.lastSearch != "" {
+		t.Fatalf("search state after escape = mode %s line %q active %q last %q", got.mode, got.searchLine, got.activeSearch, got.lastSearch)
+	}
+}
+
 func TestSearchNextAndPreviousNavigateMatchesWithoutFiltering(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -1922,8 +1982,33 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	if commandStatus == insertStatus {
 		t.Fatal("statusbar styling did not change between command and insert modes")
 	}
-	if modeStatusColor(ModeInsert) != uiTheme.InsertModeBG {
-		t.Fatalf("insert mode status color = %q, want %q", modeStatusColor(ModeInsert), uiTheme.InsertModeBG)
+	if model.modeStatusColor(ModeInsert) != uiTheme.InsertModeBG {
+		t.Fatalf("insert mode status color = %q, want %q", model.modeStatusColor(ModeInsert), uiTheme.InsertModeBG)
+	}
+}
+
+func TestModeStatusColorUsesConfiguredIndicators(t *testing.T) {
+	model := NewModel(Options{
+		Config: config.Config{
+			IndicatorInsert: "#112233",
+			IndicatorSearch: "#445566",
+		},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+
+	if got := model.modeStatusColor(ModeInsert); got != lipgloss.Color("#112233") {
+		t.Fatalf("insert mode color = %q, want #112233", got)
+	}
+	if got := model.modeStatusColor(ModeSearch); got != lipgloss.Color("#445566") {
+		t.Fatalf("search mode color = %q, want #445566", got)
+	}
+	if got := model.modeStatusColor(ModeNormal); got != accentFG {
+		t.Fatalf("normal mode color = %q, want default accent %q", got, accentFG)
 	}
 }
 

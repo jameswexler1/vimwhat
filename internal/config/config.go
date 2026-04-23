@@ -14,6 +14,11 @@ type Config struct {
 	Editor              string
 	PreviewBackend      string
 	EmojiMode           string
+	IndicatorNormal     string
+	IndicatorInsert     string
+	IndicatorVisual     string
+	IndicatorCommand    string
+	IndicatorSearch     string
 	NotificationCommand string
 	ClipboardCommand    string
 	FilePickerCommand   string
@@ -32,6 +37,7 @@ const (
 	EmojiModeAuto   = "auto"
 	EmojiModeFull   = "full"
 	EmojiModeCompat = "compat"
+	IndicatorPywal  = "pywal"
 )
 
 func Load(paths Paths) (Config, error) {
@@ -64,6 +70,11 @@ func Default(paths Paths) Config {
 		Editor:             editor,
 		PreviewBackend:     "auto",
 		EmojiMode:          EmojiModeAuto,
+		IndicatorNormal:    IndicatorPywal,
+		IndicatorInsert:    IndicatorPywal,
+		IndicatorVisual:    IndicatorPywal,
+		IndicatorCommand:   IndicatorPywal,
+		IndicatorSearch:    IndicatorPywal,
 		FilePickerCommand:  "yazi --chooser-file {chooser}",
 		ImageViewerCommand: "nsxiv {path}",
 		VideoPlayerCommand: "mpv {path}",
@@ -121,6 +132,31 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.EmojiMode, err = parseEmojiMode(parsed)
 			if err != nil {
 				return fmt.Errorf("line %d: emoji_mode: %w", lineNo, err)
+			}
+		case "indicator_normal":
+			cfg.IndicatorNormal, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_normal: %w", lineNo, err)
+			}
+		case "indicator_insert":
+			cfg.IndicatorInsert, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_insert: %w", lineNo, err)
+			}
+		case "indicator_visual":
+			cfg.IndicatorVisual, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_visual: %w", lineNo, err)
+			}
+		case "indicator_command":
+			cfg.IndicatorCommand, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_command: %w", lineNo, err)
+			}
+		case "indicator_search":
+			cfg.IndicatorSearch, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_search: %w", lineNo, err)
 			}
 		case "notification_command":
 			cfg.NotificationCommand = parsed
@@ -222,6 +258,33 @@ func parseEmojiMode(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("must be %q, %q, or %q", EmojiModeAuto, EmojiModeFull, EmojiModeCompat)
 	}
+}
+
+func parseModeIndicator(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, IndicatorPywal) {
+		return IndicatorPywal, nil
+	}
+	if isHexColor(value) {
+		return value, nil
+	}
+	return "", fmt.Errorf("must be %q or a hex color like \"#7ED7C1\"", IndicatorPywal)
+}
+
+func isHexColor(value string) bool {
+	if len(value) != 4 && len(value) != 7 {
+		return false
+	}
+	if !strings.HasPrefix(value, "#") {
+		return false
+	}
+	for _, r := range value[1:] {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseLeaderKey(value string) (string, error) {

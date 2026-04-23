@@ -305,6 +305,21 @@ func normalizeConfig(cfg config.Config) config.Config {
 	default:
 		cfg.EmojiMode = config.EmojiModeAuto
 	}
+	if strings.TrimSpace(cfg.IndicatorNormal) == "" {
+		cfg.IndicatorNormal = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.IndicatorInsert) == "" {
+		cfg.IndicatorInsert = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.IndicatorVisual) == "" {
+		cfg.IndicatorVisual = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.IndicatorCommand) == "" {
+		cfg.IndicatorCommand = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.IndicatorSearch) == "" {
+		cfg.IndicatorSearch = config.IndicatorPywal
+	}
 	if cfg.DownloadsDir == "" {
 		cfg.DownloadsDir = config.Default(config.Paths{}).DownloadsDir
 	}
@@ -852,8 +867,9 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
+		m.clearSearch()
 		m.mode = ModeNormal
-		m.searchLine = ""
+		m.status = "search cleared"
 	case tea.KeyEnter:
 		m.lastSearch = m.searchLine
 		m.lastSearchFocus = m.focus
