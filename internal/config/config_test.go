@@ -159,7 +159,25 @@ func TestLoadRejectsInvalidEmojiMode(t *testing.T) {
 }
 
 func TestResolveEmojiModeAutoUsesFullForUTF8Terminals(t *testing.T) {
-	if got := ResolveEmojiModeForEnv(EmojiModeAuto, "st-256color", "", "", "en_US.UTF-8"); got != EmojiModeFull {
+	if got := ResolveEmojiModeForEnv(EmojiModeAuto, "xterm-kitty", "", "", "en_US.UTF-8"); got != EmojiModeFull {
+		t.Fatalf("ResolveEmojiModeForEnv() = %q, want %q", got, EmojiModeFull)
+	}
+}
+
+func TestResolveEmojiModeAutoFallsBackForSTTerminals(t *testing.T) {
+	tests := []string{"st", "st-256color"}
+
+	for _, term := range tests {
+		t.Run(term, func(t *testing.T) {
+			if got := ResolveEmojiModeForEnv(EmojiModeAuto, term, "", "", "en_US.UTF-8"); got != EmojiModeCompat {
+				t.Fatalf("ResolveEmojiModeForEnv() = %q, want %q", got, EmojiModeCompat)
+			}
+		})
+	}
+}
+
+func TestResolveEmojiModeFullOverridesSTFallback(t *testing.T) {
+	if got := ResolveEmojiModeForEnv(EmojiModeFull, "st-256color", "", "", "en_US.UTF-8"); got != EmojiModeFull {
 		t.Fatalf("ResolveEmojiModeForEnv() = %q, want %q", got, EmojiModeFull)
 	}
 }
@@ -173,7 +191,7 @@ func TestResolveEmojiModeAutoFallsBackForClearlyUnsupportedTerminals(t *testing.
 		lang  string
 	}{
 		{name: "dumb term", term: "dumb", lang: "en_US.UTF-8"},
-		{name: "c locale", term: "st-256color", lang: "C"},
+		{name: "c locale", term: "xterm-kitty", lang: "C"},
 	}
 
 	for _, test := range tests {

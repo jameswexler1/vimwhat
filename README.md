@@ -52,4 +52,4 @@ Do not commit session files, SQLite databases, logs, media caches, or generated 
 
 ## Emoji rendering
 
-Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on UTF-8 terminals, including skin tones, ZWJ professions/families, and flags. If a terminal/font stack still misreports emoji cell widths, set `emoji_mode = "compat"` to keep the stable degraded rendering, or `emoji_mode = "full"` to force full emoji rendering.
+Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.

@@ -181,13 +181,18 @@ func ResolveEmojiModeForEnv(mode, term, lcAll, lcCtype, lang string) string {
 	case EmojiModeCompat:
 		return EmojiModeCompat
 	case "", EmojiModeAuto:
-		if strings.EqualFold(strings.TrimSpace(term), "dumb") || !LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang) {
+		if terminalPrefersCompatEmoji(term) || !LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang) {
 			return EmojiModeCompat
 		}
 		return EmojiModeFull
 	default:
 		return EmojiModeCompat
 	}
+}
+
+func terminalPrefersCompatEmoji(term string) bool {
+	term = strings.ToLower(strings.TrimSpace(term))
+	return term == "dumb" || term == "st" || strings.HasPrefix(term, "st-")
 }
 
 func LocaleLooksUTF8() bool {
