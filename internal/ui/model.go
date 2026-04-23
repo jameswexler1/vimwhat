@@ -181,6 +181,7 @@ type Options struct {
 	DeleteMessage        func(messageID string) error
 	SaveMedia            func(media store.MediaMetadata) error
 	DownloadMedia        func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	ActiveChatChanged    func(chatID string)
 }
 
 type Model struct {
@@ -267,6 +268,8 @@ type Model struct {
 	deleteMessage          func(messageID string) error
 	saveMedia              func(media store.MediaMetadata) error
 	downloadMedia          func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	activeChatChanged      func(chatID string)
+	lastReportedActiveChat string
 	liveUpdates            <-chan LiveUpdate
 	reloadInFlight         bool
 	refreshQueued          bool
@@ -304,7 +307,7 @@ func NewModel(opts Options) Model {
 		}
 	}
 
-	return Model{
+	model := Model{
 		mode:                   ModeNormal,
 		focus:                  FocusChats,
 		allChats:               slices.Clone(chats),
@@ -338,6 +341,7 @@ func NewModel(opts Options) Model {
 		deleteMessage:          opts.DeleteMessage,
 		saveMedia:              opts.SaveMedia,
 		downloadMedia:          opts.DownloadMedia,
+		activeChatChanged:      opts.ActiveChatChanged,
 		markRead:               opts.MarkRead,
 		sendReaction:           opts.SendReaction,
 		sendPresence:           opts.SendPresence,
@@ -353,6 +357,8 @@ func NewModel(opts Options) Model {
 		messageLimitsByChat:    map[string]int{},
 		historyRequestedByChat: map[string]bool{},
 	}
+	model.reportActiveChatChanged()
+	return model
 }
 
 func normalizeConfig(cfg config.Config) config.Config {
@@ -378,6 +384,9 @@ func normalizeConfig(cfg config.Config) config.Config {
 	}
 	if strings.TrimSpace(cfg.IndicatorSearch) == "" {
 		cfg.IndicatorSearch = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.NotificationBackend) == "" {
+		cfg.NotificationBackend = "auto"
 	}
 	if cfg.DownloadsDir == "" {
 		cfg.DownloadsDir = config.Default(config.Paths{}).DownloadsDir
@@ -1579,6 +1588,7 @@ func (m *Model) advanceSearch(delta int) {
 }
 
 func (m *Model) ensureCurrentMessagesLoaded() error {
+	m.reportActiveChatChanged()
 	chatID := m.currentChat().ID
 	if chatID == "" {
 		return nil
@@ -2057,6 +2067,7 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 		m.chatScrollTop = 0
 		m.messageCursor = 0
 		m.messageScrollTop = 0
+		m.reportActiveChatChanged()
 		return nil
 	}
 
@@ -2070,6 +2081,18 @@ func (m *Model) applyChatView(source []store.Chat, preferredChatID string) error
 	}
 	m.showCurrentChatLatest()
 	return nil
+}
+
+func (m *Model) reportActiveChatChanged() {
+	if m.activeChatChanged == nil {
+		return
+	}
+	chatID := strings.TrimSpace(m.currentChat().ID)
+	if chatID == m.lastReportedActiveChat {
+		return
+	}
+	m.lastReportedActiveChat = chatID
+	m.activeChatChanged(chatID)
 }
 
 func (m *Model) keepActiveChatVisible() {

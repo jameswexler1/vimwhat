@@ -22,7 +22,7 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 	ingestor := Ingestor{Store: db}
 	when := time.Unix(1_700_000_000, 0)
 
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventChatUpsert,
 		Chat: ChatEvent{
 			ID:            "chat-1",
@@ -36,7 +36,7 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 		t.Fatalf("Apply(chat) error = %v", err)
 	}
 
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventMessageUpsert,
 		Message: MessageEvent{
 			ID:        "msg-1",
@@ -53,7 +53,7 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 		t.Fatalf("Apply(message) error = %v", err)
 	}
 
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventMediaMetadata,
 		Media: MediaEvent{
 			MessageID:     "msg-1",
@@ -74,7 +74,7 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 		t.Fatalf("Apply(media) error = %v", err)
 	}
 
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventReceiptUpdate,
 		Receipt: ReceiptEvent{
 			MessageID: "msg-1",
@@ -129,7 +129,7 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 
 	ingestor := Ingestor{Store: db}
 	when := time.Unix(1_700_000_000, 0)
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventChatUpsert,
 		Chat: ChatEvent{
 			ID:            "chat-1",
@@ -141,7 +141,7 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Apply(chat) error = %v", err)
 	}
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventMessageUpsert,
 		Message: MessageEvent{
 			ID:         "chat-1/old-1",
@@ -158,7 +158,7 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Apply(historical message) error = %v", err)
 	}
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventHistoryStatus,
 		History: HistoryEvent{
 			ChatID:         "chat-1",
@@ -186,6 +186,63 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}
 }
 
+func TestIngestorApplyReportsInsertedOnlyForFirstLiveMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	when := time.Unix(1_700_000_000, 0)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:    "chat-1",
+			JID:   "chat-1@s.whatsapp.net",
+			Title: "Alice",
+			Kind:  "direct",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(chat) error = %v", err)
+	}
+
+	event := Event{
+		Kind: EventMessageUpsert,
+		Message: MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "hello",
+			NotificationPreview: "hello",
+			Timestamp:           when,
+			Status:              "received",
+		},
+	}
+
+	first, err := ingestor.Apply(ctx, event)
+	if err != nil {
+		t.Fatalf("Apply(first) error = %v", err)
+	}
+	if !first.MessageInserted {
+		t.Fatal("first Apply() reported MessageInserted=false, want true")
+	}
+
+	second, err := ingestor.Apply(ctx, event)
+	if err != nil {
+		t.Fatalf("Apply(second) error = %v", err)
+	}
+	if second.MessageInserted {
+		t.Fatal("second Apply() reported MessageInserted=true, want false")
+	}
+}
+
 func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
@@ -197,7 +254,7 @@ func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T)
 	})
 
 	ingestor := Ingestor{Store: db}
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
 			JID:         "missing@s.whatsapp.net",
@@ -216,7 +273,7 @@ func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T)
 		t.Fatalf("contact upsert created chats = %+v, want none", chats)
 	}
 
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventChatUpsert,
 		Chat: ChatEvent{
 			ID:          "12345@s.whatsapp.net",
@@ -228,7 +285,7 @@ func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T)
 	}); err != nil {
 		t.Fatalf("Apply(chat) error = %v", err)
 	}
-	if err := ingestor.Apply(ctx, Event{
+	if _, err := ingestor.Apply(ctx, Event{
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
 			JID:         "12345@s.whatsapp.net",

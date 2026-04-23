@@ -263,6 +263,13 @@ func TestChatByJIDMessageByIDAndListAllMessages(t *testing.T) {
 	if !ok || gotChat.ID != chat.ID || gotChat.JID != chat.JID {
 		t.Fatalf("ChatByJID() = %+v ok=%v", gotChat, ok)
 	}
+	gotChatByID, ok, err := db.ChatByID(ctx, chat.ID)
+	if err != nil {
+		t.Fatalf("ChatByID() error = %v", err)
+	}
+	if !ok || gotChatByID.JID != chat.JID || gotChatByID.Kind != "group" {
+		t.Fatalf("ChatByID() = %+v ok=%v", gotChatByID, ok)
+	}
 
 	gotMessage, ok, err := db.MessageByID(ctx, "m-2")
 	if err != nil {
@@ -291,6 +298,9 @@ func TestChatByJIDMessageByIDAndListAllMessages(t *testing.T) {
 
 	if _, ok, err := db.ChatByJID(ctx, "missing@g.us"); err != nil || ok {
 		t.Fatalf("ChatByJID(missing) ok=%v err=%v, want false,nil", ok, err)
+	}
+	if _, ok, err := db.ChatByID(ctx, "missing"); err != nil || ok {
+		t.Fatalf("ChatByID(missing) ok=%v err=%v, want false,nil", ok, err)
 	}
 	if _, ok, err := db.MessageByID(ctx, "missing"); err != nil || ok {
 		t.Fatalf("MessageByID(missing) ok=%v err=%v, want false,nil", ok, err)

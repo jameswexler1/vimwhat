@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, typing presence, media retry UX, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the media-send path on real chats, especially audio/document fallback behavior, plus attachment draft persistence and any follow-on resend polish beyond failed media rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, typing presence, desktop notifications, media retry UX, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery and audio/document fallback behavior, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -19,6 +19,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Real outbound send from the inline composer for plain text plus one local attachment per message, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, captions for image/video/document sends, audio-caption rejection before queueing, ffprobe-backed generic audio send, and document fallback when audio metadata is unavailable.
 - CLI helpers for persisted data: `vimwhat media open <message-id>` reuses the normal opener flow and auto-downloads remote media when possible, while `vimwhat export chat <jid>` writes a local-only Markdown transcript into the configured downloads directory.
 - Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, text replies with quoted metadata, quote-jump into loaded history, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
+- Cross-platform desktop notifications for new incoming messages in inactive, unmuted chats, with native Linux/macOS/Windows backends, safe command override support, notification preview formatting for media-only messages, and backend diagnostics in `doctor`.
 - Retry/resend UX for failed outgoing media rows in the TUI via `R` and `:retry-message`, keeping the original failed row in chat and queueing a brand-new send attempt when the local attachment file still exists.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
@@ -27,7 +28,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 ### In progress
 
-- Manual validation and polish of remote media download, outbound text/media send, the new audio fallback behavior, and failed-media retry against real WhatsApp traffic.
+- Manual validation and polish of desktop notifications, remote media download, outbound text/media send, the new audio fallback behavior, and failed-media retry against real WhatsApp traffic.
 - Follow-on UX around attachment draft persistence, broader resend flows, and any export/open polish discovered during live usage.
 
 ### Not implemented yet
@@ -70,7 +71,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   `vimwhat media open <message-id>`
   `vimwhat export chat <jid>`
 - Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml`.
-- Config supports `emoji_mode = "auto" | "full" | "compat"` and per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, each defaulting to `"pywal"` with hex overrides allowed.
+- Config supports `emoji_mode = "auto" | "full" | "compat"`, per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, plus `notification_backend = "auto" | "none" | "command" | "linux-dbus" | "macos-osascript" | "windows-powershell"` and `notification_command` for desktop delivery overrides.
 - Data dir: `$XDG_DATA_HOME/vimwhat/`.
 - Cache dir: `$XDG_CACHE_HOME/vimwhat/`.
 - State file groups:
@@ -164,11 +165,11 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 ## Near-Term Execution Order
 
-1. Run a quick manual regression pass over the recent TUI hardening: big group scrolling, emoji-heavy messages, search counts/clearance, and custom mode indicators.
+1. Run a manual notification pass first: inactive-chat delivery, active-chat suppression, muted-chat suppression, Linux native backend selection, and `notification_command` override behavior.
 2. Validate remote media download on live WhatsApp traffic.
 3. Validate real text send for plain text composer submissions against live direct and group chats.
 4. Validate protocol-backed read receipts, reactions, presence, and replies/quote-jump against real chats.
-5. Validate attachment upload/send and failed-media retry on real chats, especially generic audio and document fallback cases, then decide the attachment-draft persistence batch based on real usage.
+5. Validate attachment upload/send and failed-media retry on real chats, especially generic audio and document fallback cases, then decide the attachment-draft persistence and text-retry batch based on real usage.
 
 ### Current protocol milestone
 
@@ -232,7 +233,14 @@ The TUI stability and modal polish milestone is implemented:
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, and search clearing.
 
-The next protocol milestone is live validation/polish of the completed media-send path, especially audio uploads, followed by resend/draft UX around failed outgoing attachments.
+The desktop notification milestone is implemented:
+
+- Add `notification_backend` selection plus `notification_command` override support in config, with `doctor` reporting the selected delivery path and backend availability.
+- Deliver notifications only for genuinely new incoming messages, suppressing duplicates, outgoing sends, historical imports, reaction-only updates, muted chats, and the currently selected chat.
+- Format notification payloads from normalized message previews so bodyless media messages still show attachment-aware summaries.
+- Auto-select native backends for Linux (`gdbus` / `dbus-send` / `notify-send`), macOS (`osascript`), and Windows (`powershell.exe`), while keeping command execution argv-safe and shell-free.
+
+The next protocol milestone is live validation/polish of the completed notification and media-send paths, especially Linux desktop delivery, audio uploads, and follow-on resend/draft UX around failed outgoing attachments.
 
 ### Data model and lazy loading
 
@@ -296,7 +304,7 @@ The next protocol milestone is live validation/polish of the completed media-sen
 - Chat and message search history.
 - Quote-jump: from a reply, jump to the referenced message if present locally, else fetch around it.
 - Per-chat draft indicator in the chat list.
-- Notification hook command for desktop notifications.
+- Desktop notifications for inactive, unmuted chats with native backend auto-detection and command override support.
 - Download/open attachment commands with sane default save paths.
 - `:help` with discoverable keymaps and mode-specific bindings.
 - Optional keymap override file, but ship a strong default instead of making the user design their own from scratch.
@@ -335,12 +343,14 @@ The next protocol milestone is live validation/polish of the completed media-sen
   search query routing by focused pane,
   lazy-loading window calculations,
   preview backend selection,
+  notification backend selection and command templating,
   draft persistence,
   message selection/yank behavior.
 - Integration tests:
   protocol adapter against a mocked whatsmeow-facing layer,
   SQLite migrations,
   event ingestion into DB,
+  notification suppression for duplicate/historical/outgoing events,
   FTS indexing and search results,
   history page fetch and viewport refill,
   media metadata to preview pipeline.
@@ -364,6 +374,7 @@ The next protocol milestone is live validation/polish of the completed media-sen
   open one draft in `nvim`, return, and send,
   preview image/video/document in `st`,
   operate with no image backend available,
+  receive a new message while another chat is selected and confirm one desktop notification appears,
   receive new messages while browsing old history,
   send image/document/audio file,
   reply to a message and jump back to source.
@@ -381,6 +392,8 @@ The next protocol milestone is live validation/polish of the completed media-sen
 - Default UX favors a complete Vim model over beginner discoverability.
 - Default compose mode is inline; external `nvim` compose is optional per message and never mandatory.
 - Default preview mode is auto-detect with graceful fallback.
+- Default notification mode is auto-detect with native OS delivery; when `notification_command` is set alongside `notification_backend = "auto"`, the configured command overrides native selection.
+- Default notification policy is one desktop notification per genuinely new incoming message in an inactive, unmuted chat.
 - Default emoji mode is `auto`; terminals known to misreport complex emoji widths should use the compatibility renderer unless explicitly forced to `full`.
 - Default mode indicator colors come from pywal; users can override each mode with a hex color in config.
 - v1 supports DMs and groups only.

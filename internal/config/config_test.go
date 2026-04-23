@@ -33,6 +33,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.IndicatorNormal != IndicatorPywal || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != IndicatorPywal || cfg.IndicatorCommand != IndicatorPywal || cfg.IndicatorSearch != IndicatorPywal {
 		t.Fatalf("indicator defaults = normal %q insert %q visual %q command %q search %q, want all %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch, IndicatorPywal)
 	}
+	if cfg.NotificationBackend != "auto" {
+		t.Fatalf("NotificationBackend = %q, want auto", cfg.NotificationBackend)
+	}
 	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
@@ -58,6 +61,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`indicator_visual = "#abc"`,
 		`indicator_command = "#AABBCC"`,
 		`indicator_search = "PYWAL"`,
+		`notification_backend = "command"`,
 		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
@@ -92,6 +96,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.IndicatorNormal != "#112233" || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != "#abc" || cfg.IndicatorCommand != "#AABBCC" || cfg.IndicatorSearch != IndicatorPywal {
 		t.Fatalf("indicators = normal %q insert %q visual %q command %q search %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch)
+	}
+	if cfg.NotificationBackend != "command" {
+		t.Fatalf("NotificationBackend = %q, want command", cfg.NotificationBackend)
 	}
 	if cfg.NotificationCommand != "notify-send vimwhat" {
 		t.Fatalf("NotificationCommand = %q", cfg.NotificationCommand)
@@ -183,6 +190,23 @@ func TestLoadRejectsInvalidModeIndicator(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "indicator_insert") {
 		t.Fatalf("Load() error = %v, want indicator_insert context", err)
+	}
+}
+
+func TestLoadRejectsInvalidNotificationBackend(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`notification_backend = "toast"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid notification backend error")
+	}
+	if !strings.Contains(err.Error(), "notification_backend") {
+		t.Fatalf("Load() error = %v, want notification_backend context", err)
 	}
 }
 

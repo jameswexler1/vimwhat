@@ -19,6 +19,7 @@ type Config struct {
 	IndicatorVisual     string
 	IndicatorCommand    string
 	IndicatorSearch     string
+	NotificationBackend string
 	NotificationCommand string
 	ClipboardCommand    string
 	FilePickerCommand   string
@@ -67,24 +68,25 @@ func Default(paths Paths) Config {
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:             editor,
-		PreviewBackend:     "auto",
-		EmojiMode:          EmojiModeAuto,
-		IndicatorNormal:    IndicatorPywal,
-		IndicatorInsert:    IndicatorPywal,
-		IndicatorVisual:    IndicatorPywal,
-		IndicatorCommand:   IndicatorPywal,
-		IndicatorSearch:    IndicatorPywal,
-		FilePickerCommand:  "yazi --chooser-file {chooser}",
-		ImageViewerCommand: "nsxiv {path}",
-		VideoPlayerCommand: "mpv {path}",
-		AudioPlayerCommand: "mpv --no-video --no-terminal --really-quiet {path}",
-		FileOpenerCommand:  "xdg-open {path}",
-		LeaderKey:          "space",
-		PreviewMaxWidth:    67,
-		PreviewMaxHeight:   18,
-		PreviewDelayMS:     80,
-		DownloadsDir:       downloadsDir,
+		Editor:              editor,
+		PreviewBackend:      "auto",
+		EmojiMode:           EmojiModeAuto,
+		IndicatorNormal:     IndicatorPywal,
+		IndicatorInsert:     IndicatorPywal,
+		IndicatorVisual:     IndicatorPywal,
+		IndicatorCommand:    IndicatorPywal,
+		IndicatorSearch:     IndicatorPywal,
+		NotificationBackend: "auto",
+		FilePickerCommand:   "yazi --chooser-file {chooser}",
+		ImageViewerCommand:  "nsxiv {path}",
+		VideoPlayerCommand:  "mpv {path}",
+		AudioPlayerCommand:  "mpv --no-video --no-terminal --really-quiet {path}",
+		FileOpenerCommand:   "xdg-open {path}",
+		LeaderKey:           "space",
+		PreviewMaxWidth:     67,
+		PreviewMaxHeight:    18,
+		PreviewDelayMS:      80,
+		DownloadsDir:        downloadsDir,
 	}
 }
 
@@ -157,6 +159,11 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.IndicatorSearch, err = parseModeIndicator(parsed)
 			if err != nil {
 				return fmt.Errorf("line %d: indicator_search: %w", lineNo, err)
+			}
+		case "notification_backend":
+			cfg.NotificationBackend, err = parseNotificationBackend(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: notification_backend: %w", lineNo, err)
 			}
 		case "notification_command":
 			cfg.NotificationCommand = parsed
@@ -269,6 +276,25 @@ func parseModeIndicator(value string) (string, error) {
 		return value, nil
 	}
 	return "", fmt.Errorf("must be %q or a hex color like \"#7ED7C1\"", IndicatorPywal)
+}
+
+func parseNotificationBackend(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return "auto", nil
+	case "none":
+		return "none", nil
+	case "command":
+		return "command", nil
+	case "linux-dbus":
+		return "linux-dbus", nil
+	case "macos-osascript":
+		return "macos-osascript", nil
+	case "windows-powershell":
+		return "windows-powershell", nil
+	default:
+		return "", fmt.Errorf("must be %q, %q, %q, %q, %q, or %q", "auto", "none", "command", "linux-dbus", "macos-osascript", "windows-powershell")
+	}
 }
 
 func isHexColor(value string) bool {

@@ -975,6 +975,11 @@ type Event struct {
 	Contact    ContactEvent
 }
 
+type ApplyResult struct {
+	MessageInserted bool
+	Message         MessageEvent
+}
+
 type ConnectionEvent struct {
 	State  ConnectionState
 	Detail string
@@ -1004,19 +1009,20 @@ type ContactEvent struct {
 }
 
 type MessageEvent struct {
-	ID              string
-	RemoteID        string
-	ChatID          string
-	ChatJID         string
-	Sender          string
-	SenderJID       string
-	Body            string
-	Timestamp       time.Time
-	IsOutgoing      bool
-	Status          string
-	QuotedMessageID string
-	QuotedRemoteID  string
-	Historical      bool
+	ID                  string
+	RemoteID            string
+	ChatID              string
+	ChatJID             string
+	Sender              string
+	SenderJID           string
+	Body                string
+	NotificationPreview string
+	Timestamp           time.Time
+	IsOutgoing          bool
+	Status              string
+	QuotedMessageID     string
+	QuotedRemoteID      string
+	Historical          bool
 }
 
 type HistoryEvent struct {

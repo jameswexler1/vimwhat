@@ -161,6 +161,57 @@ func (s *Store) ChatByJID(ctx context.Context, jid string) (Chat, bool, error) {
 	return chat, true, nil
 }
 
+func (s *Store) ChatByID(ctx context.Context, id string) (Chat, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Chat{}, false, nil
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			c.id,
+			c.jid,
+			c.title,
+			c.title_source,
+			c.kind,
+			c.unread_count,
+			c.pinned,
+			c.muted,
+			c.last_message_at,
+			COALESCE((
+					SELECT CASE
+						WHEN trim(m.body) <> '' THEN m.body
+						ELSE COALESCE((
+							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
+							FROM media_metadata mm
+							WHERE mm.message_id = m.id
+							ORDER BY mm.file_name ASC
+							LIMIT 1
+						), '')
+				END
+					FROM messages m
+					WHERE m.chat_id = c.id
+						AND m.deleted_at = 0
+						AND `+renderableMessageWhereSQL+`
+					ORDER BY m.timestamp_unix DESC, m.id DESC
+					LIMIT 1
+				), '') AS last_preview,
+			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
+		FROM chats c
+		LEFT JOIN drafts d ON d.chat_id = c.id
+		WHERE c.id = ?
+	`, id)
+
+	chat, err := scanChat(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Chat{}, false, nil
+		}
+		return Chat{}, false, fmt.Errorf("load chat %s: %w", id, err)
+	}
+	return chat, true, nil
+}
+
 func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]Message, error) {
 	if chatID == "" {
 		return nil, nil

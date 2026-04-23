@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"vimwhat/internal/config"
+	"vimwhat/internal/notify"
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
 	"vimwhat/internal/whatsapp"
@@ -102,6 +103,12 @@ type fakeMetadataLiveWhatsAppSession struct {
 	*fakeLiveWhatsAppSession
 	metadataEvents []whatsapp.Event
 	metadataErr    error
+}
+
+type fakeNotifier struct {
+	notifications chan notify.Notification
+	err           error
+	report        notify.Report
 }
 
 func (s *fakeLiveWhatsAppSession) Connect(context.Context) error {
@@ -221,6 +228,17 @@ func (s *fakeMetadataLiveWhatsAppSession) RefreshChatMetadata(context.Context) (
 	return s.metadataEvents, s.metadataErr
 }
 
+func (n *fakeNotifier) Notify(_ context.Context, note notify.Notification) error {
+	if n.notifications != nil {
+		n.notifications <- note
+	}
+	return n.err
+}
+
+func (n *fakeNotifier) Report() notify.Report {
+	return n.report
+}
+
 func TestRunLoginRendersQRAndCompletes(t *testing.T) {
 	session := &fakeWhatsAppSession{loginCodes: []string{"qr-code"}}
 	var openedPath string
@@ -281,7 +299,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -381,7 +399,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -400,6 +418,331 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func TestRunLiveWhatsAppNotifiesInactiveIncomingMessage(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 4),
+	}
+	notifier := &fakeNotifier{
+		notifications: make(chan notify.Notification, 2),
+		report:        notify.Report{Selected: notify.BackendCommand},
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		OpenNotifier: func(config.Config) notify.Notifier {
+			return notifier
+		},
+	}
+
+	updates := make(chan ui.LiveUpdate, 16)
+	activeChat := make(chan string, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat)
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+	activeChat <- "other-chat"
+
+	when := time.Unix(1_700_000_000, 0)
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "hello from live",
+			NotificationPreview: "hello from live",
+			Timestamp:           when,
+			Status:              "received",
+		},
+	}
+
+	note := waitForNotification(t, notifier.notifications)
+	if note.Title != "Alice" || note.Body != "hello from live" {
+		t.Fatalf("notification = %+v, want Alice/hello from live", note)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func TestRunLiveWhatsAppSuppressesNotificationsForActiveMutedAndDuplicateMessages(t *testing.T) {
+	tests := []struct {
+		name              string
+		activeChatID      string
+		chatMuted         bool
+		message           whatsapp.MessageEvent
+		repeatMessage     bool
+		wantNotifications int
+	}{
+		{
+			name:              "active chat",
+			activeChatID:      "chat-1",
+			message:           whatsapp.MessageEvent{ID: "chat-1/msg-1", RemoteID: "msg-1", ChatID: "chat-1", ChatJID: "chat-1@s.whatsapp.net", Sender: "Alice", SenderJID: "alice@s.whatsapp.net", Body: "hello", NotificationPreview: "hello", Timestamp: time.Unix(1_700_000_000, 0), Status: "received"},
+			wantNotifications: 0,
+		},
+		{
+			name:              "muted chat",
+			activeChatID:      "other-chat",
+			chatMuted:         true,
+			message:           whatsapp.MessageEvent{ID: "chat-1/msg-1", RemoteID: "msg-1", ChatID: "chat-1", ChatJID: "chat-1@s.whatsapp.net", Sender: "Alice", SenderJID: "alice@s.whatsapp.net", Body: "hello", NotificationPreview: "hello", Timestamp: time.Unix(1_700_000_000, 0), Status: "received"},
+			wantNotifications: 0,
+		},
+		{
+			name:              "duplicate message",
+			activeChatID:      "other-chat",
+			message:           whatsapp.MessageEvent{ID: "chat-1/msg-1", RemoteID: "msg-1", ChatID: "chat-1", ChatJID: "chat-1@s.whatsapp.net", Sender: "Alice", SenderJID: "alice@s.whatsapp.net", Body: "hello", NotificationPreview: "hello", Timestamp: time.Unix(1_700_000_000, 0), Status: "received"},
+			repeatMessage:     true,
+			wantNotifications: 1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+			if err != nil {
+				t.Fatalf("store.Open() error = %v", err)
+			}
+			t.Cleanup(func() {
+				_ = db.Close()
+			})
+
+			session := &fakeLiveWhatsAppSession{
+				events: make(chan whatsapp.Event, 8),
+			}
+			notifier := &fakeNotifier{
+				notifications: make(chan notify.Notification, 4),
+				report:        notify.Report{Selected: notify.BackendCommand},
+			}
+			env := Environment{
+				Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+				Store: db,
+				OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+					return session, nil
+				},
+				OpenNotifier: func(config.Config) notify.Notifier {
+					return notifier
+				},
+			}
+
+			updates := make(chan ui.LiveUpdate, 16)
+			activeChat := make(chan string, 2)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat)
+			}()
+
+			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+				return update.ConnectionState == ui.ConnectionOnline
+			})
+			activeChat <- test.activeChatID
+
+			when := test.message.Timestamp
+			session.events <- whatsapp.Event{
+				Kind: whatsapp.EventChatUpsert,
+				Chat: whatsapp.ChatEvent{
+					ID:            "chat-1",
+					JID:           "chat-1@s.whatsapp.net",
+					Title:         "Alice",
+					Kind:          "direct",
+					Muted:         test.chatMuted,
+					LastMessageAt: when,
+				},
+			}
+			session.events <- whatsapp.Event{
+				Kind:    whatsapp.EventMessageUpsert,
+				Message: test.message,
+			}
+			if test.repeatMessage {
+				session.events <- whatsapp.Event{
+					Kind:    whatsapp.EventMessageUpsert,
+					Message: test.message,
+				}
+			}
+
+			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+				return update.Refresh
+			})
+			if test.repeatMessage {
+				waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+					return update.Refresh
+				})
+			}
+
+			assertNotificationCount(t, notifier.notifications, test.wantNotifications)
+
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("runLiveWhatsApp did not stop after cancellation")
+			}
+		})
+	}
+}
+
+func TestRunLiveWhatsAppSuppressesHistoricalOutgoingAndReactionNotifications(t *testing.T) {
+	tests := []struct {
+		name  string
+		event whatsapp.Event
+	}{
+		{
+			name: "historical message",
+			event: whatsapp.Event{
+				Kind: whatsapp.EventMessageUpsert,
+				Message: whatsapp.MessageEvent{
+					ID:                  "chat-1/old-1",
+					RemoteID:            "old-1",
+					ChatID:              "chat-1",
+					ChatJID:             "chat-1@s.whatsapp.net",
+					Sender:              "Alice",
+					SenderJID:           "alice@s.whatsapp.net",
+					Body:                "old",
+					NotificationPreview: "old",
+					Timestamp:           time.Unix(1_700_000_000, 0),
+					Status:              "received",
+					Historical:          true,
+				},
+			},
+		},
+		{
+			name: "outgoing message",
+			event: whatsapp.Event{
+				Kind: whatsapp.EventMessageUpsert,
+				Message: whatsapp.MessageEvent{
+					ID:                  "chat-1/out-1",
+					RemoteID:            "out-1",
+					ChatID:              "chat-1",
+					ChatJID:             "chat-1@s.whatsapp.net",
+					Sender:              "me",
+					SenderJID:           "me",
+					Body:                "sent",
+					NotificationPreview: "sent",
+					Timestamp:           time.Unix(1_700_000_000, 0),
+					Status:              "sent",
+					IsOutgoing:          true,
+				},
+			},
+		},
+		{
+			name: "reaction update",
+			event: whatsapp.Event{
+				Kind: whatsapp.EventReactionUpdate,
+				Reaction: whatsapp.ReactionEvent{
+					MessageID: "chat-1/msg-1",
+					ChatID:    "chat-1",
+					SenderJID: "alice@s.whatsapp.net",
+					Emoji:     "👍",
+					Timestamp: time.Unix(1_700_000_000, 0),
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+			if err != nil {
+				t.Fatalf("store.Open() error = %v", err)
+			}
+			t.Cleanup(func() {
+				_ = db.Close()
+			})
+
+			session := &fakeLiveWhatsAppSession{
+				events: make(chan whatsapp.Event, 4),
+			}
+			notifier := &fakeNotifier{
+				notifications: make(chan notify.Notification, 2),
+				report:        notify.Report{Selected: notify.BackendCommand},
+			}
+			env := Environment{
+				Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+				Store: db,
+				OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+					return session, nil
+				},
+				OpenNotifier: func(config.Config) notify.Notifier {
+					return notifier
+				},
+			}
+
+			updates := make(chan ui.LiveUpdate, 16)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16))
+			}()
+
+			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+				return update.ConnectionState == ui.ConnectionOnline
+			})
+
+			session.events <- whatsapp.Event{
+				Kind: whatsapp.EventChatUpsert,
+				Chat: whatsapp.ChatEvent{
+					ID:    "chat-1",
+					JID:   "chat-1@s.whatsapp.net",
+					Title: "Alice",
+					Kind:  "direct",
+				},
+			}
+			session.events <- test.event
+
+			assertNotificationCount(t, notifier.notifications, 0)
+
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("runLiveWhatsApp did not stop after cancellation")
+			}
+		})
 	}
 }
 
@@ -1220,6 +1563,34 @@ func waitForLiveUpdate(t *testing.T, updates <-chan ui.LiveUpdate, match func(ui
 	}
 }
 
+func waitForNotification(t *testing.T, notifications <-chan notify.Notification) notify.Notification {
+	t.Helper()
+	select {
+	case note := <-notifications:
+		return note
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for notification")
+		return notify.Notification{}
+	}
+}
+
+func assertNotificationCount(t *testing.T, notifications <-chan notify.Notification, want int) {
+	t.Helper()
+	deadline := time.After(250 * time.Millisecond)
+	got := 0
+	for {
+		select {
+		case <-notifications:
+			got++
+		case <-deadline:
+			if got != want {
+				t.Fatalf("notification count = %d, want %d", got, want)
+			}
+			return
+		}
+	}
+}
+
 func TestRunLoginSkipsAlreadyLoggedInSession(t *testing.T) {
 	session := &fakeWhatsAppSession{loggedIn: true}
 	env := Environment{
@@ -1325,6 +1696,9 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "emoji mode:") {
 		t.Fatalf("doctor output = %q, want emoji mode line", out.String())
+	}
+	if !strings.Contains(out.String(), "requested notification backend:") || !strings.Contains(out.String(), "notification delivery path:") {
+		t.Fatalf("doctor output = %q, want notification diagnostics", out.String())
 	}
 }
 

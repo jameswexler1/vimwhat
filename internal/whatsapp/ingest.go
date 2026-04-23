@@ -13,9 +13,9 @@ type Ingestor struct {
 	Store *store.Store
 }
 
-func (i Ingestor) Apply(ctx context.Context, event Event) error {
+func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 	if i.Store == nil {
-		return fmt.Errorf("store is required")
+		return ApplyResult{}, fmt.Errorf("store is required")
 	}
 
 	switch event.Kind {
@@ -32,9 +32,9 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			LastMessageAt: event.Chat.LastMessageAt,
 		}
 		if event.Chat.UnreadKnown {
-			return i.Store.UpsertChat(ctx, chat)
+			return ApplyResult{}, i.Store.UpsertChat(ctx, chat)
 		}
-		return i.Store.UpsertChatPreserveUnread(ctx, chat)
+		return ApplyResult{}, i.Store.UpsertChatPreserveUnread(ctx, chat)
 	case EventMessageUpsert:
 		message := store.Message{
 			ID:              event.Message.ID,
@@ -50,13 +50,19 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			QuotedMessageID: event.Message.QuotedMessageID,
 			QuotedRemoteID:  event.Message.QuotedRemoteID,
 		}
-		var err error
+		var (
+			inserted bool
+			err      error
+		)
 		if event.Message.Historical {
-			_, err = i.Store.AddHistoricalMessage(ctx, message)
+			inserted, err = i.Store.AddHistoricalMessage(ctx, message)
 		} else {
-			_, err = i.Store.AddIncomingMessage(ctx, message)
+			inserted, err = i.Store.AddIncomingMessage(ctx, message)
 		}
-		return err
+		return ApplyResult{
+			MessageInserted: inserted,
+			Message:         event.Message,
+		}, err
 	case EventMediaMetadata:
 		metadata := store.MediaMetadata{
 			MessageID:     event.Media.MessageID,
@@ -70,17 +76,17 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		}
 		descriptor := storeMediaDownloadDescriptor(event.Media.Download, event.Media.MessageID)
 		if descriptor.MessageID != "" {
-			return i.Store.UpsertMediaMetadataWithDownload(ctx, metadata, &descriptor)
+			return ApplyResult{}, i.Store.UpsertMediaMetadataWithDownload(ctx, metadata, &descriptor)
 		}
-		return i.Store.UpsertMediaMetadata(ctx, metadata)
+		return ApplyResult{}, i.Store.UpsertMediaMetadata(ctx, metadata)
 	case EventReceiptUpdate:
 		if event.Receipt.MessageID == "" {
-			return fmt.Errorf("receipt message id is required")
+			return ApplyResult{}, fmt.Errorf("receipt message id is required")
 		}
 		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
-		return err
+		return ApplyResult{}, err
 	case EventReactionUpdate:
-		return i.Store.UpsertReaction(ctx, store.Reaction{
+		return ApplyResult{}, i.Store.UpsertReaction(ctx, store.Reaction{
 			MessageID:  event.Reaction.MessageID,
 			SenderJID:  event.Reaction.SenderJID,
 			Emoji:      event.Reaction.Emoji,
@@ -89,16 +95,16 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			UpdatedAt:  timeOrNow(event.Reaction.Timestamp),
 		})
 	case EventPresenceUpdate:
-		return nil
+		return ApplyResult{}, nil
 	case EventHistoryStatus:
 		if event.History.ChatID != "" {
 			value := "more"
 			if event.History.TerminalReason != "" {
 				value = event.History.TerminalReason
 			}
-			return i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), value)
+			return ApplyResult{}, i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), value)
 		}
-		return nil
+		return ApplyResult{}, nil
 	case EventContactUpsert:
 		contact := store.Contact{
 			JID:         event.Contact.JID,
@@ -108,7 +114,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			UpdatedAt:   event.Contact.UpdatedAt,
 		}
 		if err := i.Store.UpsertContact(ctx, contact); err != nil {
-			return err
+			return ApplyResult{}, err
 		}
 		title := strings.TrimSpace(event.Contact.DisplayName)
 		source := store.ChatTitleSourceContactDisplay
@@ -120,7 +126,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			}
 		}
 		if title == "" {
-			return nil
+			return ApplyResult{}, nil
 		}
 		_, err := i.Store.UpdateChatTitleIfExists(ctx, store.Chat{
 			ID:          event.Contact.JID,
@@ -129,11 +135,11 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 			TitleSource: source,
 			Kind:        "direct",
 		})
-		return err
+		return ApplyResult{}, err
 	case EventConnectionState:
-		return nil
+		return ApplyResult{}, nil
 	default:
-		return fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
+		return ApplyResult{}, fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
 	}
 }
 

@@ -1,6 +1,6 @@
 # vimwhat
 
-`vimwhat` is a Linux-first, vim-centric WhatsApp TUI in Go. The current codebase is a SQLite-backed TUI with WhatsApp QR login, live ingestion, on-demand remote history fetch for the focused chat, protocol-backed remote media download, outbound text plus single-attachment media send, and the remaining media/export CLI helpers.
+`vimwhat` is a Linux-first, vim-centric WhatsApp TUI in Go. The current codebase is a SQLite-backed TUI with WhatsApp QR login, live ingestion, on-demand remote history fetch for the focused chat, protocol-backed remote media download, outbound text plus single-attachment media send, desktop notifications, and the remaining media/export CLI helpers.
 
 ## Current status
 
@@ -8,7 +8,7 @@
 - SQLite state under XDG data paths with migrations, FTS message indexing, drafts, contacts, media metadata, sync cursors, and UI snapshot storage.
 - Demo seeding commands for local development without a live WhatsApp session.
 - Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa`, and focused audio playback through `mpv`.
-- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, `media open`, and `export chat` exist.
+- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, inactive-chat desktop notifications, `media open`, and `export chat` exist.
 
 ## Commands
 
@@ -62,3 +62,14 @@ indicator_search = "pywal"
 ```
 
 Replace any value with a hex color such as `"#7ED7C1"` or `"#f0a"` to override only that mode.
+
+## Notifications
+
+Desktop notifications default to `notification_backend = "auto"` and notify only for new incoming messages from inactive, unmuted chats. `notification_command` remains available as an explicit override and is treated as an argv template rather than a shell snippet.
+
+```toml
+notification_backend = "auto"
+notification_command = ""
+```
+
+Supported built-in backend values are `auto`, `none`, `command`, `linux-dbus`, `macos-osascript`, and `windows-powershell`. If `notification_command` is set while `notification_backend = "auto"`, the configured command wins. `vimwhat doctor` reports the selected notification path and backend availability.

@@ -58,6 +58,94 @@ func TestInsertBackspaceRemovesEmojiCluster(t *testing.T) {
 	}
 }
 
+func TestNewModelReportsInitialActiveChat(t *testing.T) {
+	var reported []string
+	NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+		},
+		ActiveChatChanged: func(chatID string) {
+			reported = append(reported, chatID)
+		},
+	})
+
+	if len(reported) != 1 || reported[0] != "chat-1" {
+		t.Fatalf("reported = %#v, want [chat-1]", reported)
+	}
+}
+
+func TestMoveCursorReportsActiveChatChange(t *testing.T) {
+	var reported []string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+		},
+		ActiveChatChanged: func(chatID string) {
+			reported = append(reported, chatID)
+		},
+	})
+
+	reported = nil
+	model.moveCursor(1)
+
+	if len(reported) != 1 || reported[0] != "chat-2" {
+		t.Fatalf("reported = %#v, want [chat-2]", reported)
+	}
+}
+
+func TestUnreadFilterReportsActiveChatChange(t *testing.T) {
+	var reported []string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob", Unread: 1},
+			},
+		},
+		ActiveChatChanged: func(chatID string) {
+			reported = append(reported, chatID)
+		},
+	})
+
+	reported = nil
+	if err := model.setUnreadOnly(true); err != nil {
+		t.Fatalf("setUnreadOnly() error = %v", err)
+	}
+
+	if len(reported) != 1 || reported[0] != "chat-2" {
+		t.Fatalf("reported = %#v, want [chat-2]", reported)
+	}
+}
+
+func TestApplySnapshotReportsChangedActiveChat(t *testing.T) {
+	var reported []string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+		},
+		ActiveChatChanged: func(chatID string) {
+			reported = append(reported, chatID)
+		},
+	})
+
+	reported = nil
+	if err := model.applySnapshot(store.Snapshot{
+		Chats: []store.Chat{{ID: "chat-3", Title: "Carol"}},
+	}, "chat-3", ""); err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+
+	if len(reported) != 1 || reported[0] != "chat-3" {
+		t.Fatalf("reported = %#v, want [chat-3]", reported)
+	}
+}
+
 func TestInsertEscPersistsDraft(t *testing.T) {
 	var savedChatID string
 	var savedBody string

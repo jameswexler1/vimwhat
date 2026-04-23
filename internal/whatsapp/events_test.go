@@ -61,6 +61,7 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 	if normalized[1].Kind != EventMessageUpsert ||
 		message.ID != "12345@s.whatsapp.net/ABC123" ||
 		message.Body != "photo caption" ||
+		message.NotificationPreview != "photo caption" ||
 		message.QuotedRemoteID != "QUOTE1" ||
 		message.QuotedMessageID != "12345@s.whatsapp.net/QUOTE1" ||
 		message.Status != "received" {
@@ -136,7 +137,7 @@ func TestNormalizeMessageEventKeepsBodylessMediaMessages(t *testing.T) {
 	if len(normalized) != 3 {
 		t.Fatalf("len(normalized) = %d, want chat,message,media: %+v", len(normalized), normalized)
 	}
-	if normalized[1].Kind != EventMessageUpsert || normalized[1].Message.Body != "" {
+	if normalized[1].Kind != EventMessageUpsert || normalized[1].Message.Body != "" || normalized[1].Message.NotificationPreview != "Image" {
 		t.Fatalf("message event = %+v", normalized[1])
 	}
 	if normalized[2].Kind != EventMediaMetadata || normalized[2].Media.MessageID != normalized[1].Message.ID {

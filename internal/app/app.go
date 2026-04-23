@@ -18,6 +18,7 @@ import (
 
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
+	"vimwhat/internal/notify"
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
 	"vimwhat/internal/whatsapp"
@@ -27,9 +28,11 @@ type Environment struct {
 	Paths                config.Paths
 	Config               config.Config
 	PreviewReport        media.Report
+	NotificationReport   notify.Report
 	Store                *store.Store
 	OpenWhatsAppSession  WhatsAppSessionOpener
 	CheckWhatsAppSession WhatsAppSessionStatusChecker
+	OpenNotifier         NotificationOpener
 	RenderQR             QRRenderer
 }
 
@@ -71,9 +74,11 @@ func Bootstrap() (Environment, error) {
 		Paths:                paths,
 		Config:               cfg,
 		PreviewReport:        media.Detect(cfg.PreviewBackend),
+		NotificationReport:   notify.Detect(cfg),
 		Store:                db,
 		OpenWhatsAppSession:  defaultOpenWhatsAppSession,
 		CheckWhatsAppSession: defaultCheckWhatsAppSession,
+		OpenNotifier:         defaultOpenNotifier,
 		RenderQR:             renderTerminalQR,
 	}, nil
 }
@@ -131,6 +136,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
+	activeChatNotifications := make(chan string, 16)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -139,7 +145,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications)
 		}()
 	}
 	defer func() {
@@ -360,6 +366,14 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 		},
 	}
+	if liveEnabled {
+		opts.ActiveChatChanged = func(chatID string) {
+			select {
+			case activeChatNotifications <- chatID:
+			default:
+			}
+		}
+	}
 
 	if err := ui.Run(opts); err != nil {
 		fmt.Fprintf(stderr, "vimwhat: %v\n", err)
@@ -491,6 +505,7 @@ func runLiveWhatsApp(
 	presenceRequests <-chan presenceRequest,
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
+	activeChatUpdates <-chan string,
 ) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
 
@@ -543,6 +558,9 @@ func runLiveWhatsApp(
 	var protocolWG sync.WaitGroup
 	defer protocolWG.Wait()
 
+	notificationJobs, stopNotifications := startNotificationWorker(ctx, env, updates)
+	defer stopNotifications()
+
 	downloadJobs := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var downloadWG sync.WaitGroup
 	for i := 0; i < mediaDownloadWorkers; i++ {
@@ -560,6 +578,7 @@ func runLiveWhatsApp(
 	ingestor := whatsapp.Ingestor{Store: env.Store}
 	historyInflight := map[string]time.Time{}
 	metadataResults := refreshChatMetadata(ctx, live)
+	activeChatID := ""
 	online := true
 	for {
 		select {
@@ -577,7 +596,8 @@ func runLiveWhatsApp(
 				sendLiveUpdate(ctx, updates, liveUpdateForPresenceEvent(event.Presence))
 				continue
 			}
-			if err := ingestor.Apply(ctx, event); err != nil {
+			result, err := ingestor.Apply(ctx, event)
+			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -598,6 +618,9 @@ func runLiveWhatsApp(
 			}
 			if isHistoricalImportEvent(event) {
 				continue
+			}
+			if note, ok := buildNotification(context.Background(), env.Store, activeChatID, result); ok {
+				queueNotification(notificationJobs, note)
 			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
 		case chatID, ok := <-historyRequests:
@@ -639,7 +662,7 @@ func runLiveWhatsApp(
 			if ok {
 				ingested := 0
 				for _, event := range result.Events {
-					if err := ingestor.Apply(ctx, event); err != nil {
+					if _, err := ingestor.Apply(ctx, event); err != nil {
 						sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 							Status: fmt.Sprintf("metadata ingest failed: %s", shortStatusError(err)),
 						})
@@ -661,6 +684,12 @@ func runLiveWhatsApp(
 				return
 			}
 			enqueueMediaDownload(ctx, downloadJobs, online, request)
+		case chatID, ok := <-activeChatUpdates:
+			if !ok {
+				activeChatUpdates = nil
+				continue
+			}
+			activeChatID = chatID
 		case <-ctx.Done():
 			return
 		}
@@ -1883,6 +1912,11 @@ func printDoctor(env Environment, w io.Writer) {
 			fmt.Sprintf("pending migrations: %s", noneIfEmpty(pendingMigrations)),
 		)
 	}
+	notificationReport := env.NotificationReport
+	if notificationReport.Requested == "" && notificationReport.Selected == "" {
+		notificationReport = notify.Detect(env.Config)
+	}
+	lines = append(lines, notificationReport.Lines()...)
 	lines = append(lines, env.PreviewReport.Lines()...)
 
 	fmt.Fprintln(w, strings.Join(lines, "\n"))

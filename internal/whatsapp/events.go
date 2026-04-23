@@ -11,6 +11,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
+	"vimwhat/internal/media"
 	"vimwhat/internal/store"
 )
 
@@ -251,6 +252,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 	body := messageBody(event.Message)
 	media, hasMedia := mediaMetadata(messageID, event.Message, event.Info.Timestamp)
 	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
+	notificationPreview := messageNotificationPreview(body, media, hasMedia)
 
 	normalized := []Event{{
 		Kind: EventChatUpsert,
@@ -276,18 +278,19 @@ func normalizeMessageEvent(event *events.Message) []Event {
 		normalized = append(normalized, Event{
 			Kind: EventMessageUpsert,
 			Message: MessageEvent{
-				ID:              messageID,
-				RemoteID:        string(event.Info.ID),
-				ChatID:          chatID,
-				ChatJID:         chatID,
-				Sender:          senderName(event.Info),
-				SenderJID:       senderJID(event.Info),
-				Body:            body,
-				Timestamp:       event.Info.Timestamp,
-				IsOutgoing:      event.Info.IsFromMe,
-				Status:          initialMessageStatus(event.Info.IsFromMe),
-				QuotedMessageID: quotedMessageID,
-				QuotedRemoteID:  quotedRemoteID,
+				ID:                  messageID,
+				RemoteID:            string(event.Info.ID),
+				ChatID:              chatID,
+				ChatJID:             chatID,
+				Sender:              senderName(event.Info),
+				SenderJID:           senderJID(event.Info),
+				Body:                body,
+				NotificationPreview: notificationPreview,
+				Timestamp:           event.Info.Timestamp,
+				IsOutgoing:          event.Info.IsFromMe,
+				Status:              initialMessageStatus(event.Info.IsFromMe),
+				QuotedMessageID:     quotedMessageID,
+				QuotedRemoteID:      quotedRemoteID,
 			},
 		})
 	}
@@ -300,6 +303,41 @@ func normalizeMessageEvent(event *events.Message) []Event {
 	}
 
 	return normalized
+}
+
+func messageNotificationPreview(body string, item MediaEvent, hasMedia bool) string {
+	if text := strings.TrimSpace(body); text != "" {
+		return text
+	}
+	if !hasMedia {
+		return ""
+	}
+
+	switch media.MediaKind(item.MIMEType, item.FileName) {
+	case media.KindImage:
+		if name := strings.TrimSpace(item.FileName); name != "" {
+			return "Image: " + name
+		}
+		return "Image"
+	case media.KindVideo:
+		if name := strings.TrimSpace(item.FileName); name != "" {
+			return "Video: " + name
+		}
+		return "Video"
+	case media.KindAudio:
+		if name := strings.TrimSpace(item.FileName); name != "" {
+			return "Audio: " + name
+		}
+		return "Audio"
+	default:
+		if name := strings.TrimSpace(item.FileName); name != "" {
+			return "Attachment: " + name
+		}
+		if mimeType := strings.TrimSpace(item.MIMEType); mimeType != "" {
+			return "Attachment: " + mimeType
+		}
+		return "Attachment"
+	}
 }
 
 func reactionEvent(chatID string, event *events.Message) (ReactionEvent, bool) {
