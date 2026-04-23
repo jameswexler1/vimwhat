@@ -51,6 +51,23 @@ type LiveUpdate struct {
 	Refresh         bool
 	HistoryChatID   string
 	HistoryMessages int
+	ReadChatID      string
+	Presence        PresenceUpdate
+}
+
+type PresenceUpdate struct {
+	ChatID    string
+	SenderJID string
+	Sender    string
+	Typing    bool
+	ExpiresAt time.Time
+}
+
+type OutgoingMessage struct {
+	ChatID      string
+	Body        string
+	Attachments []Attachment
+	Quote       *store.Message
 }
 
 type liveUpdateMsg struct {
@@ -65,6 +82,16 @@ type snapshotReloadedMsg struct {
 }
 
 type refreshDebouncedMsg struct{}
+
+type presenceExpiredMsg struct {
+	ChatID string
+	At     time.Time
+}
+
+type ownPresenceIdleMsg struct {
+	ChatID     string
+	Generation int
+}
 
 type clipboardCopiedMsg struct {
 	Count int
@@ -133,7 +160,11 @@ type Options struct {
 	BlockSending         bool
 	BlockAttachments     bool
 	RequireOnlineForSend bool
-	PersistMessage       func(chatID, body string, attachments []Attachment) (store.Message, error)
+	PersistMessage       func(OutgoingMessage) (store.Message, error)
+	MarkRead             func(chat store.Chat, messages []store.Message) error
+	SendReaction         func(message store.Message, emoji string) error
+	SendPresence         func(chatID string, composing bool) error
+	SubscribePresence    func(chatID string) error
 	LoadMessages         func(chatID string, limit int) ([]store.Message, error)
 	LoadOlderMessages    func(chatID string, before store.Message, limit int) ([]store.Message, error)
 	RequestHistory       func(chatID string) error
@@ -207,7 +238,18 @@ type Model struct {
 	commandHistory         []string
 	searchHistory          []string
 	deleteConfirmID        string
-	persistMessage         func(chatID, body string, attachments []Attachment) (store.Message, error)
+	replyTo                *store.Message
+	presenceByChat         map[string]PresenceUpdate
+	readReceiptInflight    map[string]bool
+	presenceSubscribed     map[string]bool
+	ownPresenceChatID      string
+	ownPresenceComposing   bool
+	ownPresenceGeneration  int
+	persistMessage         func(OutgoingMessage) (store.Message, error)
+	markRead               func(chat store.Chat, messages []store.Message) error
+	sendReaction           func(message store.Message, emoji string) error
+	sendPresence           func(chatID string, composing bool) error
+	subscribePresence      func(chatID string) error
 	loadMessages           func(chatID string, limit int) ([]store.Message, error)
 	loadOlderMessages      func(chatID string, before store.Message, limit int) ([]store.Message, error)
 	requestHistory         func(chatID string) error
@@ -292,11 +334,18 @@ func NewModel(opts Options) Model {
 		deleteMessage:          opts.DeleteMessage,
 		saveMedia:              opts.SaveMedia,
 		downloadMedia:          opts.DownloadMedia,
+		markRead:               opts.MarkRead,
+		sendReaction:           opts.SendReaction,
+		sendPresence:           opts.SendPresence,
+		subscribePresence:      opts.SubscribePresence,
 		liveUpdates:            opts.LiveUpdates,
 		blockSending:           opts.BlockSending,
 		blockAttachments:       opts.BlockAttachments,
 		requireOnlineForSend:   opts.RequireOnlineForSend,
 		unfilteredByChat:       map[string][]store.Message{},
+		presenceByChat:         map[string]PresenceUpdate{},
+		readReceiptInflight:    map[string]bool{},
+		presenceSubscribed:     map[string]bool{},
 		messageLimitsByChat:    map[string]int{},
 		historyRequestedByChat: map[string]bool{},
 	}
@@ -390,6 +439,24 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	if update.HistoryChatID != "" && m.historyRequestedByChat != nil {
 		delete(m.historyRequestedByChat, update.HistoryChatID)
 	}
+	if update.ReadChatID != "" && m.readReceiptInflight != nil {
+		delete(m.readReceiptInflight, update.ReadChatID)
+	}
+	if update.Presence.ChatID != "" {
+		presence := update.Presence
+		if m.presenceByChat == nil {
+			m.presenceByChat = map[string]PresenceUpdate{}
+		}
+		if presence.Typing {
+			if presence.ExpiresAt.IsZero() {
+				presence.ExpiresAt = time.Now().Add(presenceTTL)
+			}
+			m.presenceByChat[presence.ChatID] = presence
+			cmds = append(cmds, presenceExpiryCmd(presence.ChatID, presence.ExpiresAt))
+		} else {
+			delete(m.presenceByChat, presence.ChatID)
+		}
+	}
 
 	if update.Refresh && m.reloadSnapshot != nil {
 		if m.reloadInFlight {
@@ -401,6 +468,19 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	}
 	cmds = append(cmds, m.waitForLiveUpdateCmd())
 	return m, batchCmds(cmds...)
+}
+
+const presenceTTL = 6 * time.Second
+const ownPresenceIdle = 5 * time.Second
+
+func presenceExpiryCmd(chatID string, expiresAt time.Time) tea.Cmd {
+	delay := time.Until(expiresAt)
+	if delay < 0 {
+		delay = 0
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return presenceExpiredMsg{ChatID: chatID, At: expiresAt}
+	})
 }
 
 func refreshDebounceCmd() tea.Cmd {
@@ -453,6 +533,9 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
 	}
+	if m.focus == FocusMessages {
+		m.handleCurrentChatActivated()
+	}
 	return m, m.nextQueuedRefreshCmd()
 }
 
@@ -480,6 +563,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshDebouncedMsg:
 		next, cmd := m.handleRefreshDebounced()
 		return next.withPreviewCmd(cmd)
+	case presenceExpiredMsg:
+		if presence, ok := m.presenceByChat[msg.ChatID]; ok && !presence.ExpiresAt.After(msg.At) {
+			delete(m.presenceByChat, msg.ChatID)
+		}
+		return m, nil
+	case ownPresenceIdleMsg:
+		if msg.Generation == m.ownPresenceGeneration && msg.ChatID == m.ownPresenceChatID && m.ownPresenceComposing {
+			m.sendOwnPresence(msg.ChatID, false)
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -622,9 +715,14 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "no chat selected"
 			return m, nil
 		}
-		m.mode = ModeInsert
-		m.focus = FocusMessages
-		m.composer = m.draftsByChat[m.currentChat().ID]
+		return m.beginInsert(nil)
+	case "r":
+		message, ok := m.focusedMessage()
+		if !ok {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.beginInsert(&message)
 	case "v":
 		if len(m.currentMessages()) == 0 {
 			m.status = "no messages to select"
@@ -703,6 +801,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.showCurrentChatLatest()
+			m.handleCurrentChatActivated()
 			m.status = fmt.Sprintf("opened %s", m.currentChat().DisplayTitle())
 		} else if m.focus == FocusMessages || m.focus == FocusPreview {
 			return m.activateFocusedMediaPreview()
@@ -728,6 +827,146 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	m.composer = m.draftsByChat[m.currentChat().ID]
+	if quote != nil {
+		quoted := *quote
+		m.replyTo = &quoted
+		m.status = "replying"
+	} else {
+		m.replyTo = nil
+	}
+	m.handleCurrentChatActivated()
+	m.sendOwnPresence(m.currentChat().ID, true)
+	return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
+}
+
+func ownPresenceIdleCmd(chatID string, generation int) tea.Cmd {
+	if strings.TrimSpace(chatID) == "" {
+		return nil
+	}
+	return tea.Tick(ownPresenceIdle, func(time.Time) tea.Msg {
+		return ownPresenceIdleMsg{ChatID: chatID, Generation: generation}
+	})
+}
+
+func (m *Model) sendOwnPresence(chatID string, composing bool) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" || m.sendPresence == nil || m.connectionState != ConnectionOnline {
+		return
+	}
+	if composing {
+		m.ownPresenceGeneration++
+		if m.ownPresenceComposing && m.ownPresenceChatID == chatID {
+			return
+		}
+		m.ownPresenceChatID = chatID
+		m.ownPresenceComposing = true
+		_ = m.sendPresence(chatID, true)
+		return
+	}
+	if !m.ownPresenceComposing || m.ownPresenceChatID != chatID {
+		return
+	}
+	m.ownPresenceGeneration++
+	m.ownPresenceComposing = false
+	_ = m.sendPresence(chatID, false)
+}
+
+func (m *Model) handleCurrentChatActivated() {
+	m.subscribeCurrentChatPresence()
+	m.markCurrentChatRead(false)
+}
+
+func (m *Model) subscribeCurrentChatPresence() {
+	if m.subscribePresence == nil || m.connectionState != ConnectionOnline {
+		return
+	}
+	chat := m.currentChat()
+	chatID := strings.TrimSpace(chat.ID)
+	if chatID == "" || chat.Kind == "group" || strings.HasSuffix(chat.JID, "@g.us") {
+		return
+	}
+	if m.presenceSubscribed == nil {
+		m.presenceSubscribed = map[string]bool{}
+	}
+	if m.presenceSubscribed[chatID] {
+		return
+	}
+	if err := m.subscribePresence(chatID); err != nil {
+		return
+	}
+	m.presenceSubscribed[chatID] = true
+}
+
+func (m *Model) markCurrentChatRead(manual bool) {
+	if m.markRead == nil {
+		if manual {
+			m.status = "read receipts unavailable"
+		}
+		return
+	}
+	if m.connectionState != ConnectionOnline {
+		if manual {
+			m.status = "read receipts need WhatsApp online"
+		}
+		return
+	}
+	chat := m.currentChat()
+	if chat.ID == "" {
+		if manual {
+			m.status = "no active chat"
+		}
+		return
+	}
+	if !manual && chat.Unread <= 0 {
+		return
+	}
+	if m.readReceiptInflight == nil {
+		m.readReceiptInflight = map[string]bool{}
+	}
+	if m.readReceiptInflight[chat.ID] {
+		if manual {
+			m.status = "read receipt already queued"
+		}
+		return
+	}
+	messages := readableMessages(m.currentMessages())
+	if len(messages) == 0 {
+		if manual {
+			m.status = "no loaded unread messages to mark read"
+		}
+		return
+	}
+	if err := m.markRead(chat, messages); err != nil {
+		if manual {
+			m.status = fmt.Sprintf("mark read failed: %v", err)
+		}
+		return
+	}
+	m.readReceiptInflight[chat.ID] = true
+	if manual {
+		m.status = "mark read queued"
+	}
+}
+
+func readableMessages(messages []store.Message) []store.Message {
+	out := make([]store.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.IsOutgoing || strings.TrimSpace(message.RemoteID) == "" {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
 }
 
 func (m Model) handleLeaderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -776,7 +1015,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "alt+enter" || msg.String() == "ctrl+j" {
 		m.composer += "\n"
-		return m, nil
+		m.sendOwnPresence(m.currentChat().ID, true)
+		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 	}
 
 	switch msg.Type {
@@ -785,6 +1025,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("save draft failed: %v", err)
 			return m, nil
 		}
+		m.sendOwnPresence(m.currentChat().ID, false)
+		m.replyTo = nil
 		m.mode = ModeNormal
 	case tea.KeyEnter:
 		body := strings.TrimSpace(m.composer)
@@ -832,9 +1074,22 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Timestamp:  time.Now(),
 			IsOutgoing: true,
 		}
+		if m.replyTo != nil {
+			message.QuotedMessageID = m.replyTo.ID
+			message.QuotedRemoteID = m.replyTo.RemoteID
+		}
 		message.Media = m.mediaForLocalMessage(message.ID, m.attachments)
 		if m.persistMessage != nil {
-			persisted, err := m.persistMessage(chatID, body, slices.Clone(m.attachments))
+			request := OutgoingMessage{
+				ChatID:      chatID,
+				Body:        body,
+				Attachments: slices.Clone(m.attachments),
+			}
+			if m.replyTo != nil {
+				quote := *m.replyTo
+				request.Quote = &quote
+			}
+			persisted, err := m.persistMessage(request)
 			if err != nil {
 				if draftErr := m.setDraft(chatID, m.composer); draftErr != nil {
 					m.status = fmt.Sprintf("send failed: %v; save draft failed: %v", err, draftErr)
@@ -856,6 +1111,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messageScrollTop = m.messageCursor
 		m.composer = ""
 		m.attachments = nil
+		m.replyTo = nil
+		m.sendOwnPresence(chatID, false)
 		if err := m.setDraft(chatID, ""); err != nil {
 			m.status = fmt.Sprintf("clear draft failed: %v", err)
 			return m, nil
@@ -868,6 +1125,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 			m.composer += msg.String()
+			m.sendOwnPresence(m.currentChat().ID, true)
+			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
 	}
 
@@ -985,6 +1244,7 @@ func (m *Model) cycleFocus(delta int) {
 			m.status = fmt.Sprintf("load messages failed: %v", err)
 			return
 		}
+		m.handleCurrentChatActivated()
 	}
 	m.status = fmt.Sprintf("focus: %s", m.focus)
 }
@@ -1005,6 +1265,7 @@ func (m *Model) moveFocus(delta int) {
 				m.status = fmt.Sprintf("load messages failed: %v", err)
 				return
 			}
+			m.handleCurrentChatActivated()
 		case FocusMessages:
 			if m.infoPaneVisible && !m.compactLayout {
 				m.focus = FocusPreview
@@ -1121,6 +1382,16 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.saveFocusedMedia()
 	case cmd == "history-fetch" || cmd == "history fetch":
 		m.loadOlderOrRequestHistory()
+	case cmd == "mark-read" || cmd == "mark read":
+		m.markCurrentChatRead(true)
+	case cmd == "quote-jump" || cmd == "quote jump":
+		m.jumpToQuotedMessage()
+	case strings.HasPrefix(cmd, "react "):
+		emoji := strings.TrimSpace(strings.TrimPrefix(cmd, "react "))
+		if strings.EqualFold(emoji, "clear") {
+			emoji = ""
+		}
+		m.reactToFocusedMessage(emoji)
 	case cmd == "clear-search" || cmd == "search clear":
 		m.clearSearch()
 		m.status = "search cleared"
@@ -1391,6 +1662,114 @@ func (m *Model) loadOlderOrRequestHistory() {
 	}
 	m.historyRequestedByChat[chatID] = true
 	m.status = "requested older history"
+}
+
+func (m *Model) jumpToQuotedMessage() {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return
+	}
+	targetID := strings.TrimSpace(message.QuotedMessageID)
+	if targetID == "" {
+		if strings.TrimSpace(message.QuotedRemoteID) == "" {
+			m.status = "focused message is not a reply"
+			return
+		}
+		targetID = message.ChatID + "/" + strings.TrimSpace(message.QuotedRemoteID)
+	}
+	if strings.TrimSpace(m.messageFilter) != "" {
+		m.status = "clear message filter before quote jump"
+		return
+	}
+	chatID := m.currentChat().ID
+	if chatID == "" {
+		m.status = "no active chat"
+		return
+	}
+	if m.focusMessageByID(targetID) {
+		m.status = "jumped to quote"
+		return
+	}
+	for attempts := 0; attempts < 8; attempts++ {
+		messages := m.currentMessages()
+		if len(messages) == 0 || m.loadOlderMessages == nil {
+			break
+		}
+		older, err := m.loadOlderMessages(chatID, messages[0], historyPageSize)
+		if err != nil {
+			m.status = fmt.Sprintf("quote load failed: %v", err)
+			return
+		}
+		if len(older) == 0 {
+			break
+		}
+		combined := make([]store.Message, 0, len(older)+len(messages))
+		combined = append(combined, older...)
+		combined = append(combined, messages...)
+		m.messagesByChat[chatID] = combined
+		m.addMessageLimit(chatID, len(older))
+		if m.focusMessageByID(targetID) {
+			m.status = "jumped to quote"
+			return
+		}
+	}
+	if m.connectionState == ConnectionOnline && m.requestHistory != nil {
+		if err := m.requestHistory(chatID); err != nil {
+			m.status = fmt.Sprintf("quote not loaded; history request failed: %v", err)
+			return
+		}
+		if m.historyRequestedByChat == nil {
+			m.historyRequestedByChat = map[string]bool{}
+		}
+		m.historyRequestedByChat[chatID] = true
+		m.status = "quote not loaded; requested older history"
+		return
+	}
+	m.status = "quoted message is not loaded"
+}
+
+func (m *Model) focusMessageByID(messageID string) bool {
+	for i, message := range m.currentMessages() {
+		if message.ID != messageID {
+			continue
+		}
+		m.messageCursor = i
+		m.messageScrollTop = i
+		m.focus = FocusMessages
+		m.suppressOverlay = true
+		return true
+	}
+	return false
+}
+
+func (m *Model) reactToFocusedMessage(emoji string) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return
+	}
+	if strings.TrimSpace(message.RemoteID) == "" {
+		m.status = "focused message has no WhatsApp id"
+		return
+	}
+	if m.connectionState != ConnectionOnline {
+		m.status = "reactions need WhatsApp online"
+		return
+	}
+	if m.sendReaction == nil {
+		m.status = "reactions unavailable"
+		return
+	}
+	if err := m.sendReaction(message, emoji); err != nil {
+		m.status = fmt.Sprintf("reaction failed: %v", err)
+		return
+	}
+	if strings.TrimSpace(emoji) == "" {
+		m.status = "reaction clear queued"
+	} else {
+		m.status = "reaction queued"
+	}
 }
 
 func (m Model) messageLimitForChat(chatID string) int {

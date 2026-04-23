@@ -61,9 +61,16 @@ type fakeLiveWhatsAppSession struct {
 	historyRequests chan fakeHistoryRequest
 	downloads       chan fakeDownloadRequest
 	sends           chan fakeSendRequest
+	readReceipts    chan []whatsapp.ReadReceiptTarget
+	reactions       chan whatsapp.ReactionSendRequest
+	presences       chan fakePresenceRequest
+	subscriptions   chan string
 	historyErr      error
 	downloadErr     error
 	sendErr         error
+	readErr         error
+	reactionErr     error
+	presenceErr     error
 	generatedID     string
 	connectErr      error
 	subscribeErr    error
@@ -82,9 +89,12 @@ type fakeDownloadRequest struct {
 }
 
 type fakeSendRequest struct {
-	chatJID  string
-	body     string
-	remoteID string
+	request whatsapp.TextSendRequest
+}
+
+type fakePresenceRequest struct {
+	chatID    string
+	composing bool
 }
 
 type fakeMetadataLiveWhatsAppSession struct {
@@ -120,22 +130,62 @@ func (s *fakeLiveWhatsAppSession) GenerateMessageID() string {
 	return "remote-generated"
 }
 
-func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, chatJID, body, remoteID string) (whatsapp.SendResult, error) {
+func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, request whatsapp.TextSendRequest) (whatsapp.SendResult, error) {
 	if s.sends != nil {
-		s.sends <- fakeSendRequest{chatJID: chatJID, body: body, remoteID: remoteID}
+		s.sends <- fakeSendRequest{request: request}
 	}
 	if s.sendErr != nil {
 		return whatsapp.SendResult{}, s.sendErr
 	}
+	if request.RemoteID == "" {
+		request.RemoteID = s.GenerateMessageID()
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, request.RemoteID),
+		RemoteID:  request.RemoteID,
+		Status:    "sent",
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (s *fakeLiveWhatsAppSession) MarkRead(_ context.Context, targets []whatsapp.ReadReceiptTarget) error {
+	if s.readReceipts != nil {
+		s.readReceipts <- targets
+	}
+	return s.readErr
+}
+
+func (s *fakeLiveWhatsAppSession) SendReaction(_ context.Context, request whatsapp.ReactionSendRequest) (whatsapp.SendResult, error) {
+	if s.reactions != nil {
+		s.reactions <- request
+	}
+	if s.reactionErr != nil {
+		return whatsapp.SendResult{}, s.reactionErr
+	}
+	remoteID := request.RemoteID
 	if remoteID == "" {
 		remoteID = s.GenerateMessageID()
 	}
 	return whatsapp.SendResult{
-		MessageID: whatsapp.LocalMessageID(chatJID, remoteID),
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, remoteID),
 		RemoteID:  remoteID,
 		Status:    "sent",
 		Timestamp: time.Now(),
 	}, nil
+}
+
+func (s *fakeLiveWhatsAppSession) SendChatPresence(_ context.Context, chatID string, composing bool) error {
+	if s.presences != nil {
+		s.presences <- fakePresenceRequest{chatID: chatID, composing: composing}
+	}
+	return s.presenceErr
+}
+
+func (s *fakeLiveWhatsAppSession) SubscribePresence(_ context.Context, chatID string) error {
+	if s.subscriptions != nil {
+		s.subscriptions <- chatID
+	}
+	return s.presenceErr
 }
 
 func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor whatsapp.MediaDownloadDescriptor, targetPath string) error {
@@ -212,7 +262,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -312,7 +362,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -467,7 +517,7 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	}
 
 	request := <-session.sends
-	if request.chatJID != chatJID || request.body != "hello live" || request.remoteID != "remote-1" {
+	if request.request.ChatJID != chatJID || request.request.Body != "hello live" || request.request.RemoteID != "remote-1" {
 		t.Fatalf("send request = %+v, want jid/body/remote id", request)
 	}
 	messages := waitForStoredMessages(t, db, chatJID, 1)
@@ -550,6 +600,121 @@ func TestHandleTextSendRequestRejectsInvalidChatJID(t *testing.T) {
 	if queued.Err == nil || !strings.Contains(queued.Err.Error(), "unsupported send chat jid") {
 		t.Fatalf("queued error = %v, want unsupported chat jid", queued.Err)
 	}
+}
+
+func TestHandleReadReceiptRequestMarksChatReadAfterProtocolSuccess(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice", Unread: 2}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	message := store.Message{
+		ID:        whatsapp.LocalMessageID(chatJID, "msg-1"),
+		RemoteID:  "msg-1",
+		ChatID:    chatJID,
+		ChatJID:   chatJID,
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	if _, err := db.AddIncomingMessage(ctx, message); err != nil {
+		t.Fatalf("AddIncomingMessage() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{readReceipts: make(chan []whatsapp.ReadReceiptTarget, 1)}
+	result := make(chan error, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleReadReceiptRequest(ctx, db, session, updates, nil, true, readReceiptRequest{
+		Chat:     store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"},
+		Messages: []store.Message{message},
+		Result:   result,
+	})
+
+	if err := <-result; err != nil {
+		t.Fatalf("queued read receipt error = %v", err)
+	}
+	targets := <-session.readReceipts
+	if len(targets) != 1 || targets[0].RemoteID != "msg-1" || targets[0].ChatJID != chatJID {
+		t.Fatalf("read targets = %+v", targets)
+	}
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Unread != 0 {
+		t.Fatalf("chats after mark read = %+v, want unread cleared", chats)
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ReadChatID == chatJID && update.Refresh
+	})
+}
+
+func TestHandleReactionRequestUpdatesStore(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	message := store.Message{
+		ID:        whatsapp.LocalMessageID(chatJID, "msg-1"),
+		RemoteID:  "msg-1",
+		ChatID:    chatJID,
+		ChatJID:   chatJID,
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	if err := db.AddMessage(ctx, message); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "reaction-1",
+		reactions:   make(chan whatsapp.ReactionSendRequest, 1),
+	}
+	result := make(chan error, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleReactionRequest(ctx, db, session, updates, nil, true, reactionRequest{
+		Message: message,
+		Emoji:   "🔥",
+		Result:  result,
+	})
+
+	if err := <-result; err != nil {
+		t.Fatalf("queued reaction error = %v", err)
+	}
+	request := <-session.reactions
+	if request.ChatJID != chatJID || request.TargetRemoteID != "msg-1" || request.Emoji != "🔥" {
+		t.Fatalf("reaction request = %+v", request)
+	}
+	reactions, err := db.ListMessageReactions(ctx, message.ID)
+	if err != nil {
+		t.Fatalf("ListMessageReactions() error = %v", err)
+	}
+	if len(reactions) != 1 || reactions[0].Emoji != "🔥" || reactions[0].SenderJID != "me" {
+		t.Fatalf("stored reactions = %+v", reactions)
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "reaction")
+	})
 }
 
 func TestDownloadRemoteMediaWritesFileAndUpdatesMetadata(t *testing.T) {

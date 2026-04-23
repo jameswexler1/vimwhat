@@ -137,6 +137,22 @@ var migrations = []migration{
 			`ALTER TABLE chats ADD COLUMN title_source TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		name: "0006_message_interactions",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS message_reactions (
+				message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+				sender_jid TEXT NOT NULL,
+				emoji TEXT NOT NULL DEFAULT '',
+				timestamp_unix INTEGER NOT NULL DEFAULT 0,
+				is_outgoing INTEGER NOT NULL DEFAULT 0,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (message_id, sender_jid)
+			)`,
+			`CREATE INDEX IF NOT EXISTS message_reactions_message_idx
+				ON message_reactions (message_id, updated_at ASC, sender_jid ASC)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

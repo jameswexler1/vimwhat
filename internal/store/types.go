@@ -32,6 +32,16 @@ type Message struct {
 	DeletedAt       time.Time
 	DeletedReason   string
 	Media           []MediaMetadata
+	Reactions       []Reaction
+}
+
+type Reaction struct {
+	MessageID  string
+	SenderJID  string
+	Emoji      string
+	Timestamp  time.Time
+	IsOutgoing bool
+	UpdatedAt  time.Time
 }
 
 type Contact struct {

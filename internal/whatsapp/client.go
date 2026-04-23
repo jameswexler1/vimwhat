@@ -54,7 +54,11 @@ type Adapter interface {
 	Login(ctx context.Context, handleQR QRHandler) error
 	Logout(ctx context.Context) error
 	GenerateMessageID() string
-	SendText(ctx context.Context, chatJID, body, remoteID string) (SendResult, error)
+	SendText(ctx context.Context, request TextSendRequest) (SendResult, error)
+	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
+	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
+	SendChatPresence(ctx context.Context, chatJID string, composing bool) error
+	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
@@ -450,15 +454,39 @@ func (c *Client) GenerateMessageID() string {
 	return string(c.client.GenerateMessageID())
 }
 
-func (c *Client) SendText(ctx context.Context, chatJID, body, remoteID string) (SendResult, error) {
+type TextSendRequest struct {
+	ChatJID           string
+	Body              string
+	RemoteID          string
+	QuotedRemoteID    string
+	QuotedSenderJID   string
+	QuotedMessageBody string
+}
+
+type ReadReceiptTarget struct {
+	ChatJID   string
+	RemoteID  string
+	SenderJID string
+	Timestamp time.Time
+}
+
+type ReactionSendRequest struct {
+	ChatJID         string
+	TargetRemoteID  string
+	TargetSenderJID string
+	Emoji           string
+	RemoteID        string
+}
+
+func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendResult, error) {
 	if c == nil || c.client == nil {
 		return SendResult{}, ErrClientNotOpen
 	}
-	body = strings.TrimSpace(body)
+	body := strings.TrimSpace(request.Body)
 	if body == "" {
 		return SendResult{}, fmt.Errorf("text body is required")
 	}
-	normalizedChatJID, err := NormalizeSendChatJID(chatJID)
+	normalizedChatJID, err := NormalizeSendChatJID(request.ChatJID)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -466,7 +494,7 @@ func (c *Client) SendText(ctx context.Context, chatJID, body, remoteID string) (
 	if err != nil {
 		return SendResult{}, fmt.Errorf("parse send chat jid: %w", err)
 	}
-	remoteID = strings.TrimSpace(remoteID)
+	remoteID := strings.TrimSpace(request.RemoteID)
 	if remoteID == "" {
 		remoteID = c.GenerateMessageID()
 	}
@@ -474,9 +502,7 @@ func (c *Client) SendText(ctx context.Context, chatJID, body, remoteID string) (
 		return SendResult{}, fmt.Errorf("generate message id failed")
 	}
 
-	resp, err := c.client.SendMessage(ctx, to, &waE2E.Message{
-		Conversation: proto.String(body),
-	}, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
+	resp, err := c.client.SendMessage(ctx, to, c.textMessage(body, request), whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
 	if err != nil {
 		return SendResult{}, fmt.Errorf("send whatsapp text: %w", err)
 	}
@@ -494,6 +520,219 @@ func (c *Client) SendText(ctx context.Context, chatJID, body, remoteID string) (
 		Status:    "sent",
 		Timestamp: timestamp,
 	}, nil
+}
+
+func (c *Client) textMessage(body string, request TextSendRequest) *waE2E.Message {
+	quotedRemoteID := strings.TrimSpace(request.QuotedRemoteID)
+	if quotedRemoteID == "" {
+		return &waE2E.Message{Conversation: proto.String(body)}
+	}
+	contextInfo := &waE2E.ContextInfo{
+		StanzaID: proto.String(quotedRemoteID),
+	}
+	if participant := c.quoteParticipant(request.QuotedSenderJID); participant != "" {
+		contextInfo.Participant = proto.String(participant)
+	}
+	if quotedBody := strings.TrimSpace(request.QuotedMessageBody); quotedBody != "" {
+		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(quotedBody)}
+	}
+	return &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text:        proto.String(body),
+			ContextInfo: contextInfo,
+		},
+	}
+}
+
+func (c *Client) quoteParticipant(senderJID string) string {
+	senderJID = strings.TrimSpace(senderJID)
+	if senderJID == "" {
+		return ""
+	}
+	if senderJID == "me" {
+		if c != nil && c.client != nil && c.client.Store != nil && c.client.Store.ID != nil {
+			return c.client.Store.ID.ToNonAD().String()
+		}
+		return ""
+	}
+	jid, err := types.ParseJID(senderJID)
+	if err != nil {
+		return senderJID
+	}
+	return jid.ToNonAD().String()
+}
+
+func (c *Client) MarkRead(ctx context.Context, targets []ReadReceiptTarget) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	groups := make(map[string]markReadGroup)
+	for _, target := range targets {
+		if strings.TrimSpace(target.RemoteID) == "" {
+			continue
+		}
+		chatJID, err := NormalizeSendChatJID(target.ChatJID)
+		if err != nil {
+			return err
+		}
+		chat, err := types.ParseJID(chatJID)
+		if err != nil {
+			return fmt.Errorf("parse read chat jid: %w", err)
+		}
+		sender, err := readReceiptSender(chat, target.SenderJID)
+		if err != nil {
+			return err
+		}
+		key := chat.String() + "\x00" + sender.String()
+		group := groups[key]
+		group.chat = chat
+		group.sender = sender
+		group.ids = append(group.ids, types.MessageID(target.RemoteID))
+		if target.Timestamp.After(group.timestamp) {
+			group.timestamp = target.Timestamp
+		}
+		groups[key] = group
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("no readable whatsapp message ids")
+	}
+	for _, group := range groups {
+		timestamp := group.timestamp
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+		if err := c.client.MarkRead(ctx, group.ids, timestamp, group.chat, group.sender); err != nil {
+			return fmt.Errorf("mark whatsapp read: %w", err)
+		}
+	}
+	return nil
+}
+
+type markReadGroup struct {
+	chat      types.JID
+	sender    types.JID
+	ids       []types.MessageID
+	timestamp time.Time
+}
+
+func readReceiptSender(chat types.JID, senderJID string) (types.JID, error) {
+	if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer {
+		return types.EmptyJID, nil
+	}
+	senderJID = strings.TrimSpace(senderJID)
+	if senderJID == "" || senderJID == "me" {
+		return types.EmptyJID, nil
+	}
+	sender, err := types.ParseJID(senderJID)
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("parse read sender jid: %w", err)
+	}
+	return sender, nil
+}
+
+func (c *Client) SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error) {
+	if c == nil || c.client == nil {
+		return SendResult{}, ErrClientNotOpen
+	}
+	chatJID, err := NormalizeSendChatJID(request.ChatJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if strings.TrimSpace(request.TargetRemoteID) == "" {
+		return SendResult{}, fmt.Errorf("reaction target message id is required")
+	}
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("parse reaction chat jid: %w", err)
+	}
+	sender, err := reactionTargetSender(request.TargetSenderJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	remoteID := strings.TrimSpace(request.RemoteID)
+	if remoteID == "" {
+		remoteID = c.GenerateMessageID()
+	}
+	if remoteID == "" {
+		return SendResult{}, fmt.Errorf("generate message id failed")
+	}
+	resp, err := c.client.SendMessage(
+		ctx,
+		chat,
+		c.client.BuildReaction(chat, sender, types.MessageID(request.TargetRemoteID), request.Emoji),
+		whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)},
+	)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("send whatsapp reaction: %w", err)
+	}
+	if resp.ID != "" {
+		remoteID = string(resp.ID)
+	}
+	timestamp := resp.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return SendResult{
+		MessageID: LocalMessageID(chatJID, remoteID),
+		RemoteID:  remoteID,
+		Status:    "sent",
+		Timestamp: timestamp,
+	}, nil
+}
+
+func reactionTargetSender(senderJID string) (types.JID, error) {
+	senderJID = strings.TrimSpace(senderJID)
+	if senderJID == "" || senderJID == "me" {
+		return types.EmptyJID, nil
+	}
+	sender, err := types.ParseJID(senderJID)
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("parse reaction sender jid: %w", err)
+	}
+	return sender, nil
+}
+
+func (c *Client) SendChatPresence(ctx context.Context, chatJID string, composing bool) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	normalizedChatJID, err := NormalizeSendChatJID(chatJID)
+	if err != nil {
+		return err
+	}
+	to, err := types.ParseJID(normalizedChatJID)
+	if err != nil {
+		return fmt.Errorf("parse presence chat jid: %w", err)
+	}
+	state := types.ChatPresencePaused
+	if composing {
+		state = types.ChatPresenceComposing
+	}
+	if err := c.client.SendChatPresence(ctx, to, state, types.ChatPresenceMediaText); err != nil {
+		return fmt.Errorf("send whatsapp chat presence: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) SubscribePresence(ctx context.Context, chatJID string) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	normalizedChatJID, err := NormalizeSendChatJID(chatJID)
+	if err != nil {
+		return err
+	}
+	to, err := types.ParseJID(normalizedChatJID)
+	if err != nil {
+		return fmt.Errorf("parse presence subscription jid: %w", err)
+	}
+	if to.Server == types.GroupServer {
+		return nil
+	}
+	if err := c.client.SubscribePresence(ctx, to); err != nil {
+		return fmt.Errorf("subscribe whatsapp presence: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
@@ -517,7 +756,7 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 		for {
 			select {
 			case evt := <-raw:
-				for _, normalized := range c.normalizeWhatsmeowEvent(evt) {
+				for _, normalized := range c.normalizeWhatsmeowEvent(ctx, evt) {
 					select {
 					case out <- normalized:
 					case <-ctx.Done():
@@ -694,6 +933,8 @@ const (
 	EventChatUpsert      EventKind = "chat_upsert"
 	EventMessageUpsert   EventKind = "message_upsert"
 	EventReceiptUpdate   EventKind = "receipt_update"
+	EventReactionUpdate  EventKind = "reaction_update"
+	EventPresenceUpdate  EventKind = "presence_update"
 	EventMediaMetadata   EventKind = "media_metadata"
 	EventConnectionState EventKind = "connection_state"
 	EventHistoryStatus   EventKind = "history_status"
@@ -716,6 +957,8 @@ type Event struct {
 	Chat       ChatEvent
 	Message    MessageEvent
 	Receipt    ReceiptEvent
+	Reaction   ReactionEvent
+	Presence   PresenceEvent
 	Media      MediaEvent
 	Connection ConnectionEvent
 	History    HistoryEvent
@@ -778,6 +1021,23 @@ type ReceiptEvent struct {
 	MessageID string
 	ChatID    string
 	Status    string
+}
+
+type ReactionEvent struct {
+	MessageID  string
+	ChatID     string
+	SenderJID  string
+	Emoji      string
+	Timestamp  time.Time
+	IsOutgoing bool
+}
+
+type PresenceEvent struct {
+	ChatID    string
+	SenderJID string
+	Sender    string
+	Typing    bool
+	UpdatedAt time.Time
 }
 
 type MediaEvent struct {

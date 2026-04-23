@@ -153,7 +153,7 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 
-	return s.attachMediaMetadata(ctx, messages)
+	return s.attachMessageDetails(ctx, messages)
 }
 
 func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Message, limit int) ([]Message, error) {
@@ -206,7 +206,7 @@ func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Me
 		return nil, fmt.Errorf("iterate older messages: %w", err)
 	}
 
-	return s.attachMediaMetadata(ctx, messages)
+	return s.attachMessageDetails(ctx, messages)
 }
 
 func (s *Store) OldestMessage(ctx context.Context, chatID string) (Message, bool, error) {
@@ -343,7 +343,7 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 		return nil, fmt.Errorf("iterate searched messages: %w", err)
 	}
 
-	return s.attachMediaMetadata(ctx, messages)
+	return s.attachMessageDetails(ctx, messages)
 }
 
 func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
@@ -676,6 +676,103 @@ func (s *Store) UpdateMessageStatusIfExists(ctx context.Context, messageID, stat
 
 	rows, _ := result.RowsAffected()
 	return rows > 0, nil
+}
+
+func (s *Store) ClearChatUnread(ctx context.Context, chatID string) error {
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("chat id is required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE chats
+		SET unread_count = 0,
+			updated_at = ?
+		WHERE id = ?
+	`, time.Now().Unix(), chatID)
+	if err != nil {
+		return fmt.Errorf("clear chat unread %s: %w", chatID, err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		return fmt.Errorf("chat %s does not exist", chatID)
+	}
+	return nil
+}
+
+func (s *Store) UpsertReaction(ctx context.Context, reaction Reaction) error {
+	if strings.TrimSpace(reaction.MessageID) == "" {
+		return fmt.Errorf("reaction message id is required")
+	}
+	if strings.TrimSpace(reaction.SenderJID) == "" {
+		return fmt.Errorf("reaction sender jid is required")
+	}
+	if reaction.UpdatedAt.IsZero() {
+		reaction.UpdatedAt = time.Now()
+	}
+	if reaction.Timestamp.IsZero() {
+		reaction.Timestamp = reaction.UpdatedAt
+	}
+	if strings.TrimSpace(reaction.Emoji) == "" {
+		_, err := s.db.ExecContext(ctx, `
+			DELETE FROM message_reactions
+			WHERE message_id = ?
+				AND sender_jid = ?
+		`, reaction.MessageID, reaction.SenderJID)
+		if err != nil {
+			return fmt.Errorf("delete reaction for %s/%s: %w", reaction.MessageID, reaction.SenderJID, err)
+		}
+		return nil
+	}
+	var messageExists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, reaction.MessageID).Scan(&messageExists); err != nil {
+		return fmt.Errorf("check reaction target %s: %w", reaction.MessageID, err)
+	}
+	if messageExists == 0 {
+		return nil
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO message_reactions (
+			message_id, sender_jid, emoji, timestamp_unix, is_outgoing, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(message_id, sender_jid) DO UPDATE SET
+			emoji = excluded.emoji,
+			timestamp_unix = excluded.timestamp_unix,
+			is_outgoing = excluded.is_outgoing,
+			updated_at = excluded.updated_at
+	`, reaction.MessageID, reaction.SenderJID, reaction.Emoji, reaction.Timestamp.Unix(), boolToInt(reaction.IsOutgoing), reaction.UpdatedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("upsert reaction for %s/%s: %w", reaction.MessageID, reaction.SenderJID, err)
+	}
+	return nil
+}
+
+func (s *Store) ListMessageReactions(ctx context.Context, messageID string) ([]Reaction, error) {
+	if strings.TrimSpace(messageID) == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT message_id, sender_jid, emoji, timestamp_unix, is_outgoing, updated_at
+		FROM message_reactions
+		WHERE message_id = ?
+		ORDER BY updated_at ASC, sender_jid ASC
+	`, messageID)
+	if err != nil {
+		return nil, fmt.Errorf("list reactions for %s: %w", messageID, err)
+	}
+	defer rows.Close()
+
+	var reactions []Reaction
+	for rows.Next() {
+		reaction, err := scanReaction(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan reaction: %w", err)
+		}
+		reactions = append(reactions, reaction)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate reactions: %w", err)
+	}
+	return reactions, nil
 }
 
 func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
@@ -1151,6 +1248,15 @@ func (s *Store) MediaDownloadDescriptor(ctx context.Context, messageID string) (
 	return descriptor, true, nil
 }
 
+func (s *Store) attachMessageDetails(ctx context.Context, messages []Message) ([]Message, error) {
+	var err error
+	messages, err = s.attachMediaMetadata(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachMessageReactions(ctx, messages)
+}
+
 func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]Message, error) {
 	if len(messages) == 0 {
 		return messages, nil
@@ -1219,6 +1325,62 @@ func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]
 		messages[i].Media = byMessage[messages[i].ID]
 	}
 
+	return messages, nil
+}
+
+func (s *Store) attachMessageReactions(ctx context.Context, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	ids := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if message.ID == "" {
+			continue
+		}
+		if _, ok := seen[message.ID]; ok {
+			continue
+		}
+		seen[message.ID] = struct{}{}
+		ids = append(ids, message.ID)
+	}
+	if len(ids) == 0 {
+		return messages, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT message_id, sender_jid, emoji, timestamp_unix, is_outgoing, updated_at
+		FROM message_reactions
+		WHERE message_id IN (`+placeholders+`)
+		ORDER BY updated_at ASC, sender_jid ASC
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list message reactions: %w", err)
+	}
+	defer rows.Close()
+
+	byMessage := make(map[string][]Reaction, len(messages))
+	for rows.Next() {
+		reaction, err := scanReaction(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message reaction: %w", err)
+		}
+		byMessage[reaction.MessageID] = append(byMessage[reaction.MessageID], reaction)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message reactions: %w", err)
+	}
+
+	for i := range messages {
+		messages[i].Reactions = byMessage[messages[i].ID]
+	}
 	return messages, nil
 }
 
@@ -1364,6 +1526,33 @@ func scanMessage(row scanner) (Message, error) {
 	}
 
 	return message, nil
+}
+
+func scanReaction(row scanner) (Reaction, error) {
+	var (
+		reaction      Reaction
+		timestampUnix int64
+		updatedUnix   int64
+		isOutgoing    int
+	)
+	if err := row.Scan(
+		&reaction.MessageID,
+		&reaction.SenderJID,
+		&reaction.Emoji,
+		&timestampUnix,
+		&isOutgoing,
+		&updatedUnix,
+	); err != nil {
+		return Reaction{}, err
+	}
+	if timestampUnix > 0 {
+		reaction.Timestamp = time.Unix(timestampUnix, 0)
+	}
+	if updatedUnix > 0 {
+		reaction.UpdatedAt = time.Unix(updatedUnix, 0)
+	}
+	reaction.IsOutgoing = isOutgoing == 1
+	return reaction, nil
 }
 
 func boolToInt(value bool) int {

@@ -22,7 +22,11 @@ type WhatsAppLiveSession interface {
 	WhatsAppSession
 	Connect(context.Context) error
 	GenerateMessageID() string
-	SendText(context.Context, string, string, string) (whatsapp.SendResult, error)
+	SendText(context.Context, whatsapp.TextSendRequest) (whatsapp.SendResult, error)
+	MarkRead(context.Context, []whatsapp.ReadReceiptTarget) error
+	SendReaction(context.Context, whatsapp.ReactionSendRequest) (whatsapp.SendResult, error)
+	SendChatPresence(context.Context, string, bool) error
+	SubscribePresence(context.Context, string) error
 	SubscribeEvents(context.Context) (<-chan whatsapp.Event, error)
 	RequestHistoryBefore(context.Context, whatsapp.HistoryAnchor, int) error
 	DownloadMedia(context.Context, whatsapp.MediaDownloadDescriptor, string) error

@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -13,10 +14,12 @@ import (
 	"vimwhat/internal/store"
 )
 
-func (c *Client) normalizeWhatsmeowEvent(evt any) []Event {
+func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 	switch event := evt.(type) {
 	case *events.HistorySync:
 		return c.normalizeHistorySyncEvent(event)
+	case *events.Message:
+		return c.normalizeMessageEvent(ctx, event)
 	default:
 		return normalizeWhatsmeowEvent(evt)
 	}
@@ -52,6 +55,8 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return normalizeMessageEvent(event)
 	case *events.Receipt:
 		return normalizeReceiptEvent(event)
+	case *events.ChatPresence:
+		return normalizeChatPresenceEvent(event)
 	case *events.GroupInfo:
 		return normalizeGroupInfoEvent(event.JID, "", event.Name)
 	case *events.JoinedGroup:
@@ -63,6 +68,17 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 	default:
 		return nil
 	}
+}
+
+func (c *Client) normalizeMessageEvent(ctx context.Context, event *events.Message) []Event {
+	if c != nil && c.client != nil && event != nil && event.Message != nil && event.Message.GetEncReactionMessage() != nil {
+		if reaction, err := c.client.DecryptReaction(ctx, event); err == nil && reaction != nil {
+			clone := *event
+			clone.Message = &waE2E.Message{ReactionMessage: reaction}
+			return normalizeMessageEvent(&clone)
+		}
+	}
+	return normalizeMessageEvent(event)
 }
 
 func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
@@ -231,6 +247,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 
 	chatID := event.Info.Chat.String()
 	messageID := localMessageID(chatID, string(event.Info.ID))
+	reaction, hasReaction := reactionEvent(chatID, event)
 	body := messageBody(event.Message)
 	media, hasMedia := mediaMetadata(messageID, event.Message, event.Info.Timestamp)
 	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
@@ -246,6 +263,14 @@ func normalizeMessageEvent(event *events.Message) []Event {
 			LastMessageAt: event.Info.Timestamp,
 		},
 	}}
+
+	if hasReaction {
+		normalized = append(normalized, Event{
+			Kind:     EventReactionUpdate,
+			Reaction: reaction,
+		})
+		return normalized
+	}
 
 	if strings.TrimSpace(body) != "" || hasMedia {
 		normalized = append(normalized, Event{
@@ -277,6 +302,32 @@ func normalizeMessageEvent(event *events.Message) []Event {
 	return normalized
 }
 
+func reactionEvent(chatID string, event *events.Message) (ReactionEvent, bool) {
+	if event == nil || event.Message == nil {
+		return ReactionEvent{}, false
+	}
+	reaction := event.Message.GetReactionMessage()
+	if reaction == nil || reaction.GetKey() == nil {
+		return ReactionEvent{}, false
+	}
+	remoteID := strings.TrimSpace(reaction.GetKey().GetID())
+	if remoteID == "" {
+		return ReactionEvent{}, false
+	}
+	timestamp := event.Info.Timestamp
+	if millis := reaction.GetSenderTimestampMS(); millis > 0 {
+		timestamp = time.UnixMilli(millis)
+	}
+	return ReactionEvent{
+		MessageID:  localMessageID(chatID, remoteID),
+		ChatID:     chatID,
+		SenderJID:  senderJID(event.Info),
+		Emoji:      reaction.GetText(),
+		Timestamp:  timestamp,
+		IsOutgoing: event.Info.IsFromMe,
+	}, true
+}
+
 func normalizeReceiptEvent(event *events.Receipt) []Event {
 	if event == nil || len(event.MessageIDs) == 0 || !supportedChat(event.Chat) {
 		return nil
@@ -303,6 +354,31 @@ func normalizeReceiptEvent(event *events.Receipt) []Event {
 		})
 	}
 	return out
+}
+
+func normalizeChatPresenceEvent(event *events.ChatPresence) []Event {
+	if event == nil || !supportedChat(event.Chat) {
+		return nil
+	}
+	sender := event.Sender
+	senderJID := ""
+	if !sender.IsEmpty() {
+		senderJID = sender.String()
+	}
+	display := senderJID
+	if sender.User != "" {
+		display = sender.User
+	}
+	return []Event{{
+		Kind: EventPresenceUpdate,
+		Presence: PresenceEvent{
+			ChatID:    event.Chat.String(),
+			SenderJID: senderJID,
+			Sender:    display,
+			Typing:    event.State == types.ChatPresenceComposing,
+			UpdatedAt: time.Now(),
+		},
+	}}
 }
 
 func supportedChat(jid types.JID) bool {

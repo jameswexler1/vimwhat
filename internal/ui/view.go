@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
@@ -1058,6 +1059,9 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	if sender != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
 	}
+	if quote := m.messageQuoteLine(message, contentWidth); quote != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Italic(true).Render(quote))
+	}
 	for _, item := range message.Media {
 		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
 			lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
@@ -1072,12 +1076,80 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 			lines = append(lines, renderSearchHighlightedText(line, messageSearchQuery, bodyStyle, active && containsSearchMatch(body, messageSearchQuery)))
 		}
 	}
+	if reactions := m.messageReactionLine(message, contentWidth); reactions != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(reactions))
+	}
 	if meta != "" {
 		meta = truncateDisplay(meta, contentWidth)
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(alignDisplay(meta, contentWidth, true)))
 	}
 
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) messageQuoteLine(message store.Message, width int) string {
+	quotedID := strings.TrimSpace(message.QuotedRemoteID)
+	if quotedID == "" {
+		return ""
+	}
+	label := "reply " + quotedID
+	if quoted := m.messageByID(message.QuotedMessageID); quoted.ID != "" {
+		sender := strings.TrimSpace(m.sanitizeDisplayLine(quoted.Sender))
+		if sender == "" {
+			sender = "message"
+		}
+		if body := strings.TrimSpace(m.sanitizeDisplayLine(firstLine(quoted.Body))); body != "" {
+			label = "reply " + sender + ": " + body
+		} else {
+			label = "reply " + sender
+		}
+	}
+	return truncateDisplay(label, width)
+}
+
+func (m Model) messageByID(messageID string) store.Message {
+	if strings.TrimSpace(messageID) == "" {
+		return store.Message{}
+	}
+	for _, message := range m.currentMessages() {
+		if message.ID == messageID {
+			return message
+		}
+	}
+	return store.Message{}
+}
+
+func (m Model) messageReactionLine(message store.Message, width int) string {
+	if len(message.Reactions) == 0 {
+		return ""
+	}
+	counts := map[string]int{}
+	order := make([]string, 0, len(message.Reactions))
+	for _, reaction := range message.Reactions {
+		emoji := strings.TrimSpace(m.sanitizeDisplayLine(reaction.Emoji))
+		if emoji == "" {
+			continue
+		}
+		if counts[emoji] == 0 {
+			order = append(order, emoji)
+		}
+		counts[emoji]++
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	if len(order) > 3 {
+		order = order[:3]
+	}
+	parts := make([]string, 0, len(order))
+	for _, emoji := range order {
+		if counts[emoji] > 1 {
+			parts = append(parts, fmt.Sprintf("%s x%d", emoji, counts[emoji]))
+		} else {
+			parts = append(parts, emoji)
+		}
+	}
+	return truncateDisplay(strings.Join(parts, "  "), width)
 }
 
 func (m Model) mediaPreview(message store.Message, item store.MediaMetadata, width int) (media.Preview, bool) {
@@ -1177,6 +1249,12 @@ func (m Model) messageUsesMediaBubbleWidth(message store.Message, active bool) b
 func (m Model) bubbleContentWidth(style lipgloss.Style, maxBubbleWidth int, body, meta, sender string, message store.Message, previewWidth int) int {
 	maxContentWidth := max(1, panelContentWidth(style, maxBubbleWidth))
 	widest := max(lipgloss.Width(meta), lipgloss.Width(sender))
+	if quote := m.messageQuoteLine(message, maxContentWidth); quote != "" {
+		widest = max(widest, lipgloss.Width(quote))
+	}
+	if reactions := m.messageReactionLine(message, maxContentWidth); reactions != "" {
+		widest = max(widest, lipgloss.Width(reactions))
+	}
 	for _, line := range strings.Split(body, "\n") {
 		lineWidth := 0
 		for _, word := range strings.Fields(line) {
@@ -1514,7 +1592,15 @@ func (m Model) renderStatus() string {
 	if m.messageFilter != "" {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
-	center := " " + truncateDisplay(m.sanitizeDisplayLine(m.status), max(8, m.width/3)) + " "
+	centerStatus := m.sanitizeDisplayLine(m.status)
+	if presence := m.currentPresenceText(); presence != "" {
+		if centerStatus != "" && centerStatus != "ready" {
+			centerStatus += " | " + presence
+		} else {
+			centerStatus = presence
+		}
+	}
+	center := " " + truncateDisplay(centerStatus, max(8, m.width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -1539,6 +1625,25 @@ func (m Model) renderStatus() string {
 	}
 	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, m.width-used)))
 	return left + center + spacer + right
+}
+
+func (m Model) currentPresenceText() string {
+	chatID := m.currentChat().ID
+	if chatID == "" || len(m.presenceByChat) == 0 {
+		return ""
+	}
+	presence, ok := m.presenceByChat[chatID]
+	if !ok || !presence.Typing || (!presence.ExpiresAt.IsZero() && time.Now().After(presence.ExpiresAt)) {
+		return ""
+	}
+	name := strings.TrimSpace(m.sanitizeDisplayLine(presence.Sender))
+	if name == "" {
+		name = strings.TrimSpace(m.sanitizeDisplayLine(presence.SenderJID))
+	}
+	if name == "" {
+		name = "someone"
+	}
+	return name + " typing"
 }
 
 func (m Model) searchStatusSegment(queryWidth int) string {
@@ -1665,6 +1770,9 @@ func (m Model) renderPrompt(content, hint string) string {
 func (m Model) renderComposer(width int) string {
 	lines := []string{renderFooterHelpLine(width)}
 
+	if quote := m.replyPreviewLine(width); quote != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(quote))
+	}
 	attachmentLines := m.composerAttachmentLines(width)
 	lines = append(lines, attachmentLines...)
 
@@ -1685,6 +1793,24 @@ func (m Model) renderComposer(width int) string {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) replyPreviewLine(width int) string {
+	if m.replyTo == nil {
+		return ""
+	}
+	sender := strings.TrimSpace(m.sanitizeDisplayLine(m.replyTo.Sender))
+	if sender == "" {
+		sender = "message"
+	}
+	body := strings.TrimSpace(m.sanitizeDisplayLine(firstLine(m.replyTo.Body)))
+	if body == "" {
+		body = strings.TrimSpace(m.replyTo.RemoteID)
+	}
+	if body == "" {
+		body = strings.TrimSpace(m.replyTo.ID)
+	}
+	return truncateDisplay("reply "+sender+": "+body, width)
 }
 
 func (m Model) composerAttachmentLines(width int) []string {
@@ -1769,7 +1895,11 @@ func (m Model) composerHeight() int {
 	if m.mode != ModeInsert {
 		return 0
 	}
-	return min(7, max(3, len(composerLines(m.composer))+len(m.attachments)+2))
+	extra := len(m.attachments) + 2
+	if m.replyTo != nil {
+		extra++
+	}
+	return min(7, max(3, len(composerLines(m.composer))+extra))
 }
 
 func (m Model) renderHelp(width int) string {
@@ -1778,14 +1908,14 @@ func (m Model) renderHelp(width int) string {
 		"",
 		"normal:  j/k move    5j count    g/G top/bottom    h/l pane    tab cycle",
 		"         enter preview/open  o open media  <leader>s save  <leader>hf unload previews",
-		"         i insert    v visual    / search    : command    u unread    p sort",
+		"         i insert    r reply    v visual    / search    : command    u unread    p sort",
 		"         n/N next search   ? help      q quit",
 		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
 		"visual:  j/k extend  y yank clipboard  esc normal",
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
 		"         sort pinned/recent  preview  media-preview  media-open  media-save  media-hide",
-		"         history fetch  preview-backend <name>  clear-preview-cache",
-		"         attach <path>  delete-message",
+		"         history fetch  mark-read  quote-jump  react <emoji>|clear",
+		"         preview-backend <name>  clear-preview-cache  attach <path>  delete-message",
 		"",
 		"state:",
 		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"vimwhat/internal/store"
 )
@@ -78,6 +79,17 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 		}
 		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
 		return err
+	case EventReactionUpdate:
+		return i.Store.UpsertReaction(ctx, store.Reaction{
+			MessageID:  event.Reaction.MessageID,
+			SenderJID:  event.Reaction.SenderJID,
+			Emoji:      event.Reaction.Emoji,
+			Timestamp:  event.Reaction.Timestamp,
+			IsOutgoing: event.Reaction.IsOutgoing,
+			UpdatedAt:  timeOrNow(event.Reaction.Timestamp),
+		})
+	case EventPresenceUpdate:
+		return nil
 	case EventHistoryStatus:
 		if event.History.ChatID != "" {
 			value := "more"
@@ -123,6 +135,13 @@ func (i Ingestor) Apply(ctx context.Context, event Event) error {
 	default:
 		return fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
 	}
+}
+
+func timeOrNow(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Now()
+	}
+	return value
 }
 
 func storeMediaDownloadDescriptor(input MediaDownloadDescriptor, messageID string) store.MediaDownloadDescriptor {

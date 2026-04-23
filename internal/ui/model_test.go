@@ -99,8 +99,8 @@ func TestInsertSendClearsDraft(t *testing.T) {
 			DraftsByChat:   map[string]string{"chat-1": "old draft"},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
-			return store.Message{ID: "local-1", ChatID: chatID, Sender: "me", Body: body, IsOutgoing: true}, nil
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			return store.Message{ID: "local-1", ChatID: outgoing.ChatID, Sender: "me", Body: outgoing.Body, IsOutgoing: true}, nil
 		},
 		SaveDraft: func(chatID, body string) error {
 			cleared = chatID == "chat-1" && body == ""
@@ -126,6 +126,95 @@ func TestInsertSendClearsDraft(t *testing.T) {
 	}
 }
 
+func TestReplyKeyStartsInsertAndSendCarriesQuote(t *testing.T) {
+	var sent OutgoingMessage
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:        "m-1",
+					RemoteID:  "remote-1",
+					ChatID:    "chat-1",
+					Sender:    "Alice",
+					SenderJID: "alice@s.whatsapp.net",
+					Body:      "original",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			sent = outgoing
+			return store.Message{
+				ID:              "local-1",
+				ChatID:          outgoing.ChatID,
+				Sender:          "me",
+				Body:            outgoing.Body,
+				IsOutgoing:      true,
+				QuotedMessageID: outgoing.Quote.ID,
+				QuotedRemoteID:  outgoing.Quote.RemoteID,
+			}, nil
+		},
+		SaveDraft: func(chatID, body string) error { return nil },
+	})
+	model.focus = FocusMessages
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	replying := updated.(Model)
+	if replying.mode != ModeInsert || replying.replyTo == nil || replying.replyTo.ID != "m-1" {
+		t.Fatalf("reply state = mode %s reply %+v", replying.mode, replying.replyTo)
+	}
+	replying.composer = "reply body"
+	sentModel, _ := replying.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := sentModel.(Model)
+	if sent.Quote == nil || sent.Quote.ID != "m-1" || sent.Quote.RemoteID != "remote-1" {
+		t.Fatalf("sent quote = %+v", sent.Quote)
+	}
+	if len(got.messagesByChat["chat-1"]) != 2 || got.messagesByChat["chat-1"][1].QuotedRemoteID != "remote-1" {
+		t.Fatalf("messages after reply = %+v", got.messagesByChat["chat-1"])
+	}
+}
+
+func TestReactCommandUsesFocusedMessage(t *testing.T) {
+	var reactedMessage store.Message
+	var reactedEmoji string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:        "m-1",
+					RemoteID:  "remote-1",
+					ChatID:    "chat-1",
+					ChatJID:   "chat-1",
+					Sender:    "Alice",
+					SenderJID: "alice@s.whatsapp.net",
+					Body:      "hello",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		SendReaction: func(message store.Message, emoji string) error {
+			reactedMessage = message
+			reactedEmoji = emoji
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+
+	updated, _ := model.executeCommand("react 🔥")
+	got := updated.(Model)
+	if reactedMessage.ID != "m-1" || reactedEmoji != "🔥" {
+		t.Fatalf("reaction callback = message %+v emoji %q", reactedMessage, reactedEmoji)
+	}
+	if !strings.Contains(got.status, "reaction queued") {
+		t.Fatalf("status = %q, want reaction queued", got.status)
+	}
+}
+
 func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 	var persisted bool
 	var savedChatID string
@@ -138,7 +227,7 @@ func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 			ActiveChatID:   "chat-1",
 		},
 		BlockSending: true,
-		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
 			persisted = true
 			return store.Message{}, nil
 		},
@@ -180,7 +269,7 @@ func TestLiveAttachmentSendBlockedAndPreservesDraftAndAttachment(t *testing.T) {
 		},
 		ConnectionState:  ConnectionOnline,
 		BlockAttachments: true,
-		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
 			persisted = true
 			return store.Message{}, nil
 		},
@@ -223,7 +312,7 @@ func TestRequireOnlineForSendPreservesDraft(t *testing.T) {
 		},
 		ConnectionState:      ConnectionConnecting,
 		RequireOnlineForSend: true,
-		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
 			persisted = true
 			return store.Message{}, nil
 		},
@@ -262,7 +351,7 @@ func TestPersistSendErrorSavesDraft(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(string, string, []Attachment) (store.Message, error) {
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
 			return store.Message{}, fmt.Errorf("boom")
 		},
 		SaveDraft: func(chatID, body string) error {
@@ -2506,20 +2595,20 @@ func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
-			sentAttachments = attachments
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			sentAttachments = outgoing.Attachments
 			return store.Message{
 				ID:         "local-1",
-				ChatID:     chatID,
+				ChatID:     outgoing.ChatID,
 				Sender:     "me",
-				Body:       body,
+				Body:       outgoing.Body,
 				IsOutgoing: true,
 				Media: []store.MediaMetadata{{
 					MessageID:     "local-1",
-					FileName:      attachments[0].FileName,
-					MIMEType:      attachments[0].MIMEType,
-					SizeBytes:     attachments[0].SizeBytes,
-					DownloadState: attachments[0].DownloadState,
+					FileName:      outgoing.Attachments[0].FileName,
+					MIMEType:      outgoing.Attachments[0].MIMEType,
+					SizeBytes:     outgoing.Attachments[0].SizeBytes,
+					DownloadState: outgoing.Attachments[0].DownloadState,
 				}},
 			}, nil
 		},
@@ -4042,8 +4131,8 @@ func TestSendingMessageScrollsConversationToNewestMessage(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PersistMessage: func(chatID, body string, attachments []Attachment) (store.Message, error) {
-			return store.Message{ID: "local-1", ChatID: chatID, Sender: "me", Body: body, IsOutgoing: true}, nil
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			return store.Message{ID: "local-1", ChatID: outgoing.ChatID, Sender: "me", Body: outgoing.Body, IsOutgoing: true}, nil
 		},
 	})
 	model.mode = ModeInsert

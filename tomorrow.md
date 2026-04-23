@@ -1,61 +1,53 @@
-# Tomorrow: Validate Media and Text Send, Then Next Protocol Features
+# Tomorrow: Validate Message Interactions, Then Build Media Send
 
 ## Current State
 
-- Pairing, live inbound ingestion, focused-chat remote history fetch, and protocol-backed remote media download are implemented.
-- Received image, video, audio, and document messages persist WhatsApp download descriptors.
-- The TUI can request a download through the app layer, cache the file locally, update SQLite, and continue into preview/open/save/audio playback.
-- Recent TUI hardening is implemented: big-chat message scrolling behaves like chat-list scrolling, emoji rendering has `auto`/`full`/`compat` modes, mode indicators default to pywal but support per-mode hex overrides, and `/` search shows match counts and clears with `Esc`.
-- Real plain text outbound send is implemented in live mode; attachment send remains blocked until media upload exists.
+- Pairing, live inbound ingestion, focused-chat remote history fetch, protocol-backed remote media download, and real plain text outbound send are implemented.
+- Protocol-backed message interactions are now implemented:
+  - mark-read for loaded inbound messages,
+  - reaction send/clear and local reaction rendering,
+  - text replies with quoted WhatsApp metadata,
+  - `:quote-jump` into loaded/local older history,
+  - direct-chat typing presence subscription/display plus best-effort composing/paused sends.
+- Attachment send remains blocked until media upload/send exists.
 
-## First Task: Quick TUI Regression
+## First Task: Live Validation Pass
 
 1. Run `make test`, `make lint`, and `make build`.
-2. Run `./vimwhat doctor` with the real config to catch strict config parser regressions.
-3. Start a paired app with `./vimwhat` or `make run`.
-4. Open the large group chat that previously broke the TUI and scroll up/down through emoji-heavy messages.
-5. Search with `/`, confirm the status bar shows `current/total`, move with `n`/`N`, then press `Esc` from normal mode and confirm the search count/highlights disappear.
-6. Test one custom mode indicator color, then restore `"pywal"` if desired.
+2. Start a paired app with `./vimwhat` or `make run`.
+3. Validate plain text send again in one direct chat and one group chat.
+4. Validate replies:
+   - focus a message,
+   - press `r`,
+   - send a reply,
+   - confirm the quote metadata appears locally and on the phone.
+5. Validate reactions:
+   - run `:react 🔥` on an incoming message,
+   - run `:react clear`,
+   - confirm both local rendering and phone-side state.
+6. Validate read receipts:
+   - open a chat with unread inbound messages,
+   - confirm unread count clears only after the protocol-backed mark-read path succeeds,
+   - retry with `:mark-read` if needed.
+7. Validate quote-jump:
+   - focus a reply,
+   - run `:quote-jump`,
+   - confirm it jumps locally or requests older history if the target is not loaded.
+8. Validate typing presence in a direct chat:
+   - type for a few seconds,
+   - confirm the other device sees composing,
+   - confirm the local status bar shows remote typing when the peer types.
 
-## Second Task: Manual Media Validation
+## If Validation Fails
 
-1. From another account, send:
-   - one image,
-   - one document/file,
-   - one audio/voice note if convenient,
-   - one short video if convenient.
-2. Focus each media message and trigger the natural action:
-   - image/video: preview/open,
-   - document: open/save,
-   - audio: play.
-3. Confirm:
-   - status moves through downloading and then preview/open/save/play,
-   - files appear under `~/.cache/vimwhat/media`,
-   - restarting the app reuses the local path without another download,
-   - duplicate Enter presses do not start duplicate downloads.
+- Fix protocol payload shape first for replies/reactions/read receipts.
+- Fix local store/update wiring only if the phone state is correct but the TUI does not reflect it.
+- Fix presence last if it is noisy or inconsistent; it is best-effort and lower priority than message correctness.
 
-## If Media Validation Fails
+## Next Implementation Slice: Media Send
 
-- Fix descriptor extraction first if the error says download details are unavailable.
-- Fix protocol download/writing if the descriptor exists but download fails.
-- Fix TUI state only if the file downloads correctly but preview/open/save/play does not continue.
-
-## Implemented Slice: Real Text Send
-
-Plain text send now follows this shape:
-
-1. The WhatsApp live session has a `SendText` path that sends a plain text message to the current chat JID.
-2. Live-mode text-only composer submissions use protocol-backed send instead of global send blocking.
-3. Outgoing text messages are persisted locally with precomputed WhatsApp remote IDs and `sending`, then updated to `sent` or `failed`.
-4. Attachments remain blocked until media upload/send is implemented.
-5. Tests cover successful send, protocol failure, invalid chat JID, composer/draft preservation, and local status update.
-
-## Next Implementation Slice
-
-After live validation of media download and plain text send:
-
-1. Add protocol-backed read receipts.
-2. Add reactions.
-3. Add typing presence if exposed cleanly.
-4. Add reply metadata and quote-jump behavior.
-5. Add attachment upload/send after text send remains stable.
+1. Upload local attachments through `whatsmeow`.
+2. Reuse the existing staged attachment/composer flow for live sends.
+3. Persist outgoing media messages locally with `sending`/`sent`/`failed`, matching text send behavior.
+4. Support one attachment per message first, with optional caption for image/video/document where the protocol shape is straightforward.
+5. Keep `media open <message-id>` and `export chat <jid>` for the slice after media send is stable.

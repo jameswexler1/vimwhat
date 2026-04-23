@@ -124,6 +124,10 @@ func runTUI(env Environment, stderr io.Writer) int {
 	liveUpdates := make(chan ui.LiveUpdate, 64)
 	historyRequests := make(chan string, 16)
 	textSendRequests := make(chan textSendRequest, textSendQueueSize)
+	readReceiptRequests := make(chan readReceiptRequest, readReceiptQueueSize)
+	reactionRequests := make(chan reactionRequest, reactionQueueSize)
+	presenceRequests := make(chan presenceRequest, presenceQueueSize)
+	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
@@ -133,7 +137,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaDownloadRequests)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests)
 		}()
 	}
 	defer func() {
@@ -151,9 +155,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		LiveUpdates:          liveUpdateSource,
 		BlockAttachments:     liveEnabled,
 		RequireOnlineForSend: liveEnabled,
-		PersistMessage: func(chatID, body string, attachments []ui.Attachment) (store.Message, error) {
+		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			if liveEnabled {
-				if len(attachments) > 0 {
+				if len(outgoing.Attachments) > 0 {
 					return store.Message{}, fmt.Errorf("attachment send is not implemented yet")
 				}
 				waitCtx, cancel := context.WithTimeout(context.Background(), textSendQueueTimeout)
@@ -161,8 +165,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 				result := make(chan textSendQueuedResult, 1)
 				request := textSendRequest{
 					Context: waitCtx,
-					ChatID:  chatID,
-					Body:    body,
+					ChatID:  outgoing.ChatID,
+					Body:    outgoing.Body,
+					Quote:   cloneMessagePtr(outgoing.Quote),
 					Result:  result,
 				}
 				select {
@@ -181,12 +186,74 @@ func runTUI(env Environment, stderr io.Writer) int {
 				}
 			}
 
-			message := pendingOutgoingMessage(chatID, body, attachments)
+			message := pendingOutgoingMessage(outgoing)
 			if err := env.Store.AddMessageWithMedia(context.Background(), message, message.Media); err != nil {
 				return store.Message{}, err
 			}
 
 			return message, nil
+		},
+		MarkRead: func(chat store.Chat, messages []store.Message) error {
+			if !liveEnabled {
+				return fmt.Errorf("whatsapp is not paired")
+			}
+			result := make(chan error, 1)
+			request := readReceiptRequest{Chat: chat, Messages: messages, Result: result}
+			select {
+			case readReceiptRequests <- request:
+			default:
+				return fmt.Errorf("read receipt queue is full")
+			}
+			waitCtx, cancel := context.WithTimeout(context.Background(), readReceiptQueueTimeout)
+			defer cancel()
+			select {
+			case err := <-result:
+				return err
+			case <-waitCtx.Done():
+				return fmt.Errorf("read receipt queue timed out")
+			}
+		},
+		SendReaction: func(message store.Message, emoji string) error {
+			if !liveEnabled {
+				return fmt.Errorf("whatsapp is not paired")
+			}
+			result := make(chan error, 1)
+			request := reactionRequest{Message: message, Emoji: emoji, Result: result}
+			select {
+			case reactionRequests <- request:
+			default:
+				return fmt.Errorf("reaction queue is full")
+			}
+			waitCtx, cancel := context.WithTimeout(context.Background(), reactionQueueTimeout)
+			defer cancel()
+			select {
+			case err := <-result:
+				return err
+			case <-waitCtx.Done():
+				return fmt.Errorf("reaction queue timed out")
+			}
+		},
+		SendPresence: func(chatID string, composing bool) error {
+			if !liveEnabled {
+				return nil
+			}
+			select {
+			case presenceRequests <- presenceRequest{ChatID: chatID, Composing: composing}:
+				return nil
+			default:
+				return fmt.Errorf("presence queue is full")
+			}
+		},
+		SubscribePresence: func(chatID string) error {
+			if !liveEnabled {
+				return nil
+			}
+			select {
+			case presenceSubscribeRequests <- presenceSubscribeRequest{ChatID: chatID}:
+				return nil
+			default:
+				return fmt.Errorf("presence subscription queue is full")
+			}
 		},
 		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
 			return env.Store.ListMessages(context.Background(), chatID, limit)
@@ -289,27 +356,57 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 }
 
 const (
-	historyPageSize        = 50
-	historyRequestTimeout  = 30 * time.Second
-	metadataRefreshTimeout = 30 * time.Second
-	textSendQueueSize      = 16
-	textSendQueueTimeout   = 5 * time.Second
-	textSendTimeout        = 90 * time.Second
-	mediaDownloadWorkers   = 2
-	mediaDownloadQueueSize = 16
-	mediaDownloadTimeout   = 5 * time.Minute
+	historyPageSize         = 50
+	historyRequestTimeout   = 30 * time.Second
+	metadataRefreshTimeout  = 30 * time.Second
+	textSendQueueSize       = 16
+	textSendQueueTimeout    = 5 * time.Second
+	textSendTimeout         = 90 * time.Second
+	readReceiptQueueSize    = 16
+	readReceiptQueueTimeout = 5 * time.Second
+	readReceiptTimeout      = 30 * time.Second
+	reactionQueueSize       = 16
+	reactionQueueTimeout    = 5 * time.Second
+	reactionSendTimeout     = 90 * time.Second
+	presenceQueueSize       = 32
+	presenceSendTimeout     = 5 * time.Second
+	mediaDownloadWorkers    = 2
+	mediaDownloadQueueSize  = 16
+	mediaDownloadTimeout    = 5 * time.Minute
 )
 
 type textSendRequest struct {
 	Context context.Context
 	ChatID  string
 	Body    string
+	Quote   *store.Message
 	Result  chan<- textSendQueuedResult
 }
 
 type textSendQueuedResult struct {
 	Message store.Message
 	Err     error
+}
+
+type readReceiptRequest struct {
+	Chat     store.Chat
+	Messages []store.Message
+	Result   chan<- error
+}
+
+type reactionRequest struct {
+	Message store.Message
+	Emoji   string
+	Result  chan<- error
+}
+
+type presenceRequest struct {
+	ChatID    string
+	Composing bool
+}
+
+type presenceSubscribeRequest struct {
+	ChatID string
 }
 
 type mediaDownloadRequest struct {
@@ -329,6 +426,10 @@ func runLiveWhatsApp(
 	updates chan<- ui.LiveUpdate,
 	historyRequests <-chan string,
 	textSendRequests <-chan textSendRequest,
+	readReceiptRequests <-chan readReceiptRequest,
+	reactionRequests <-chan reactionRequest,
+	presenceRequests <-chan presenceRequest,
+	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
 ) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
@@ -379,8 +480,8 @@ func runLiveWhatsApp(
 	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
 
-	var textSendWG sync.WaitGroup
-	defer textSendWG.Wait()
+	var protocolWG sync.WaitGroup
+	defer protocolWG.Wait()
 
 	downloadJobs := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	var downloadWG sync.WaitGroup
@@ -410,6 +511,10 @@ func runLiveWhatsApp(
 			if event.Kind == whatsapp.EventConnectionState {
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
+				continue
+			}
+			if event.Kind == whatsapp.EventPresenceUpdate {
+				sendLiveUpdate(ctx, updates, liveUpdateForPresenceEvent(event.Presence))
 				continue
 			}
 			if err := ingestor.Apply(ctx, event); err != nil {
@@ -444,7 +549,27 @@ func runLiveWhatsApp(
 			if !ok {
 				return
 			}
-			handleTextSendRequest(ctx, env.Store, live, updates, &textSendWG, online, request)
+			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-readReceiptRequests:
+			if !ok {
+				return
+			}
+			handleReadReceiptRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-reactionRequests:
+			if !ok {
+				return
+			}
+			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-presenceRequests:
+			if !ok {
+				return
+			}
+			handlePresenceRequest(ctx, live, online, request)
+		case request, ok := <-presenceSubscribeRequests:
+			if !ok {
+				return
+			}
+			handlePresenceSubscribeRequest(ctx, live, online, request)
 		case result, ok := <-metadataResults:
 			if ok {
 				ingested := 0
@@ -562,6 +687,10 @@ func handleTextSendRequest(
 		IsOutgoing: true,
 		Status:     "sending",
 	}
+	if request.Quote != nil {
+		message.QuotedMessageID = request.Quote.ID
+		message.QuotedRemoteID = request.Quote.RemoteID
+	}
 	if message.ID == "" {
 		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("message id is required"))
 		return
@@ -576,11 +705,11 @@ func handleTextSendRequest(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			completeQueuedTextSend(ctx, db, live, updates, message, body)
+			completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote)
 		}()
 		return
 	}
-	completeQueuedTextSend(ctx, db, live, updates, message, body)
+	completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote)
 }
 
 func sendTextQueuedResult(ctx context.Context, request textSendRequest, message store.Message, err error) {
@@ -593,10 +722,20 @@ func sendTextQueuedResult(ctx context.Context, request textSendRequest, message 
 	}
 }
 
-func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, body string) {
+func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, body string, quote *store.Message) {
 	sendCtx, cancel := context.WithTimeout(ctx, textSendTimeout)
 	defer cancel()
-	result, err := live.SendText(sendCtx, message.ChatJID, body, message.RemoteID)
+	request := whatsapp.TextSendRequest{
+		ChatJID:  message.ChatJID,
+		Body:     body,
+		RemoteID: message.RemoteID,
+	}
+	if quote != nil {
+		request.QuotedRemoteID = quote.RemoteID
+		request.QuotedSenderJID = quote.SenderJID
+		request.QuotedMessageBody = quote.Body
+	}
+	result, err := live.SendText(sendCtx, request)
 	if err != nil {
 		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
 		_ = db.SaveDraft(context.Background(), message.ChatID, body)
@@ -622,6 +761,228 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 		Refresh: true,
 		Status:  "sent message",
 	})
+}
+
+func handleReadReceiptRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request readReceiptRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if db == nil {
+		sendReadReceiptResult(ctx, request, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendReadReceiptResult(ctx, request, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendReadReceiptResult(ctx, request, fmt.Errorf("read receipts need WhatsApp online"))
+		return
+	}
+	targets := readReceiptTargets(request.Chat, request.Messages)
+	if len(targets) == 0 {
+		sendReadReceiptResult(ctx, request, fmt.Errorf("no loaded unread messages to mark read"))
+		return
+	}
+	sendReadReceiptResult(ctx, request, nil)
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeReadReceipt(ctx, db, live, updates, request.Chat.ID, targets)
+		}()
+		return
+	}
+	completeReadReceipt(ctx, db, live, updates, request.Chat.ID, targets)
+}
+
+func sendReadReceiptResult(ctx context.Context, request readReceiptRequest, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- err:
+	case <-ctx.Done():
+	}
+}
+
+func completeReadReceipt(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, chatID string, targets []whatsapp.ReadReceiptTarget) {
+	readCtx, cancel := context.WithTimeout(ctx, readReceiptTimeout)
+	defer cancel()
+	if err := live.MarkRead(readCtx, targets); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ReadChatID: chatID,
+			Status:     fmt.Sprintf("mark read failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	if err := db.ClearChatUnread(context.Background(), chatID); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			ReadChatID: chatID,
+			Refresh:    true,
+			Status:     fmt.Sprintf("clear unread failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		ReadChatID: chatID,
+		Refresh:    true,
+		Status:     "marked chat read",
+	})
+}
+
+func readReceiptTargets(chat store.Chat, messages []store.Message) []whatsapp.ReadReceiptTarget {
+	chatJID := strings.TrimSpace(chat.JID)
+	if chatJID == "" {
+		chatJID = strings.TrimSpace(chat.ID)
+	}
+	targets := make([]whatsapp.ReadReceiptTarget, 0, len(messages))
+	for _, message := range messages {
+		if message.IsOutgoing || strings.TrimSpace(message.RemoteID) == "" {
+			continue
+		}
+		messageChatJID := strings.TrimSpace(message.ChatJID)
+		if messageChatJID == "" {
+			messageChatJID = chatJID
+		}
+		targets = append(targets, whatsapp.ReadReceiptTarget{
+			ChatJID:   messageChatJID,
+			RemoteID:  message.RemoteID,
+			SenderJID: message.SenderJID,
+			Timestamp: message.Timestamp,
+		})
+	}
+	return targets
+}
+
+func handleReactionRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request reactionRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if db == nil {
+		sendReactionResult(ctx, request, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendReactionResult(ctx, request, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendReactionResult(ctx, request, fmt.Errorf("reactions need WhatsApp online"))
+		return
+	}
+	if strings.TrimSpace(request.Message.RemoteID) == "" {
+		sendReactionResult(ctx, request, fmt.Errorf("reaction target has no WhatsApp id"))
+		return
+	}
+	chatJID := strings.TrimSpace(request.Message.ChatJID)
+	if chatJID == "" {
+		chatJID = strings.TrimSpace(request.Message.ChatID)
+	}
+	if _, err := whatsapp.NormalizeSendChatJID(chatJID); err != nil {
+		sendReactionResult(ctx, request, err)
+		return
+	}
+	remoteID := strings.TrimSpace(live.GenerateMessageID())
+	if remoteID == "" {
+		sendReactionResult(ctx, request, fmt.Errorf("generate message id failed"))
+		return
+	}
+	sendReactionResult(ctx, request, nil)
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeReaction(ctx, db, live, updates, request.Message, chatJID, request.Emoji, remoteID)
+		}()
+		return
+	}
+	completeReaction(ctx, db, live, updates, request.Message, chatJID, request.Emoji, remoteID)
+}
+
+func sendReactionResult(ctx context.Context, request reactionRequest, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- err:
+	case <-ctx.Done():
+	}
+}
+
+func completeReaction(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, chatJID, emoji, remoteID string) {
+	sendCtx, cancel := context.WithTimeout(ctx, reactionSendTimeout)
+	defer cancel()
+	_, err := live.SendReaction(sendCtx, whatsapp.ReactionSendRequest{
+		ChatJID:         chatJID,
+		TargetRemoteID:  message.RemoteID,
+		TargetSenderJID: message.SenderJID,
+		Emoji:           emoji,
+		RemoteID:        remoteID,
+	})
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("reaction failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	if err := db.UpsertReaction(context.Background(), store.Reaction{
+		MessageID:  message.ID,
+		SenderJID:  "me",
+		Emoji:      emoji,
+		Timestamp:  time.Now(),
+		IsOutgoing: true,
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("reaction store failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	status := "sent reaction"
+	if strings.TrimSpace(emoji) == "" {
+		status = "cleared reaction"
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  status,
+	})
+}
+
+func handlePresenceRequest(ctx context.Context, live WhatsAppLiveSession, online bool, request presenceRequest) {
+	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
+		return
+	}
+	presenceCtx, cancel := context.WithTimeout(ctx, presenceSendTimeout)
+	defer cancel()
+	_ = live.SendChatPresence(presenceCtx, request.ChatID, request.Composing)
+}
+
+func handlePresenceSubscribeRequest(ctx context.Context, live WhatsAppLiveSession, online bool, request presenceSubscribeRequest) {
+	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
+		return
+	}
+	presenceCtx, cancel := context.WithTimeout(ctx, presenceSendTimeout)
+	defer cancel()
+	_ = live.SubscribePresence(presenceCtx, request.ChatID)
 }
 
 func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {
@@ -979,6 +1340,23 @@ func liveUpdateForConnectionEvent(event whatsapp.ConnectionEvent) ui.LiveUpdate 
 	return update
 }
 
+func liveUpdateForPresenceEvent(event whatsapp.PresenceEvent) ui.LiveUpdate {
+	expiresAt := event.UpdatedAt
+	if expiresAt.IsZero() {
+		expiresAt = time.Now()
+	}
+	expiresAt = expiresAt.Add(6 * time.Second)
+	return ui.LiveUpdate{
+		Presence: ui.PresenceUpdate{
+			ChatID:    event.ChatID,
+			SenderJID: event.SenderJID,
+			Sender:    event.Sender,
+			Typing:    event.Typing,
+			ExpiresAt: expiresAt,
+		},
+	}
+}
+
 func uiConnectionState(state whatsapp.ConnectionState) ui.ConnectionState {
 	switch state {
 	case whatsapp.ConnectionPaired:
@@ -1072,20 +1450,32 @@ func snapshotHasChat(chats []store.Chat, chatID string) bool {
 	return false
 }
 
-func pendingOutgoingMessage(chatID, body string, attachments []ui.Attachment) store.Message {
+func cloneMessagePtr(message *store.Message) *store.Message {
+	if message == nil {
+		return nil
+	}
+	clone := *message
+	return &clone
+}
+
+func pendingOutgoingMessage(outgoing ui.OutgoingMessage) store.Message {
 	now := time.Now()
 	message := store.Message{
 		ID:         fmt.Sprintf("local-%d", now.UnixNano()),
-		ChatID:     chatID,
-		ChatJID:    chatID,
+		ChatID:     outgoing.ChatID,
+		ChatJID:    outgoing.ChatID,
 		Sender:     "me",
 		SenderJID:  "me",
-		Body:       body,
+		Body:       strings.TrimSpace(outgoing.Body),
 		Timestamp:  now,
 		IsOutgoing: true,
 		Status:     "pending",
 	}
-	message.Media = mediaForOutgoingMessage(message.ID, attachments, now)
+	if outgoing.Quote != nil {
+		message.QuotedMessageID = outgoing.Quote.ID
+		message.QuotedRemoteID = outgoing.Quote.RemoteID
+	}
+	message.Media = mediaForOutgoingMessage(message.ID, outgoing.Attachments, now)
 	return message
 }
 

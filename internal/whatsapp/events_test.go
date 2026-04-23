@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -233,6 +234,58 @@ func TestNormalizeReceiptEventMapsRemoteIDsToLocalStatus(t *testing.T) {
 	}
 }
 
+func TestNormalizeReactionMessageEvent(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: chat,
+			},
+			ID:        "REACTION1",
+			PushName:  "Alice",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{
+			ReactionMessage: &waE2E.ReactionMessage{
+				Key: &waCommon.MessageKey{
+					RemoteJID: proto.String(chat.String()),
+					ID:        proto.String("TARGET1"),
+				},
+				Text: proto.String("🔥"),
+			},
+		},
+	})
+	if len(normalized) != 2 {
+		t.Fatalf("len(normalized) = %d, want chat+reaction", len(normalized))
+	}
+	if normalized[1].Kind != EventReactionUpdate {
+		t.Fatalf("event kind = %s, want %s", normalized[1].Kind, EventReactionUpdate)
+	}
+	if normalized[1].Reaction.MessageID != "12345@s.whatsapp.net/TARGET1" || normalized[1].Reaction.Emoji != "🔥" {
+		t.Fatalf("reaction event = %+v", normalized[1].Reaction)
+	}
+}
+
+func TestNormalizeChatPresenceEvent(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	sender := types.NewJID("67890", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.ChatPresence{
+		MessageSource: types.MessageSource{
+			Chat:   chat,
+			Sender: sender,
+		},
+		State: types.ChatPresenceComposing,
+	})
+	if len(normalized) != 1 || normalized[0].Kind != EventPresenceUpdate {
+		t.Fatalf("normalized = %+v, want presence event", normalized)
+	}
+	if normalized[0].Presence.ChatID != chat.String() || normalized[0].Presence.SenderJID != sender.String() || !normalized[0].Presence.Typing {
+		t.Fatalf("presence = %+v", normalized[0].Presence)
+	}
+}
+
 func TestNormalizeGroupMessageUsesPlaceholderTitle(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	chat := types.NewJID("12345-678", types.GroupServer)
@@ -282,7 +335,7 @@ func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {
 	transferType := waHistorySync.Conversation_COMPLETE_ON_DEMAND_SYNC_BUT_MORE_MSG_REMAIN_ON_PRIMARY
 	client := &Client{client: &whatsmeow.Client{}}
 
-	normalized := client.normalizeWhatsmeowEvent(&events.HistorySync{
+	normalized := client.normalizeWhatsmeowEvent(context.Background(), &events.HistorySync{
 		Data: &waHistorySync.HistorySync{
 			SyncType: &syncType,
 			Conversations: []*waHistorySync.Conversation{{

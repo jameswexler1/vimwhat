@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 5 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=5", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 6 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=6", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -252,6 +252,106 @@ func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
 	}
 	if chats[0].Unread != 1 || chats[0].Title != "Alice Updated" {
 		t.Fatalf("preserved chat = %+v, want unread preserved and title updated", chats[0])
+	}
+}
+
+func TestUpsertReactionAttachesToLoadedMessages(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := store.UpsertReaction(ctx, Reaction{
+		MessageID:  "m-1",
+		SenderJID:  "alice@s.whatsapp.net",
+		Emoji:      "👍",
+		Timestamp:  time.Unix(1_700_000_100, 0),
+		UpdatedAt:  time.Unix(1_700_000_100, 0),
+		IsOutgoing: false,
+	}); err != nil {
+		t.Fatalf("UpsertReaction() error = %v", err)
+	}
+
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 1 || len(messages[0].Reactions) != 1 {
+		t.Fatalf("messages = %+v, want one reaction attached", messages)
+	}
+	if messages[0].Reactions[0].Emoji != "👍" || messages[0].Reactions[0].SenderJID != "alice@s.whatsapp.net" {
+		t.Fatalf("reaction = %+v", messages[0].Reactions[0])
+	}
+}
+
+func TestUpsertReactionClearsExistingReaction(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "hello",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	if err := store.UpsertReaction(ctx, Reaction{
+		MessageID: "m-1",
+		SenderJID: "alice@s.whatsapp.net",
+		Emoji:     "👍",
+		Timestamp: time.Unix(1_700_000_100, 0),
+		UpdatedAt: time.Unix(1_700_000_100, 0),
+	}); err != nil {
+		t.Fatalf("UpsertReaction(add) error = %v", err)
+	}
+	if err := store.UpsertReaction(ctx, Reaction{
+		MessageID: "m-1",
+		SenderJID: "alice@s.whatsapp.net",
+		Emoji:     "",
+		UpdatedAt: time.Unix(1_700_000_200, 0),
+	}); err != nil {
+		t.Fatalf("UpsertReaction(clear) error = %v", err)
+	}
+
+	reactions, err := store.ListMessageReactions(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("ListMessageReactions() error = %v", err)
+	}
+	if len(reactions) != 0 {
+		t.Fatalf("reactions = %+v, want cleared", reactions)
 	}
 }
 
@@ -898,8 +998,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 5 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want five applied and none pending", applied, pending)
+	if len(applied) != 6 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want six applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
