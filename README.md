@@ -1,6 +1,6 @@
 # vimwhat
 
-`vimwhat` is a Linux-first, vim-centric WhatsApp TUI in Go. The current codebase is a SQLite-backed TUI with WhatsApp QR login, live ingestion, on-demand remote history fetch for the focused chat, protocol-backed remote media download, and outbound text plus single-attachment media send.
+`vimwhat` is a Linux-first, vim-centric WhatsApp TUI in Go. The current codebase is a SQLite-backed TUI with WhatsApp QR login, live ingestion, on-demand remote history fetch for the focused chat, protocol-backed remote media download, outbound text plus single-attachment media send, and the remaining media/export CLI helpers.
 
 ## Current status
 
@@ -8,7 +8,7 @@
 - SQLite state under XDG data paths with migrations, FTS message indexing, drafts, contacts, media metadata, sync cursors, and UI snapshot storage.
 - Demo seeding commands for local development without a live WhatsApp session.
 - Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa`, and focused audio playback through `mpv`.
-- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, and real outbound text plus single-attachment media send exist.
+- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, `media open`, and `export chat` exist.
 
 ## Commands
 
@@ -19,11 +19,6 @@ go run ./cmd/vimwhat demo clear
 go run ./cmd/vimwhat doctor
 go run ./cmd/vimwhat login
 go run ./cmd/vimwhat logout
-```
-
-The CLI reserves these commands for the protocol/media/export work that comes next:
-
-```sh
 go run ./cmd/vimwhat media open <message-id>
 go run ./cmd/vimwhat export chat <jid>
 ```

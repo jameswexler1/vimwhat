@@ -1209,6 +1209,414 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	}
 }
 
+func TestRunMediaOpenUsesLocalDownloadedFile(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "docs@g.us", Title: "Docs", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	localPath := filepath.Join(t.TempDir(), "report.txt")
+	if err := os.WriteFile(localPath, []byte("local media"), 0o644); err != nil {
+		t.Fatalf("WriteFile(local media) error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "docs@g.us",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Timestamp: time.Unix(1_700_200_000, 0),
+	}, []store.MediaMetadata{{
+		MessageID:     "m-1",
+		MIMEType:      "text/plain",
+		FileName:      "report.txt",
+		LocalPath:     localPath,
+		DownloadState: "downloaded",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	env := Environment{
+		Store:  db,
+		Config: config.Config{FileOpenerCommand: "true {path}"},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run media open exit = %d, stderr = %q", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != localPath {
+		t.Fatalf("stdout = %q, want %q", got, localPath)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunMediaOpenDownloadsRemoteWhenNeeded(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "docs@g.us", Title: "Docs", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "docs@g.us",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Timestamp: time.Unix(1_700_200_000, 0),
+	}, []store.MediaMetadata{{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		DownloadState: "remote",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+	if err := db.UpsertMediaMetadataWithDownload(ctx, store.MediaMetadata{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		DownloadState: "remote",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}, &store.MediaDownloadDescriptor{
+		MessageID:  "m-1",
+		Kind:       "document",
+		URL:        "https://example.invalid/report.pdf",
+		DirectPath: "/v/t62.7118-24/example",
+		MediaKey:   []byte("media-key"),
+		FileLength: 32,
+		UpdatedAt:  time.Unix(1_700_200_000, 0),
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{downloads: make(chan fakeDownloadRequest, 1)}
+	mediaDir := filepath.Join(t.TempDir(), "media")
+	env := Environment{
+		Store: db,
+		Config: config.Config{
+			FileOpenerCommand: "true {path}",
+		},
+		Paths: config.Paths{
+			MediaDir:    mediaDir,
+			SessionFile: filepath.Join(t.TempDir(), "session.sqlite3"),
+		},
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
+			return WhatsAppSessionStatus{Label: "paired", Paired: true}, nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run media open exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !session.connectCalled || !session.closeCalled {
+		t.Fatalf("session connect/close = %v/%v, want true/true", session.connectCalled, session.closeCalled)
+	}
+	request := <-session.downloads
+	if request.descriptor.Kind != "document" {
+		t.Fatalf("download descriptor = %+v, want document", request.descriptor)
+	}
+	stored, err := db.MediaMetadata(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MediaMetadata() error = %v", err)
+	}
+	if stored.LocalPath == "" || stored.DownloadState != "downloaded" {
+		t.Fatalf("stored media = %+v, want downloaded local path", stored)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != stored.LocalPath {
+		t.Fatalf("stdout path = %q, want %q", got, stored.LocalPath)
+	}
+	if _, err := os.Stat(stored.LocalPath); err != nil {
+		t.Fatalf("Stat(downloaded) error = %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunMediaOpenFailsWithoutDescriptor(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "docs@g.us", Title: "Docs", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "docs@g.us",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Timestamp: time.Unix(1_700_200_000, 0),
+	}, []store.MediaMetadata{{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		DownloadState: "remote",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(Environment{
+		Store:  db,
+		Config: config.Config{FileOpenerCommand: "true {path}"},
+	}, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("run media open exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "cannot be fetched") {
+		t.Fatalf("stderr = %q, want missing descriptor error", stderr.String())
+	}
+}
+
+func TestRunMediaOpenFailsWhenUnpairedForRemoteOnlyMedia(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "docs@g.us", Title: "Docs", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		ChatJID:   "docs@g.us",
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Timestamp: time.Unix(1_700_200_000, 0),
+	}, []store.MediaMetadata{{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		DownloadState: "remote",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+	if err := db.UpsertMediaMetadataWithDownload(ctx, store.MediaMetadata{
+		MessageID:     "m-1",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		DownloadState: "remote",
+		UpdatedAt:     time.Unix(1_700_200_000, 0),
+	}, &store.MediaDownloadDescriptor{
+		MessageID:  "m-1",
+		Kind:       "document",
+		DirectPath: "/v/t62.7118-24/example",
+		MediaKey:   []byte("media-key"),
+		FileLength: 32,
+		UpdatedAt:  time.Unix(1_700_200_000, 0),
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadataWithDownload() error = %v", err)
+	}
+
+	sessionOpened := false
+	env := Environment{
+		Store: db,
+		Config: config.Config{
+			FileOpenerCommand: "true {path}",
+		},
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			sessionOpened = true
+			return &fakeLiveWhatsAppSession{}, nil
+		},
+		CheckWhatsAppSession: func(context.Context, string) (WhatsAppSessionStatus, error) {
+			return WhatsAppSessionStatus{Label: "not paired", Paired: false}, nil
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("run media open exit = %d, want 1", code)
+	}
+	if sessionOpened {
+		t.Fatalf("session should not open for unpaired download")
+	}
+	if !strings.Contains(stderr.String(), "WhatsApp is not paired") {
+		t.Fatalf("stderr = %q, want unpaired error", stderr.String())
+	}
+}
+
+func TestRunExportChatWritesMarkdownFile(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	chat := store.Chat{ID: "chat-1", JID: "project@g.us", Title: "Project", Kind: "group"}
+	if err := db.UpsertChat(ctx, chat); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	base := time.Unix(1_700_300_000, 0)
+	if err := db.AddMessage(ctx, store.Message{
+		ID:        "m-1",
+		ChatID:    chat.ID,
+		ChatJID:   chat.JID,
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "Hello from Alice\nwith details",
+		Timestamp: base,
+	}); err != nil {
+		t.Fatalf("AddMessage(m-1) error = %v", err)
+	}
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf"), 0o644); err != nil {
+		t.Fatalf("WriteFile(attachment) error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, store.Message{
+		ID:              "m-2",
+		ChatID:          chat.ID,
+		ChatJID:         chat.JID,
+		Sender:          "me",
+		SenderJID:       "me@s.whatsapp.net",
+		Timestamp:       base.Add(time.Minute),
+		IsOutgoing:      true,
+		Status:          "failed",
+		QuotedMessageID: "m-1",
+		QuotedRemoteID:  "remote-1",
+	}, []store.MediaMetadata{{
+		MessageID:     "m-2",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		LocalPath:     attachmentPath,
+		DownloadState: "downloaded",
+		UpdatedAt:     base.Add(time.Minute),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia(m-2) error = %v", err)
+	}
+
+	downloadsDir := filepath.Join(t.TempDir(), "downloads")
+	env := Environment{
+		Store: db,
+		Config: config.Config{
+			DownloadsDir: downloadsDir,
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"export", "chat", chat.JID}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run export chat exit = %d, stderr = %q", code, stderr.String())
+	}
+	exportPath := strings.TrimSpace(stdout.String())
+	if exportPath == "" {
+		t.Fatalf("stdout = %q, want export path", stdout.String())
+	}
+	if !strings.HasPrefix(exportPath, downloadsDir+string(os.PathSeparator)) {
+		t.Fatalf("export path = %q, want under %q", exportPath, downloadsDir)
+	}
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("ReadFile(export) error = %v", err)
+	}
+	content := string(data)
+	firstHeader := "## " + base.Format("2006-01-02 15:04:05") + " Alice"
+	secondHeader := "## " + base.Add(time.Minute).Format("2006-01-02 15:04:05") + " Me"
+	for _, want := range []string{
+		"# Vimwhat Chat Export",
+		"- Chat: Project",
+		"- JID: `project@g.us`",
+		"- Scope: local SQLite history only",
+		firstHeader,
+		"Hello from Alice",
+		secondHeader,
+		"Status: failed",
+		"Reply: Alice: Hello from Alice",
+		"Attachment: report.pdf (application/pdf, downloaded)",
+		"Local file: `" + attachmentPath + "`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("export content missing %q in:\n%s", want, content)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunExportChatHandlesEmptyAndMissingChats(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ctx := context.Background()
+	if err := db.UpsertChat(ctx, store.Chat{ID: "chat-1", JID: "empty@g.us", Title: "Empty", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	downloadsDir := filepath.Join(t.TempDir(), "downloads")
+	env := Environment{
+		Store: db,
+		Config: config.Config{
+			DownloadsDir: downloadsDir,
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run(env, []string{"export", "chat", "empty@g.us"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run export chat exit = %d, stderr = %q", code, stderr.String())
+	}
+	exportPath := strings.TrimSpace(stdout.String())
+	data, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("ReadFile(export) error = %v", err)
+	}
+	if !strings.Contains(string(data), "_No messages exported._") {
+		t.Fatalf("export content = %q, want empty marker", string(data))
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(env, []string{"export", "chat", "missing@g.us"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("run export chat missing exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), `chat "missing@g.us" not found`) {
+		t.Fatalf("stderr = %q, want missing chat error", stderr.String())
+	}
+}
+
 func TestRenderTerminalQRRejectsEmptyCode(t *testing.T) {
 	var out bytes.Buffer
 	if err := renderTerminalQR(&out, " "); err == nil {

@@ -198,6 +198,105 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChatByJIDMessageByIDAndListAllMessages(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chat := Chat{ID: "chat-1", JID: "project@g.us", Title: "Project", Kind: "group"}
+	if err := db.UpsertChat(ctx, chat); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	base := time.Unix(1_700_100_000, 0)
+	if err := db.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    chat.ID,
+		ChatJID:   chat.JID,
+		Sender:    "Alice",
+		SenderJID: "alice@s.whatsapp.net",
+		Body:      "First line\nSecond line",
+		Timestamp: base,
+	}); err != nil {
+		t.Fatalf("AddMessage(m-1) error = %v", err)
+	}
+	if err := db.AddMessageWithMedia(ctx, Message{
+		ID:         "m-2",
+		RemoteID:   "remote-2",
+		ChatID:     chat.ID,
+		ChatJID:    chat.JID,
+		Sender:     "me",
+		SenderJID:  "me@s.whatsapp.net",
+		Timestamp:  base.Add(time.Minute),
+		IsOutgoing: true,
+		Status:     "failed",
+	}, []MediaMetadata{{
+		MessageID:     "m-2",
+		MIMEType:      "application/pdf",
+		FileName:      "report.pdf",
+		LocalPath:     "/tmp/report.pdf",
+		DownloadState: "downloaded",
+		UpdatedAt:     base.Add(time.Minute),
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia(m-2) error = %v", err)
+	}
+	if err := db.UpsertReaction(ctx, Reaction{
+		MessageID:  "m-2",
+		SenderJID:  "alice@s.whatsapp.net",
+		Emoji:      "👍",
+		Timestamp:  base.Add(2 * time.Minute),
+		UpdatedAt:  base.Add(2 * time.Minute),
+		IsOutgoing: false,
+	}); err != nil {
+		t.Fatalf("UpsertReaction() error = %v", err)
+	}
+
+	gotChat, ok, err := db.ChatByJID(ctx, chat.JID)
+	if err != nil {
+		t.Fatalf("ChatByJID() error = %v", err)
+	}
+	if !ok || gotChat.ID != chat.ID || gotChat.JID != chat.JID {
+		t.Fatalf("ChatByJID() = %+v ok=%v", gotChat, ok)
+	}
+
+	gotMessage, ok, err := db.MessageByID(ctx, "m-2")
+	if err != nil {
+		t.Fatalf("MessageByID() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("MessageByID() ok=false, want true")
+	}
+	if gotMessage.RemoteID != "remote-2" || gotMessage.Status != "failed" {
+		t.Fatalf("MessageByID() = %+v, want remote/status preserved", gotMessage)
+	}
+	if len(gotMessage.Media) != 1 || gotMessage.Media[0].FileName != "report.pdf" {
+		t.Fatalf("MessageByID().Media = %+v, want report.pdf", gotMessage.Media)
+	}
+	if len(gotMessage.Reactions) != 1 || gotMessage.Reactions[0].Emoji != "👍" {
+		t.Fatalf("MessageByID().Reactions = %+v, want thumbs up", gotMessage.Reactions)
+	}
+
+	all, err := db.ListAllMessages(ctx, chat.ID)
+	if err != nil {
+		t.Fatalf("ListAllMessages() error = %v", err)
+	}
+	if len(all) != 2 || all[0].ID != "m-1" || all[1].ID != "m-2" {
+		t.Fatalf("ListAllMessages() = %+v, want m-1,m-2", all)
+	}
+
+	if _, ok, err := db.ChatByJID(ctx, "missing@g.us"); err != nil || ok {
+		t.Fatalf("ChatByJID(missing) ok=%v err=%v, want false,nil", ok, err)
+	}
+	if _, ok, err := db.MessageByID(ctx, "missing"); err != nil || ok {
+		t.Fatalf("MessageByID(missing) ok=%v err=%v, want false,nil", ok, err)
+	}
+}
+
 func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))

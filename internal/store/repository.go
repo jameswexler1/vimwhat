@@ -110,6 +110,57 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 	return chats, nil
 }
 
+func (s *Store) ChatByJID(ctx context.Context, jid string) (Chat, bool, error) {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return Chat{}, false, nil
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT
+			c.id,
+			c.jid,
+			c.title,
+			c.title_source,
+			c.kind,
+			c.unread_count,
+			c.pinned,
+			c.muted,
+			c.last_message_at,
+			COALESCE((
+					SELECT CASE
+						WHEN trim(m.body) <> '' THEN m.body
+						ELSE COALESCE((
+							SELECT COALESCE(NULLIF(mm.file_name, ''), NULLIF(mm.mime_type, ''), 'media')
+							FROM media_metadata mm
+							WHERE mm.message_id = m.id
+							ORDER BY mm.file_name ASC
+							LIMIT 1
+						), '')
+				END
+					FROM messages m
+					WHERE m.chat_id = c.id
+						AND m.deleted_at = 0
+						AND `+renderableMessageWhereSQL+`
+					ORDER BY m.timestamp_unix DESC, m.id DESC
+					LIMIT 1
+				), '') AS last_preview,
+			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
+		FROM chats c
+		LEFT JOIN drafts d ON d.chat_id = c.id
+		WHERE c.jid = ?
+	`, jid)
+
+	chat, err := scanChat(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Chat{}, false, nil
+		}
+		return Chat{}, false, fmt.Errorf("load chat for jid %s: %w", jid, err)
+	}
+	return chat, true, nil
+}
+
 func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]Message, error) {
 	if chatID == "" {
 		return nil, nil
@@ -149,6 +200,72 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 		messages = append(messages, message)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate messages: %w", err)
+	}
+
+	return s.attachMessageDetails(ctx, messages)
+}
+
+func (s *Store) MessageByID(ctx context.Context, id string) (Message, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Message{}, false, nil
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
+		FROM messages m
+		WHERE m.id = ?
+			AND m.deleted_at = 0
+			AND `+renderableMessageWhereSQL+`
+	`, id)
+
+	message, err := scanMessage(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Message{}, false, nil
+		}
+		return Message{}, false, fmt.Errorf("load message %s: %w", id, err)
+	}
+
+	messages, err := s.attachMessageDetails(ctx, []Message{message})
+	if err != nil {
+		return Message{}, false, err
+	}
+	return messages[0], true, nil
+}
+
+func (s *Store) ListAllMessages(ctx context.Context, chatID string) ([]Message, error) {
+	if chatID == "" {
+		return nil, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason
+		FROM messages m
+		WHERE m.chat_id = ?
+			AND m.deleted_at = 0
+			AND `+renderableMessageWhereSQL+`
+		ORDER BY m.timestamp_unix ASC, m.id ASC
+	`, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("list all messages for %s: %w", chatID, err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message: %w", err)
+		}
+		messages = append(messages, message)
+	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}

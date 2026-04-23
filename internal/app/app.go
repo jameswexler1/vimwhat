@@ -104,9 +104,9 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 	case "logout":
 		return runLogout(env, stdout, stderr)
 	case "media":
-		return runMedia(args[1:], stderr)
+		return runMedia(env, args[1:], stdout, stderr)
 	case "export":
-		return runExport(args[1:], stderr)
+		return runExport(env, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "vimwhat: unknown command %q\n\n", args[0])
 		printUsage(stderr)
@@ -1706,26 +1706,6 @@ func pendingOutgoingMessage(outgoing ui.OutgoingMessage) store.Message {
 	}
 	message.Media = mediaForOutgoingMessage(message.ID, outgoing.Attachments, now)
 	return message
-}
-
-func runMedia(args []string, stderr io.Writer) int {
-	if len(args) < 2 || args[0] != "open" {
-		fmt.Fprintln(stderr, "usage: vimwhat media open <message-id>")
-		return 1
-	}
-
-	fmt.Fprintf(stderr, "vimwhat: media open is not implemented yet for message %q\n", args[1])
-	return 1
-}
-
-func runExport(args []string, stderr io.Writer) int {
-	if len(args) < 2 || args[0] != "chat" {
-		fmt.Fprintln(stderr, "usage: vimwhat export chat <jid>")
-		return 1
-	}
-
-	fmt.Fprintf(stderr, "vimwhat: export chat is not implemented yet for chat %q\n", args[1])
-	return 1
 }
 
 func runDemo(env Environment, args []string, stdout, stderr io.Writer) int {
