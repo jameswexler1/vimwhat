@@ -256,10 +256,14 @@ func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 	}
 }
 
-func TestLiveAttachmentSendBlockedAndPreservesDraftAndAttachment(t *testing.T) {
-	var persisted bool
-	var savedChatID string
-	var savedBody string
+func TestLiveAttachmentSendQueuesAndClearsComposerState(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(attachmentPath, []byte("image-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var sent OutgoingMessage
+	var cleared bool
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -267,35 +271,130 @@ func TestLiveAttachmentSendBlockedAndPreservesDraftAndAttachment(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		ConnectionState:  ConnectionOnline,
-		BlockAttachments: true,
-		PersistMessage: func(OutgoingMessage) (store.Message, error) {
-			persisted = true
-			return store.Message{}, nil
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			sent = outgoing
+			return store.Message{
+				ID:         "local-1",
+				ChatID:     outgoing.ChatID,
+				Sender:     "me",
+				Body:       outgoing.Body,
+				IsOutgoing: true,
+				Status:     "sending",
+				Media: []store.MediaMetadata{{
+					MessageID:     "local-1",
+					LocalPath:     outgoing.Attachments[0].LocalPath,
+					FileName:      outgoing.Attachments[0].FileName,
+					MIMEType:      outgoing.Attachments[0].MIMEType,
+					SizeBytes:     outgoing.Attachments[0].SizeBytes,
+					DownloadState: "downloaded",
+				}},
+			}, nil
 		},
 		SaveDraft: func(chatID, body string) error {
-			savedChatID = chatID
-			savedBody = body
+			cleared = chatID == "chat-1" && body == ""
 			return nil
 		},
 	})
 	model.mode = ModeInsert
 	model.composer = "caption"
-	model.attachments = []Attachment{{LocalPath: "/tmp/photo.jpg", FileName: "photo.jpg"}}
+	model.attachments = []Attachment{{
+		LocalPath:     attachmentPath,
+		FileName:      "photo.jpg",
+		MIMEType:      "image/jpeg",
+		SizeBytes:     2048,
+		DownloadState: "local_pending",
+	}}
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if !cleared {
+		t.Fatal("draft was not cleared after attachment send")
+	}
+	if sent.Body != "caption" || len(sent.Attachments) != 1 || sent.Attachments[0].LocalPath != attachmentPath {
+		t.Fatalf("sent outgoing = %+v, want caption plus attachment", sent)
+	}
+	if got.composer != "" || len(got.attachments) != 0 {
+		t.Fatalf("composer/attachments = %q/%+v, want cleared after queue", got.composer, got.attachments)
+	}
+	if len(got.messagesByChat["chat-1"]) != 1 || len(got.messagesByChat["chat-1"][0].Media) != 1 {
+		t.Fatalf("messages after attachment send = %+v", got.messagesByChat["chat-1"])
+	}
+	if !strings.Contains(got.status, "queued") {
+		t.Fatalf("status = %q, want queued status", got.status)
+	}
+}
+
+func TestAudioAttachmentCaptionValidationPreventsSend(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(attachmentPath, []byte("audio-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	var persisted bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
+			persisted = true
+			return store.Message{}, nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "caption"
+	model.attachments = []Attachment{{
+		LocalPath: attachmentPath,
+		FileName:  "voice.ogg",
+		MIMEType:  "audio/ogg",
+	}}
 
 	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
 	if persisted {
-		t.Fatal("PersistMessage was called for blocked live attachment send")
-	}
-	if savedChatID != "chat-1" || savedBody != "caption" {
-		t.Fatalf("saved draft = (%q, %q), want caption", savedChatID, savedBody)
+		t.Fatal("PersistMessage was called for invalid audio caption send")
 	}
 	if got.composer != "caption" || len(got.attachments) != 1 {
 		t.Fatalf("composer/attachments = %q/%+v, want preserved", got.composer, got.attachments)
 	}
-	if !strings.Contains(got.status, "attachment send is not implemented") {
-		t.Fatalf("status = %q, want attachment send blocked", got.status)
+	if !strings.Contains(got.status, "do not support captions") {
+		t.Fatalf("status = %q, want audio caption validation error", got.status)
+	}
+}
+
+func TestMissingAttachmentValidationPreventsSend(t *testing.T) {
+	var persisted bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		PersistMessage: func(OutgoingMessage) (store.Message, error) {
+			persisted = true
+			return store.Message{}, nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "caption"
+	model.attachments = []Attachment{{LocalPath: filepath.Join(t.TempDir(), "missing.pdf"), FileName: "missing.pdf", MIMEType: "application/pdf"}}
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if persisted {
+		t.Fatal("PersistMessage was called for missing attachment")
+	}
+	if !strings.Contains(got.status, "attachment file is missing") {
+		t.Fatalf("status = %q, want missing attachment error", got.status)
 	}
 }
 
@@ -2587,6 +2686,11 @@ func TestAttachmentPickerStagesAttachmentInComposer(t *testing.T) {
 }
 
 func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
 	var sentAttachments []Attachment
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -2616,7 +2720,7 @@ func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
 	})
 	model.mode = ModeInsert
 	model.attachments = []Attachment{{
-		LocalPath:     "/tmp/report.pdf",
+		LocalPath:     attachmentPath,
 		FileName:      "report.pdf",
 		MIMEType:      "application/pdf",
 		SizeBytes:     1024,

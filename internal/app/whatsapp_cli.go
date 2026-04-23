@@ -23,6 +23,7 @@ type WhatsAppLiveSession interface {
 	Connect(context.Context) error
 	GenerateMessageID() string
 	SendText(context.Context, whatsapp.TextSendRequest) (whatsapp.SendResult, error)
+	SendMedia(context.Context, whatsapp.MediaSendRequest) (whatsapp.SendResult, error)
 	MarkRead(context.Context, []whatsapp.ReadReceiptTarget) error
 	SendReaction(context.Context, whatsapp.ReactionSendRequest) (whatsapp.SendResult, error)
 	SendChatPresence(context.Context, string, bool) error

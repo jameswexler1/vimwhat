@@ -61,6 +61,7 @@ type fakeLiveWhatsAppSession struct {
 	historyRequests chan fakeHistoryRequest
 	downloads       chan fakeDownloadRequest
 	sends           chan fakeSendRequest
+	mediaSends      chan whatsapp.MediaSendRequest
 	readReceipts    chan []whatsapp.ReadReceiptTarget
 	reactions       chan whatsapp.ReactionSendRequest
 	presences       chan fakePresenceRequest
@@ -133,6 +134,24 @@ func (s *fakeLiveWhatsAppSession) GenerateMessageID() string {
 func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, request whatsapp.TextSendRequest) (whatsapp.SendResult, error) {
 	if s.sends != nil {
 		s.sends <- fakeSendRequest{request: request}
+	}
+	if s.sendErr != nil {
+		return whatsapp.SendResult{}, s.sendErr
+	}
+	if request.RemoteID == "" {
+		request.RemoteID = s.GenerateMessageID()
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, request.RemoteID),
+		RemoteID:  request.RemoteID,
+		Status:    "sent",
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (s *fakeLiveWhatsAppSession) SendMedia(_ context.Context, request whatsapp.MediaSendRequest) (whatsapp.SendResult, error) {
+	if s.mediaSends != nil {
+		s.mediaSends <- request
 	}
 	if s.sendErr != nil {
 		return whatsapp.SendResult{}, s.sendErr
@@ -262,7 +281,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -362,7 +381,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -599,6 +618,167 @@ func TestHandleTextSendRequestRejectsInvalidChatJID(t *testing.T) {
 	queued := <-result
 	if queued.Err == nil || !strings.Contains(queued.Err.Error(), "unsupported send chat jid") {
 		t.Fatalf("queued error = %v, want unsupported chat jid", queued.Err)
+	}
+}
+
+func TestHandleMediaSendRequestPersistsAndCompletes(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	attachmentPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(attachmentPath, []byte("image-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "remote-1",
+		mediaSends:  make(chan whatsapp.MediaSendRequest, 1),
+	}
+	result := make(chan mediaSendQueuedResult, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleMediaSendRequest(ctx, db, session, updates, nil, true, mediaSendRequest{
+		ChatID: chatJID,
+		Body:   "caption",
+		Attachments: []ui.Attachment{{
+			LocalPath:     attachmentPath,
+			FileName:      "photo.jpg",
+			MIMEType:      "image/jpeg",
+			DownloadState: "local_pending",
+		}},
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued media send error = %v", queued.Err)
+	}
+	request := <-session.mediaSends
+	if request.ChatJID != chatJID || request.Caption != "caption" || request.LocalPath != attachmentPath || request.RemoteID != "remote-1" {
+		t.Fatalf("media request = %+v, want jid/caption/path/remote id", request)
+	}
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if len(messages) != 1 || messages[0].ID != queued.Message.ID || messages[0].Status != "sent" || len(messages[0].Media) != 1 {
+		t.Fatalf("stored messages = %+v, want one sent media message", messages)
+	}
+	if messages[0].Media[0].LocalPath != attachmentPath || messages[0].Media[0].DownloadState != "downloaded" {
+		t.Fatalf("stored media = %+v, want local downloaded attachment", messages[0].Media[0])
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "attachment")
+	})
+}
+
+func TestHandleMediaSendRequestFailureMarksFailedAndRestoresCaptionDraft(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
+	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID: "remote-1",
+		sendErr:     errors.New("boom"),
+		mediaSends:  make(chan whatsapp.MediaSendRequest, 1),
+	}
+	result := make(chan mediaSendQueuedResult, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleMediaSendRequest(ctx, db, session, updates, nil, true, mediaSendRequest{
+		ChatID: chatJID,
+		Body:   "retry caption",
+		Attachments: []ui.Attachment{{
+			LocalPath: attachmentPath,
+			FileName:  "report.pdf",
+			MIMEType:  "application/pdf",
+		}},
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued media send error = %v", queued.Err)
+	}
+	<-session.mediaSends
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if messages[0].Status != "failed" || len(messages[0].Media) != 1 {
+		t.Fatalf("stored failed message = %+v", messages)
+	}
+	if messages[0].Media[0].LocalPath != attachmentPath || messages[0].Media[0].DownloadState != "downloaded" {
+		t.Fatalf("stored media = %+v, want preserved local attachment", messages[0].Media[0])
+	}
+	draft, err := db.Draft(ctx, chatJID)
+	if err != nil {
+		t.Fatalf("Draft() error = %v", err)
+	}
+	if draft != "retry caption" {
+		t.Fatalf("draft = %q, want failed caption restored", draft)
+	}
+	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "send failed")
+	})
+	if !strings.Contains(update.Status, "boom") {
+		t.Fatalf("failure status = %q, want protocol error", update.Status)
+	}
+}
+
+func TestHandleMediaSendRequestRejectsAudioCaption(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	attachmentPath := filepath.Join(t.TempDir(), "voice.ogg")
+	if err := os.WriteFile(attachmentPath, []byte("audio-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	result := make(chan mediaSendQueuedResult, 1)
+	handleMediaSendRequest(ctx, db, &fakeLiveWhatsAppSession{}, make(chan ui.LiveUpdate, 1), nil, true, mediaSendRequest{
+		ChatID: "12345@s.whatsapp.net",
+		Body:   "not allowed",
+		Attachments: []ui.Attachment{{
+			LocalPath: attachmentPath,
+			FileName:  "voice.ogg",
+			MIMEType:  "audio/ogg",
+		}},
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err == nil || !strings.Contains(queued.Err.Error(), "do not support captions") {
+		t.Fatalf("queued error = %v, want audio caption rejection", queued.Err)
+	}
+	messages, err := db.ListMessages(ctx, "12345@s.whatsapp.net", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("messages = %+v, want no stored media send", messages)
 	}
 }
 

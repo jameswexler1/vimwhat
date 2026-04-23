@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, plain text outbound send, protocol-backed read receipts, reactions, replies, quote-jump, and typing presence. The next major protocol gaps are media send and the remaining CLI surfaces.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, and typing presence. The next major gaps are live validation/polish of the new media-send path and the remaining CLI surfaces.
 
 ### Implemented now
 
@@ -13,10 +13,10 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, and `doctor` session status reporting.
-- Live read-only WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
+- Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
 - Protocol-backed remote media download for received images, videos, audio, and documents, using persisted WhatsApp download descriptors and cached local files.
-- Real plain text outbound send from the inline composer, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, and attachment sends still blocked until media upload exists.
+- Real outbound send from the inline composer for plain text plus one local attachment per message, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, captions for image/video/document sends, and audio-caption rejection before queueing.
 - Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, text replies with quoted metadata, quote-jump into loaded history, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
@@ -25,12 +25,11 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 ### In progress
 
-- Manual validation and polish of remote media download, plain text outbound send, and the new message interaction flows against real WhatsApp traffic.
-- Attachment upload/send design and implementation now that text send, replies, reactions, and read receipts are in place.
+- Manual validation and polish of remote media download, outbound text/media send, and the new message interaction flows against real WhatsApp traffic.
+- Follow-on UX around failed outgoing media retries, attachment draft persistence, and the remaining CLI surfaces.
 
 ### Not implemented yet
 
-- Media sends and attachment upload from the protocol layer.
 - `media open <message-id>` and `export chat <jid>` CLI subcommands.
 
 ## Summary
@@ -165,7 +164,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 2. Validate remote media download on live WhatsApp traffic.
 3. Validate real text send for plain text composer submissions against live direct and group chats.
 4. Validate protocol-backed read receipts, reactions, presence, and replies/quote-jump against real chats.
-5. Add attachment upload/send, then expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior exists.
+5. Validate attachment upload/send on real chats, then expose the remaining CLI surfaces (`media open`, `export chat`) once the underlying behavior is stable.
 
 ### Current protocol milestone
 
@@ -199,6 +198,14 @@ The remote media download milestone now has an implemented first pass:
 - Reuse existing TUI preview/open/save/audio flows once the file has a local path.
 - Suppress duplicate focused-message download requests while a download is already in flight.
 
+The attachment upload/send milestone now has an implemented first pass:
+
+- Queue live single-attachment sends separately from text sends while preserving the existing composer/staging flow.
+- Upload local image, video, audio, and document files through `whatsmeow` and send them with precomputed WhatsApp message IDs.
+- Persist outgoing media messages locally before upload with `sending` / `sent` / `failed` status transitions and file-backed media rows so preview/open/save keep working on failures.
+- Use the composer body as the caption for image, video, and document sends; reject audio captions before queueing.
+- Reuse quoted reply metadata for outgoing media messages so replied-to media sends carry the same context shape as text replies.
+
 The large-chat and title-correctness hardening milestone is implemented:
 
 - Add `title_source` to chat rows and only allow stronger title sources to replace weaker JID/placeholders.
@@ -216,7 +223,7 @@ The TUI stability and modal polish milestone is implemented:
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, and search clearing.
 
-The next protocol milestone is attachment upload/send after live validation of the completed text send, read receipt, reaction, reply, quote-jump, and typing-presence work.
+The next protocol milestone is live validation/polish of the completed media-send path, followed by the remaining CLI surfaces.
 
 ### Data model and lazy loading
 

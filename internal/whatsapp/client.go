@@ -55,6 +55,7 @@ type Adapter interface {
 	Logout(ctx context.Context) error
 	GenerateMessageID() string
 	SendText(ctx context.Context, request TextSendRequest) (SendResult, error)
+	SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error)
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
 	SendChatPresence(ctx context.Context, chatJID string, composing bool) error
@@ -523,18 +524,9 @@ func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendRes
 }
 
 func (c *Client) textMessage(body string, request TextSendRequest) *waE2E.Message {
-	quotedRemoteID := strings.TrimSpace(request.QuotedRemoteID)
-	if quotedRemoteID == "" {
+	contextInfo := c.quoteContextInfo(request.QuotedRemoteID, request.QuotedSenderJID, request.QuotedMessageBody)
+	if contextInfo == nil {
 		return &waE2E.Message{Conversation: proto.String(body)}
-	}
-	contextInfo := &waE2E.ContextInfo{
-		StanzaID: proto.String(quotedRemoteID),
-	}
-	if participant := c.quoteParticipant(request.QuotedSenderJID); participant != "" {
-		contextInfo.Participant = proto.String(participant)
-	}
-	if quotedBody := strings.TrimSpace(request.QuotedMessageBody); quotedBody != "" {
-		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(quotedBody)}
 	}
 	return &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
@@ -542,6 +534,23 @@ func (c *Client) textMessage(body string, request TextSendRequest) *waE2E.Messag
 			ContextInfo: contextInfo,
 		},
 	}
+}
+
+func (c *Client) quoteContextInfo(quotedRemoteID, quotedSenderJID, quotedMessageBody string) *waE2E.ContextInfo {
+	quotedRemoteID = strings.TrimSpace(quotedRemoteID)
+	if quotedRemoteID == "" {
+		return nil
+	}
+	contextInfo := &waE2E.ContextInfo{
+		StanzaID: proto.String(quotedRemoteID),
+	}
+	if participant := c.quoteParticipant(quotedSenderJID); participant != "" {
+		contextInfo.Participant = proto.String(participant)
+	}
+	if quotedBody := strings.TrimSpace(quotedMessageBody); quotedBody != "" {
+		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(quotedBody)}
+	}
+	return contextInfo
 }
 
 func (c *Client) quoteParticipant(senderJID string) string {

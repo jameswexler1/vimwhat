@@ -9,6 +9,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -124,6 +125,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	liveUpdates := make(chan ui.LiveUpdate, 64)
 	historyRequests := make(chan string, 16)
 	textSendRequests := make(chan textSendRequest, textSendQueueSize)
+	mediaSendRequests := make(chan mediaSendRequest, mediaSendQueueSize)
 	readReceiptRequests := make(chan readReceiptRequest, readReceiptQueueSize)
 	reactionRequests := make(chan reactionRequest, reactionQueueSize)
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
@@ -137,7 +139,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests)
 		}()
 	}
 	defer func() {
@@ -153,12 +155,35 @@ func runTUI(env Environment, stderr io.Writer) int {
 		Snapshot:             snapshot,
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
-		BlockAttachments:     liveEnabled,
 		RequireOnlineForSend: liveEnabled,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			if liveEnabled {
 				if len(outgoing.Attachments) > 0 {
-					return store.Message{}, fmt.Errorf("attachment send is not implemented yet")
+					waitCtx, cancel := context.WithTimeout(context.Background(), mediaSendQueueTimeout)
+					defer cancel()
+					result := make(chan mediaSendQueuedResult, 1)
+					request := mediaSendRequest{
+						Context:     waitCtx,
+						ChatID:      outgoing.ChatID,
+						Body:        outgoing.Body,
+						Attachments: slices.Clone(outgoing.Attachments),
+						Quote:       cloneMessagePtr(outgoing.Quote),
+						Result:      result,
+					}
+					select {
+					case mediaSendRequests <- request:
+					case <-waitCtx.Done():
+						return store.Message{}, fmt.Errorf("media send queue timed out")
+					default:
+						return store.Message{}, fmt.Errorf("media send request queue is full")
+					}
+
+					select {
+					case queued := <-result:
+						return queued.Message, queued.Err
+					case <-waitCtx.Done():
+						return store.Message{}, fmt.Errorf("media send queue timed out")
+					}
 				}
 				waitCtx, cancel := context.WithTimeout(context.Background(), textSendQueueTimeout)
 				defer cancel()
@@ -362,6 +387,9 @@ const (
 	textSendQueueSize       = 16
 	textSendQueueTimeout    = 5 * time.Second
 	textSendTimeout         = 90 * time.Second
+	mediaSendQueueSize      = 16
+	mediaSendQueueTimeout   = 5 * time.Second
+	mediaSendTimeout        = 10 * time.Minute
 	readReceiptQueueSize    = 16
 	readReceiptQueueTimeout = 5 * time.Second
 	readReceiptTimeout      = 30 * time.Second
@@ -384,6 +412,20 @@ type textSendRequest struct {
 }
 
 type textSendQueuedResult struct {
+	Message store.Message
+	Err     error
+}
+
+type mediaSendRequest struct {
+	Context     context.Context
+	ChatID      string
+	Body        string
+	Attachments []ui.Attachment
+	Quote       *store.Message
+	Result      chan<- mediaSendQueuedResult
+}
+
+type mediaSendQueuedResult struct {
 	Message store.Message
 	Err     error
 }
@@ -426,6 +468,7 @@ func runLiveWhatsApp(
 	updates chan<- ui.LiveUpdate,
 	historyRequests <-chan string,
 	textSendRequests <-chan textSendRequest,
+	mediaSendRequests <-chan mediaSendRequest,
 	readReceiptRequests <-chan readReceiptRequest,
 	reactionRequests <-chan reactionRequest,
 	presenceRequests <-chan presenceRequest,
@@ -550,6 +593,11 @@ func runLiveWhatsApp(
 				return
 			}
 			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-mediaSendRequests:
+			if !ok {
+				return
+			}
+			handleMediaSendRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
 		case request, ok := <-readReceiptRequests:
 			if !ok {
 				return
@@ -761,6 +809,187 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 		Refresh: true,
 		Status:  "sent message",
 	})
+}
+
+func handleMediaSendRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request mediaSendRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if request.Context != nil {
+		select {
+		case <-request.Context.Done():
+			return
+		default:
+		}
+	}
+	if db == nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("media send needs WhatsApp online"))
+		return
+	}
+	attachment, err := prepareLiveAttachmentForSend(request.Attachments)
+	if err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	body := strings.TrimSpace(request.Body)
+	if media.MediaKind(attachment.MIMEType, attachment.FileName) == media.KindAudio && body != "" {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("audio attachments do not support captions"))
+		return
+	}
+	chatJID, err := whatsapp.NormalizeSendChatJID(request.ChatID)
+	if err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	remoteID := strings.TrimSpace(live.GenerateMessageID())
+	if remoteID == "" {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("generate message id failed"))
+		return
+	}
+
+	now := time.Now()
+	message := store.Message{
+		ID:         whatsapp.LocalMessageID(chatJID, remoteID),
+		RemoteID:   remoteID,
+		ChatID:     chatJID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       body,
+		Timestamp:  now,
+		IsOutgoing: true,
+		Status:     "sending",
+		Media:      liveMediaForOutgoingMessage(whatsapp.LocalMessageID(chatJID, remoteID), []ui.Attachment{attachment}, now),
+	}
+	if request.Quote != nil {
+		message.QuotedMessageID = request.Quote.ID
+		message.QuotedRemoteID = request.Quote.RemoteID
+	}
+	if message.ID == "" {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("message id is required"))
+		return
+	}
+	if err := db.AddMessage(ctx, message); err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+
+	sendMediaQueuedResult(ctx, request, message, nil)
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote)
+		}()
+		return
+	}
+	completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote)
+}
+
+func sendMediaQueuedResult(ctx context.Context, request mediaSendRequest, message store.Message, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- mediaSendQueuedResult{Message: message, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, attachment ui.Attachment, quote *store.Message) {
+	sendCtx, cancel := context.WithTimeout(ctx, mediaSendTimeout)
+	defer cancel()
+	request := whatsapp.MediaSendRequest{
+		ChatJID:   message.ChatJID,
+		LocalPath: attachment.LocalPath,
+		FileName:  attachment.FileName,
+		MIMEType:  attachment.MIMEType,
+		Caption:   message.Body,
+		RemoteID:  message.RemoteID,
+	}
+	if quote != nil {
+		request.QuotedRemoteID = quote.RemoteID
+		request.QuotedSenderJID = quote.SenderJID
+		request.QuotedMessageBody = quote.Body
+	}
+	result, err := live.SendMedia(sendCtx, request)
+	if err != nil {
+		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		_ = db.SaveDraft(context.Background(), message.ChatID, message.Body)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("send failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "sent"
+	}
+	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  "sent attachment",
+	})
+}
+
+func prepareLiveAttachmentForSend(attachments []ui.Attachment) (ui.Attachment, error) {
+	if len(attachments) == 0 {
+		return ui.Attachment{}, fmt.Errorf("attachment is required")
+	}
+	if len(attachments) > 1 {
+		return ui.Attachment{}, fmt.Errorf("only one attachment per message is supported")
+	}
+	attachment := attachments[0]
+	localPath := strings.TrimSpace(attachment.LocalPath)
+	if localPath == "" {
+		return ui.Attachment{}, fmt.Errorf("attachment local path is required")
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return ui.Attachment{}, fmt.Errorf("stat attachment: %w", err)
+	}
+	if info.IsDir() {
+		return ui.Attachment{}, fmt.Errorf("attachment path is a directory")
+	}
+	if strings.TrimSpace(attachment.FileName) == "" {
+		attachment.FileName = info.Name()
+	}
+	if attachment.SizeBytes <= 0 {
+		attachment.SizeBytes = info.Size()
+	}
+	if strings.TrimSpace(attachment.MIMEType) == "" {
+		if guessed := mime.TypeByExtension(strings.ToLower(filepath.Ext(attachment.FileName))); guessed != "" {
+			attachment.MIMEType = guessed
+		} else {
+			attachment.MIMEType = "application/octet-stream"
+		}
+	}
+	attachment.LocalPath = localPath
+	attachment.DownloadState = "downloaded"
+	return attachment, nil
 }
 
 func handleReadReceiptRequest(

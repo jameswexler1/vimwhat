@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -1039,6 +1040,10 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if chatID == "" {
 			m.status = "no active chat"
 			m.mode = ModeNormal
+			return m, nil
+		}
+		if err := m.validateAttachmentsForSend(body); err != nil {
+			m.status = err.Error()
 			return m, nil
 		}
 		if len(m.attachments) > 0 && m.blockAttachments {
@@ -2967,6 +2972,38 @@ func (m *Model) stageAttachment(attachment Attachment) {
 	}
 	m.attachments = []Attachment{attachment}
 	m.status = fmt.Sprintf("attached %s", attachment.FileName)
+}
+
+func (m Model) validateAttachmentsForSend(body string) error {
+	if len(m.attachments) == 0 {
+		return nil
+	}
+	if len(m.attachments) > 1 {
+		return fmt.Errorf("only one attachment per message is supported")
+	}
+	attachment := m.attachments[0]
+	localPath := strings.TrimSpace(attachment.LocalPath)
+	if localPath == "" {
+		return fmt.Errorf("attachment local path is required")
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			name := strings.TrimSpace(attachment.FileName)
+			if name == "" {
+				name = localPath
+			}
+			return fmt.Errorf("attachment file is missing: %s", name)
+		}
+		return fmt.Errorf("stat attachment: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("attachment path is a directory")
+	}
+	if media.MediaKind(attachment.MIMEType, attachment.FileName) == media.KindAudio && body != "" {
+		return fmt.Errorf("audio attachments do not support captions")
+	}
+	return nil
 }
 
 func (m Model) mediaForLocalMessage(messageID string, attachments []Attachment) []store.MediaMetadata {

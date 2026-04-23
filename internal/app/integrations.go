@@ -304,6 +304,16 @@ func mediaForOutgoingMessage(messageID string, attachments []ui.Attachment, upda
 	return mediaItems
 }
 
+func liveMediaForOutgoingMessage(messageID string, attachments []ui.Attachment, updatedAt time.Time) []store.MediaMetadata {
+	mediaItems := mediaForOutgoingMessage(messageID, attachments, updatedAt)
+	for i := range mediaItems {
+		if strings.TrimSpace(mediaItems[i].LocalPath) != "" {
+			mediaItems[i].DownloadState = "downloaded"
+		}
+	}
+	return mediaItems
+}
+
 func splitCommandLine(input string) ([]string, error) {
 	var args []string
 	var current strings.Builder
