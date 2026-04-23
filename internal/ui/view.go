@@ -777,10 +777,12 @@ func (m Model) renderMessages(width, height int) string {
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
+		localCursor := clamp(m.messageCursor-start, 0, len(blocks)-1)
+		localScrollTop := localMessageViewportScrollTop(m.messageScrollTop, m.messageCursor, localCursor, len(blocks))
 		body = append(body, messageViewport(
 			blocks,
-			clamp(m.messageScrollTop-start, 0, len(blocks)-1),
-			clamp(m.messageCursor-start, 0, len(blocks)-1),
+			localScrollTop,
+			localCursor,
 			messageHeight,
 		)...)
 	}
@@ -793,6 +795,16 @@ func (m Model) renderMessages(width, height int) string {
 		body = append(body, padLines(strings.Split(clipLines(footer, footerHeight), "\n"), footerHeight)...)
 	}
 	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+}
+
+func localMessageViewportScrollTop(globalScrollTop, globalCursor, localCursor, blockCount int) int {
+	if blockCount <= 0 {
+		return 0
+	}
+	if globalScrollTop > globalCursor {
+		return clamp(localCursor+1, 0, blockCount-1)
+	}
+	return 0
 }
 
 func (m Model) visibleMessageRange(count, height int) (int, int) {

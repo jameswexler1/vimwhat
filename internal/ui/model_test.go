@@ -441,6 +441,47 @@ func TestLargeGroupChatScrollUpKeepsViewBounded(t *testing.T) {
 	}
 }
 
+func TestGroupChatScrollUpShowsOlderMessagesAboveCursor(t *testing.T) {
+	messages := make([]store.Message, 0, 40)
+	for i := 0; i < cap(messages); i++ {
+		messages = append(messages, store.Message{
+			ID:      fmt.Sprintf("m-%02d", i),
+			ChatID:  "chat-1",
+			ChatJID: "group@g.us",
+			Sender:  fmt.Sprintf("Member %02d", i%5),
+			Body:    fmt.Sprintf("group message %02d marker", i),
+		})
+	}
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": messages},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 24
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	model = updated.(Model)
+
+	if model.messageCursor != 38 {
+		t.Fatalf("messageCursor = %d, want 38 after one upward move", model.messageCursor)
+	}
+	view := stripANSI(model.renderMessages(90, 18))
+	olderLine := lineIndexContaining(view, "group message 37 marker")
+	cursorLine := lineIndexContaining(view, "group message 38 marker")
+	if cursorLine == -1 {
+		t.Fatalf("cursor message is not visible after scrolling up\n%s", view)
+	}
+	if olderLine == -1 || olderLine >= cursorLine {
+		t.Fatalf("older message should appear above cursor after scrolling up; older=%d cursor=%d\n%s", olderLine, cursorLine, view)
+	}
+}
+
 func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	searchCalled := false
 	model := NewModel(Options{
@@ -3779,6 +3820,18 @@ func assertViewWithinBounds(t *testing.T, model Model) {
 	for i, line := range lines {
 		if width := lipgloss.Width(line); width > model.width {
 			t.Fatalf("line %d width = %d, want <= %d", i+1, width, model.width)
+		}
+	}
+	if message, ok := model.focusedMessage(); ok {
+		body := strings.TrimSpace(sanitizeDisplayLine(firstLine(message.Body)))
+		if body != "" {
+			prefix := body
+			if len(prefix) > 24 {
+				prefix = prefix[:24]
+			}
+			if !strings.Contains(view, prefix) {
+				t.Fatalf("cursor message %q is not visible in rendered view\n%s", prefix, view)
+			}
 		}
 	}
 }
