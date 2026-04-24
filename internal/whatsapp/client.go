@@ -63,6 +63,7 @@ type Adapter interface {
 	Login(ctx context.Context, handleQR QRHandler) error
 	Logout(ctx context.Context) error
 	GenerateMessageID() string
+	CanonicalChatJID(ctx context.Context, chatJID string) (string, error)
 	SendText(ctx context.Context, request TextSendRequest) (SendResult, error)
 	SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error)
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
@@ -1049,6 +1050,7 @@ type ConnectionEvent struct {
 type ChatEvent struct {
 	ID            string
 	JID           string
+	AliasIDs      []string
 	Title         string
 	TitleSource   string
 	Kind          string
@@ -1062,6 +1064,7 @@ type ChatEvent struct {
 
 type ContactEvent struct {
 	JID         string
+	ChatID      string
 	DisplayName string
 	NotifyName  string
 	Phone       string

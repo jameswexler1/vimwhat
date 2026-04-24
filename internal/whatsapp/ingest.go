@@ -132,9 +132,13 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 		if title == "" {
 			return ApplyResult{}, nil
 		}
+		chatID := strings.TrimSpace(event.Contact.ChatID)
+		if chatID == "" {
+			chatID = event.Contact.JID
+		}
 		_, err := i.Store.UpdateChatTitleIfExists(ctx, store.Chat{
-			ID:          event.Contact.JID,
-			JID:         event.Contact.JID,
+			ID:          chatID,
+			JID:         chatID,
 			Title:       title,
 			TitleSource: source,
 			Kind:        "direct",

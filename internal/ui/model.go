@@ -53,6 +53,7 @@ type LiveUpdate struct {
 	HistoryChatID   string
 	HistoryMessages int
 	ReadChatID      string
+	PreferredChatID string
 	Presence        PresenceUpdate
 }
 
@@ -277,6 +278,7 @@ type Model struct {
 	reloadInFlight           bool
 	refreshQueued            bool
 	refreshDebouncePending   bool
+	refreshPreferredChatID   string
 	blockSending             bool
 	blockAttachments         bool
 	requireOnlineForSend     bool
@@ -460,6 +462,9 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	if update.ReadChatID != "" && m.readReceiptInflight != nil {
 		delete(m.readReceiptInflight, update.ReadChatID)
 	}
+	if strings.TrimSpace(update.PreferredChatID) != "" {
+		m.refreshPreferredChatID = strings.TrimSpace(update.PreferredChatID)
+	}
 	if update.Presence.ChatID != "" {
 		presence := update.Presence
 		if m.presenceByChat == nil {
@@ -525,6 +530,9 @@ func (m Model) reloadSnapshotCmd() tea.Cmd {
 		return nil
 	}
 	activeChatID := m.currentChat().ID
+	if strings.TrimSpace(m.refreshPreferredChatID) != "" {
+		activeChatID = strings.TrimSpace(m.refreshPreferredChatID)
+	}
 	reload := m.reloadSnapshot
 	limit := m.messageLimitForChat(activeChatID)
 	return func() tea.Msg {
@@ -551,6 +559,7 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
 	}
+	m.refreshPreferredChatID = ""
 	if m.focus == FocusMessages {
 		m.handleCurrentChatActivated()
 	}

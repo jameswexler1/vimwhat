@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering, first-class sticker receive/render/download behavior, desktop notifications, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering, first-class sticker receive/render/download behavior, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -24,6 +24,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Cross-platform desktop notifications for new incoming messages in inactive, unmuted chats, with native Linux/macOS/Windows backends, safe command override support, notification preview formatting for media-only messages, and backend diagnostics in `doctor`.
 - Retry/resend UX for failed outgoing media rows in the TUI via `R` and `:retry-message`, keeping the original failed row in chat and queueing a brand-new send attempt when the local attachment file still exists.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
+- Direct-chat identity hardening for WhatsApp PN/LID aliases: canonicalize mapped 1:1 chats onto a single chat ID, merge already-split alias rows/messages/drafts/history cursors in SQLite, and preserve the active conversation when a live merge remaps the selected chat.
 - Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
 - Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, non-redundant mode prompts, search match counts in the status bar, and `Esc` clearing active search state from both search and normal mode.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
@@ -224,6 +225,7 @@ The large-chat and title-correctness hardening milestone is implemented:
 - Add `title_source` to chat rows and only allow stronger title sources to replace weaker JID/placeholders.
 - Treat group subjects from history sync, joined-group metadata, and group-info events as authoritative.
 - Ingest contact and push-name updates without creating empty chats or erasing better saved names.
+- Canonicalize direct chats onto the mapped WhatsApp LID identity when PN/LID aliases are known, and merge split alias threads so one person cannot appear as multiple chats after history sync or mixed-device traffic.
 - Refresh joined group/contact metadata after the live WhatsApp connection comes online, without blocking TUI startup.
 - Display neutral group placeholders when old rows contain phone-like/JID-derived group titles.
 - Debounce live DB snapshot refreshes and bound message render windows for chats with hundreds of loaded messages.

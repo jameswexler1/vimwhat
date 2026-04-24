@@ -28,7 +28,7 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 		contacts, err := c.client.Store.Contacts.GetAllContacts(ctx)
 		if err == nil {
 			for jid, info := range contacts {
-				if event, ok := cachedContactEvent(jid, info); ok {
+				if event, ok := c.cachedContactEvent(ctx, jid, info); ok {
 					out = append(out, event)
 				}
 			}
@@ -40,7 +40,7 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 	return out, groupErr
 }
 
-func cachedContactEvent(jid types.JID, info types.ContactInfo) (Event, bool) {
+func (c *Client) cachedContactEvent(ctx context.Context, jid types.JID, info types.ContactInfo) (Event, bool) {
 	if jid.IsEmpty() {
 		return Event{}, false
 	}
@@ -53,6 +53,10 @@ func cachedContactEvent(jid types.JID, info types.ContactInfo) (Event, bool) {
 	if phone == "" && jid.Server == types.DefaultUserServer {
 		phone = jid.User
 	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, jid, contactPhoneJID(phone))
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(jid)
+	}
 	source := store.ChatTitleSourceContactDisplay
 	if displayName == "" {
 		source = store.ChatTitleSourcePushName
@@ -61,6 +65,7 @@ func cachedContactEvent(jid types.JID, info types.ContactInfo) (Event, bool) {
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
 			JID:         jid.String(),
+			ChatID:      canonicalChatJID.String(),
 			DisplayName: displayName,
 			NotifyName:  notifyName,
 			Phone:       phone,

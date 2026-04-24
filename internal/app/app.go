@@ -122,6 +122,9 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 }
 
 func runTUI(env Environment, stderr io.Writer) int {
+	if err := runPreStartCanonicalRepair(context.Background(), env); err != nil {
+		fmt.Fprintf(stderr, "vimwhat: direct chat repair: %v\n", err)
+	}
 	snapshot, err := env.Store.LoadSnapshot(context.Background(), 200)
 	if err != nil {
 		fmt.Fprintf(stderr, "vimwhat: load snapshot: %v\n", err)
@@ -617,6 +620,7 @@ func runLiveWhatsApp(
 	metadataResults := refreshChatMetadata(ctx, live)
 	activeChatID := ""
 	online := true
+	pendingPreferredChatID := ""
 	for {
 		select {
 		case event, ok := <-events:
@@ -624,10 +628,24 @@ func runLiveWhatsApp(
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOffline})
 				return
 			}
+			activeChatID = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, visibleChatUpdates, activeChatID)
 			if event.Kind == whatsapp.EventConnectionState {
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
 				continue
+			}
+			if event.Kind == whatsapp.EventChatUpsert {
+				mergedAliases, err := mergeEventChatAliases(ctx, env.Store, event.Chat)
+				if err != nil {
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Status: fmt.Sprintf("chat merge failed: %s", shortStatusError(err)),
+					})
+					continue
+				}
+				if activeChatID != "" && slices.Contains(mergedAliases, activeChatID) {
+					activeChatID = event.Chat.ID
+					pendingPreferredChatID = event.Chat.ID
+				}
 			}
 			if event.Kind == whatsapp.EventPresenceUpdate {
 				sendLiveUpdate(ctx, updates, liveUpdateForPresenceEvent(event.Presence))
@@ -664,7 +682,9 @@ func runLiveWhatsApp(
 					Status:          historyStatusLine(event.History),
 					HistoryChatID:   event.History.ChatID,
 					HistoryMessages: event.History.Messages,
+					PreferredChatID: pendingPreferredChatID,
 				})
+				pendingPreferredChatID = ""
 				continue
 			}
 			if isHistoricalImportEvent(event) {
@@ -673,7 +693,11 @@ func runLiveWhatsApp(
 			if note, ok := buildNotification(context.Background(), env.Store, activeChatID, result); ok {
 				queueNotification(notificationJobs, note)
 			}
-			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+				Refresh:         true,
+				PreferredChatID: pendingPreferredChatID,
+			})
+			pendingPreferredChatID = ""
 		case chatID, ok := <-historyRequests:
 			if !ok {
 				return
@@ -801,6 +825,40 @@ func refreshChatMetadata(ctx context.Context, live WhatsAppLiveSession) <-chan m
 	return results
 }
 
+func drainPendingLiveViewState(
+	ctx context.Context,
+	avatarJobs chan<- avatarRefreshRequest,
+	avatarInflight map[string]bool,
+	activeChatUpdates <-chan string,
+	visibleChatUpdates <-chan []string,
+	activeChatID string,
+) string {
+	for {
+		select {
+		case chatID, ok := <-activeChatUpdates:
+			if !ok {
+				activeChatUpdates = nil
+				continue
+			}
+			activeChatID = chatID
+			enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+		case chatIDs, ok := <-visibleChatUpdates:
+			if !ok {
+				visibleChatUpdates = nil
+				continue
+			}
+			if activeChatID != "" {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, activeChatID)
+			}
+			for _, chatID := range chatIDs {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+			}
+		default:
+			return activeChatID
+		}
+	}
+}
+
 func handleTextSendRequest(
 	ctx context.Context,
 	db *store.Store,
@@ -838,7 +896,7 @@ func handleTextSendRequest(
 		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("text body is required"))
 		return
 	}
-	chatJID, err := whatsapp.NormalizeSendChatJID(request.ChatID)
+	chatJID, err := canonicalizeLiveChatID(ctx, live, request.ChatID)
 	if err != nil {
 		sendTextQueuedResult(ctx, request, store.Message{}, err)
 		return
@@ -979,7 +1037,7 @@ func handleMediaSendRequest(
 		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("audio attachments do not support captions"))
 		return
 	}
-	chatJID, err := whatsapp.NormalizeSendChatJID(request.ChatID)
+	chatJID, err := canonicalizeLiveChatID(ctx, live, request.ChatID)
 	if err != nil {
 		sendMediaQueuedResult(ctx, request, store.Message{}, err)
 		return
@@ -1335,7 +1393,8 @@ func handleReactionRequest(
 	if chatJID == "" {
 		chatJID = strings.TrimSpace(request.Message.ChatID)
 	}
-	if _, err := whatsapp.NormalizeSendChatJID(chatJID); err != nil {
+	chatJID, err := canonicalizeLiveChatID(ctx, live, chatJID)
+	if err != nil {
 		sendReactionResult(ctx, request, err)
 		return
 	}
@@ -1411,18 +1470,26 @@ func handlePresenceRequest(ctx context.Context, live WhatsAppLiveSession, online
 	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
 		return
 	}
+	chatID, err := canonicalizeLiveChatID(ctx, live, request.ChatID)
+	if err != nil {
+		return
+	}
 	presenceCtx, cancel := context.WithTimeout(ctx, presenceSendTimeout)
 	defer cancel()
-	_ = live.SendChatPresence(presenceCtx, request.ChatID, request.Composing)
+	_ = live.SendChatPresence(presenceCtx, chatID, request.Composing)
 }
 
 func handlePresenceSubscribeRequest(ctx context.Context, live WhatsAppLiveSession, online bool, request presenceSubscribeRequest) {
 	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
 		return
 	}
+	chatID, err := canonicalizeLiveChatID(ctx, live, request.ChatID)
+	if err != nil {
+		return
+	}
 	presenceCtx, cancel := context.WithTimeout(ctx, presenceSendTimeout)
 	defer cancel()
-	_ = live.SubscribePresence(presenceCtx, request.ChatID)
+	_ = live.SubscribePresence(presenceCtx, chatID)
 }
 
 func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {
@@ -1984,6 +2051,12 @@ func handleHistoryRequest(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history fetch needs an active chat"})
 		return
 	}
+	canonicalChatID, err := canonicalizeHistoryChatID(ctx, live, chatID)
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: fmt.Sprintf("history chat failed: %s", shortStatusError(err))})
+		return
+	}
+	chatID = canonicalChatID
 	if !online {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "history fetch needs WhatsApp online"})
 		return

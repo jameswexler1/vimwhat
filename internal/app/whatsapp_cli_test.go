@@ -73,11 +73,13 @@ type fakeLiveWhatsAppSession struct {
 	readErr         error
 	reactionErr     error
 	presenceErr     error
+	canonicalErr    error
 	generatedID     string
 	connectErr      error
 	subscribeErr    error
 	connectCalled   bool
 	subscribeCalled bool
+	canonicalChatID map[string]string
 }
 
 type fakeHistoryRequest struct {
@@ -136,6 +138,30 @@ func (s *fakeLiveWhatsAppSession) GenerateMessageID() string {
 		return s.generatedID
 	}
 	return "remote-generated"
+}
+
+func (s *fakeLiveWhatsAppSession) CanonicalChatJID(_ context.Context, chatID string) (string, error) {
+	if s.canonicalErr != nil {
+		return "", s.canonicalErr
+	}
+	normalized, err := whatsapp.NormalizeSendChatJID(chatID)
+	if err != nil {
+		if s.canonicalChatID != nil {
+			if mapped, ok := s.canonicalChatID[chatID]; ok && strings.TrimSpace(mapped) != "" {
+				return mapped, nil
+			}
+		}
+		return chatID, nil
+	}
+	if s.canonicalChatID != nil {
+		if mapped, ok := s.canonicalChatID[chatID]; ok && strings.TrimSpace(mapped) != "" {
+			return mapped, nil
+		}
+		if mapped, ok := s.canonicalChatID[normalized]; ok && strings.TrimSpace(mapped) != "" {
+			return mapped, nil
+		}
+	}
+	return normalized, nil
 }
 
 func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, request whatsapp.TextSendRequest) (whatsapp.SendResult, error) {

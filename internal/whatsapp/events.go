@@ -18,9 +18,19 @@ import (
 func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 	switch event := evt.(type) {
 	case *events.HistorySync:
-		return c.normalizeHistorySyncEvent(event)
+		return c.normalizeHistorySyncEvent(ctx, event)
 	case *events.Message:
 		return c.normalizeMessageEvent(ctx, event)
+	case *events.Receipt:
+		return c.normalizeReceiptEvent(ctx, event)
+	case *events.Picture:
+		return c.normalizePictureEvent(ctx, event)
+	case *events.ChatPresence:
+		return c.normalizeChatPresenceEvent(ctx, event)
+	case *events.Contact:
+		return c.normalizeContactEvent(ctx, event)
+	case *events.PushName:
+		return c.normalizePushNameEvent(ctx, event)
 	default:
 		return normalizeWhatsmeowEvent(evt)
 	}
@@ -78,13 +88,13 @@ func (c *Client) normalizeMessageEvent(ctx context.Context, event *events.Messag
 		if reaction, err := c.client.DecryptReaction(ctx, event); err == nil && reaction != nil {
 			clone := *event
 			clone.Message = &waE2E.Message{ReactionMessage: reaction}
-			return normalizeMessageEvent(&clone)
+			return c.normalizeParsedMessageEvent(ctx, &clone)
 		}
 	}
-	return normalizeMessageEvent(event)
+	return c.normalizeParsedMessageEvent(ctx, event)
 }
 
-func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
+func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.HistorySync) []Event {
 	if c == nil || c.client == nil || event == nil || event.Data == nil {
 		return nil
 	}
@@ -95,19 +105,24 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 
 	var out []Event
 	for _, conversation := range history.GetConversations() {
-		chatJID, ok := historyConversationJID(conversation)
+		chatJID, alternateChatJID, ok := historyConversationJIDs(conversation)
 		if !ok || !supportedChat(chatJID) {
 			continue
 		}
-		chatID := chatJID.String()
+		canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, chatJID, alternateChatJID)
+		if canonicalChatJID.IsEmpty() || !supportedChat(canonicalChatJID) {
+			continue
+		}
+		chatID := canonicalChatJID.String()
 		out = append(out, Event{
 			Kind: EventChatUpsert,
 			Chat: ChatEvent{
 				ID:            chatID,
 				JID:           chatID,
-				Title:         historyConversationTitle(conversation, chatJID),
-				TitleSource:   historyConversationTitleSource(conversation, chatJID),
-				Kind:          chatKind(chatJID),
+				AliasIDs:      aliases,
+				Title:         historyConversationTitle(conversation, canonicalChatJID),
+				TitleSource:   historyConversationTitleSource(conversation, canonicalChatJID),
+				Kind:          chatKind(canonicalChatJID),
 				UnreadKnown:   false,
 				Pinned:        conversation.GetPinned() > 0,
 				Muted:         conversation.GetMuteEndTime() > uint64(time.Now().Unix()),
@@ -126,13 +141,13 @@ func (c *Client) normalizeHistorySyncEvent(event *events.HistorySync) []Event {
 			if err != nil {
 				continue
 			}
-			for _, normalized := range normalizeMessageEvent(messageEvent) {
+			for _, normalized := range c.normalizeParsedMessageEvent(ctx, messageEvent) {
 				if normalized.Kind == EventChatUpsert {
 					normalized.Chat.UnreadKnown = false
 					normalized.Chat.Historical = true
 					if strings.TrimSpace(conversation.GetName()) != "" {
 						normalized.Chat.Title = strings.TrimSpace(conversation.GetName())
-						normalized.Chat.TitleSource = historyConversationTitleSource(conversation, chatJID)
+						normalized.Chat.TitleSource = historyConversationTitleSource(conversation, canonicalChatJID)
 					}
 				}
 				if normalized.Kind == EventMessageUpsert {
@@ -175,10 +190,11 @@ func historyTerminalReason(conversation *waHistorySync.Conversation) string {
 	}
 }
 
-func historyConversationJID(conversation *waHistorySync.Conversation) (types.JID, bool) {
+func historyConversationJIDs(conversation *waHistorySync.Conversation) (types.JID, types.JID, bool) {
 	if conversation == nil {
-		return types.EmptyJID, false
+		return types.EmptyJID, types.EmptyJID, false
 	}
+	var parsed []types.JID
 	for _, candidate := range []string{conversation.GetID(), conversation.GetNewJID()} {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -186,10 +202,16 @@ func historyConversationJID(conversation *waHistorySync.Conversation) (types.JID
 		}
 		jid, err := types.ParseJID(candidate)
 		if err == nil {
-			return jid, true
+			parsed = append(parsed, jid)
 		}
 	}
-	return types.EmptyJID, false
+	if len(parsed) == 0 {
+		return types.EmptyJID, types.EmptyJID, false
+	}
+	if len(parsed) == 1 {
+		return parsed[0], types.EmptyJID, true
+	}
+	return parsed[0], parsed[1], true
 }
 
 func historyConversationTitle(conversation *waHistorySync.Conversation, jid types.JID) string {
@@ -241,6 +263,217 @@ func connectionEvent(state ConnectionState, detail string) Event {
 			Detail: detail,
 		},
 	}
+}
+
+func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.Message) []Event {
+	if event == nil || event.Message == nil || event.Info.ID == "" || !supportedChat(event.Info.Chat) {
+		return nil
+	}
+
+	canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, event.Info.Chat, directChatAlternateJID(event.Info))
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.Info.Chat)
+	}
+	chatID := canonicalChatJID.String()
+	messageID := localMessageID(chatID, string(event.Info.ID))
+	senderJID := canonicalDirectSenderJID(chatID, event.Info)
+	reaction, hasReaction := reactionEventForSender(chatID, senderJID, event)
+	body := messageBody(event.Message)
+	media, hasMedia := mediaMetadata(messageID, event, event.Info.Timestamp)
+	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
+	notificationPreview := messageNotificationPreview(body, media, hasMedia)
+
+	normalized := []Event{{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:            chatID,
+			JID:           chatID,
+			AliasIDs:      aliases,
+			Title:         chatTitleForJID(event.Info, canonicalChatJID),
+			TitleSource:   chatTitleSourceForJID(event.Info, canonicalChatJID),
+			Kind:          chatKind(canonicalChatJID),
+			LastMessageAt: event.Info.Timestamp,
+		},
+	}}
+
+	if hasReaction {
+		normalized = append(normalized, Event{
+			Kind:     EventReactionUpdate,
+			Reaction: reaction,
+		})
+		return normalized
+	}
+
+	if strings.TrimSpace(body) != "" || hasMedia {
+		normalized = append(normalized, Event{
+			Kind: EventMessageUpsert,
+			Message: MessageEvent{
+				ID:                  messageID,
+				RemoteID:            string(event.Info.ID),
+				ChatID:              chatID,
+				ChatJID:             chatID,
+				Sender:              senderName(event.Info),
+				SenderJID:           senderJID,
+				Body:                body,
+				NotificationPreview: notificationPreview,
+				Timestamp:           event.Info.Timestamp,
+				IsOutgoing:          event.Info.IsFromMe,
+				Status:              initialMessageStatus(event.Info.IsFromMe),
+				QuotedMessageID:     quotedMessageID,
+				QuotedRemoteID:      quotedRemoteID,
+			},
+		})
+	}
+
+	if hasMedia {
+		normalized = append(normalized, Event{
+			Kind:  EventMediaMetadata,
+			Media: media,
+		})
+	}
+
+	return normalized
+}
+
+func (c *Client) normalizeReceiptEvent(ctx context.Context, event *events.Receipt) []Event {
+	if event == nil || len(event.MessageIDs) == 0 || !supportedChat(event.Chat) {
+		return nil
+	}
+
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.Chat, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.Chat)
+	}
+	chatID := canonicalChatJID.String()
+	status := receiptStatus(event.Type)
+	if status == "" {
+		return nil
+	}
+
+	out := make([]Event, 0, len(event.MessageIDs))
+	for _, remoteID := range event.MessageIDs {
+		if remoteID == "" {
+			continue
+		}
+		out = append(out, Event{
+			Kind: EventReceiptUpdate,
+			Receipt: ReceiptEvent{
+				MessageID: localMessageID(chatID, string(remoteID)),
+				ChatID:    chatID,
+				Status:    status,
+			},
+		})
+	}
+	return out
+}
+
+func (c *Client) normalizeChatPresenceEvent(ctx context.Context, event *events.ChatPresence) []Event {
+	if event == nil || !supportedChat(event.Chat) {
+		return nil
+	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.Chat, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.Chat)
+	}
+	chatID := canonicalChatJID.String()
+	sender := event.Sender.ToNonAD()
+	senderJID := ""
+	if event.Chat.Server != types.GroupServer && chatID != "" {
+		senderJID = chatID
+	} else if !sender.IsEmpty() {
+		senderJID = sender.String()
+	}
+	display := senderJID
+	switch {
+	case sender.User != "":
+		display = sender.User
+	case event.Chat.Server != types.GroupServer && canonicalChatJID.User != "":
+		display = canonicalChatJID.User
+	}
+	return []Event{{
+		Kind: EventPresenceUpdate,
+		Presence: PresenceEvent{
+			ChatID:    chatID,
+			SenderJID: senderJID,
+			Sender:    display,
+			Typing:    event.State == types.ChatPresenceComposing,
+			UpdatedAt: time.Now(),
+		},
+	}}
+}
+
+func (c *Client) normalizePictureEvent(ctx context.Context, event *events.Picture) []Event {
+	if event == nil || event.JID.IsEmpty() || !supportedChat(event.JID) {
+		return nil
+	}
+	updatedAt := event.Timestamp
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.JID, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.JID)
+	}
+	chatID := canonicalChatJID.String()
+	return []Event{{
+		Kind: EventChatAvatarUpdate,
+		Avatar: AvatarEvent{
+			ChatID:    chatID,
+			ChatJID:   chatID,
+			AvatarID:  strings.TrimSpace(event.PictureID),
+			Remove:    event.Remove,
+			UpdatedAt: updatedAt,
+		},
+	}}
+}
+
+func (c *Client) normalizeContactEvent(ctx context.Context, event *events.Contact) []Event {
+	if event == nil || event.Action == nil || event.JID.IsEmpty() {
+		return nil
+	}
+	displayName := strings.TrimSpace(event.Action.GetFullName())
+	if displayName == "" {
+		displayName = strings.TrimSpace(event.Action.GetFirstName())
+	}
+	phone := strings.TrimSpace(event.Action.GetPnJID())
+	if phone == "" && event.JID.Server == types.DefaultUserServer {
+		phone = event.JID.User
+	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.JID, contactPhoneJID(phone))
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.JID)
+	}
+	return []Event{{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         event.JID.String(),
+			ChatID:      canonicalChatJID.String(),
+			DisplayName: displayName,
+			Phone:       phone,
+			UpdatedAt:   event.Timestamp,
+			TitleSource: store.ChatTitleSourceContactDisplay,
+		},
+	}}
+}
+
+func (c *Client) normalizePushNameEvent(ctx context.Context, event *events.PushName) []Event {
+	if event == nil || event.JID.IsEmpty() || strings.TrimSpace(event.NewPushName) == "" {
+		return nil
+	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.JID, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.JID)
+	}
+	return []Event{{
+		Kind: EventContactUpsert,
+		Contact: ContactEvent{
+			JID:         event.JID.String(),
+			ChatID:      canonicalChatJID.String(),
+			NotifyName:  strings.TrimSpace(event.NewPushName),
+			UpdatedAt:   time.Now(),
+			TitleSource: store.ChatTitleSourcePushName,
+		},
+	}}
 }
 
 func normalizeMessageEvent(event *events.Message) []Event {
@@ -350,6 +583,10 @@ func messageNotificationPreview(body string, item MediaEvent, hasMedia bool) str
 }
 
 func reactionEvent(chatID string, event *events.Message) (ReactionEvent, bool) {
+	return reactionEventForSender(chatID, senderJID(event.Info), event)
+}
+
+func reactionEventForSender(chatID, senderJID string, event *events.Message) (ReactionEvent, bool) {
 	if event == nil || event.Message == nil {
 		return ReactionEvent{}, false
 	}
@@ -368,7 +605,7 @@ func reactionEvent(chatID string, event *events.Message) (ReactionEvent, bool) {
 	return ReactionEvent{
 		MessageID:  localMessageID(chatID, remoteID),
 		ChatID:     chatID,
-		SenderJID:  senderJID(event.Info),
+		SenderJID:  senderJID,
 		Emoji:      reaction.GetText(),
 		Timestamp:  timestamp,
 		IsOutgoing: event.Info.IsFromMe,
@@ -484,11 +721,30 @@ func chatKind(jid types.JID) string {
 }
 
 func chatTitle(info types.MessageInfo) string {
-	if info.Chat.Server == types.GroupServer {
+	return chatTitleForJID(info, info.Chat)
+}
+
+func chatTitleSource(info types.MessageInfo) string {
+	return chatTitleSourceForJID(info, info.Chat)
+}
+
+func chatTitleForJID(info types.MessageInfo, chatJID types.JID) string {
+	if chatJID.Server == types.GroupServer {
 		return "Unnamed group"
 	}
 	if !info.IsFromMe && strings.TrimSpace(info.PushName) != "" {
 		return strings.TrimSpace(info.PushName)
+	}
+	for _, candidate := range []types.JID{info.Chat, directChatAlternateJID(info), chatJID} {
+		if candidate.Server == types.DefaultUserServer && candidate.User != "" {
+			return candidate.User
+		}
+	}
+	if chatJID.User != "" {
+		return chatJID.User
+	}
+	if !chatJID.IsEmpty() {
+		return chatJID.String()
 	}
 	if info.Chat.User != "" {
 		return info.Chat.User
@@ -496,8 +752,8 @@ func chatTitle(info types.MessageInfo) string {
 	return info.Chat.String()
 }
 
-func chatTitleSource(info types.MessageInfo) string {
-	if info.Chat.Server == types.GroupServer {
+func chatTitleSourceForJID(info types.MessageInfo, chatJID types.JID) string {
+	if chatJID.Server == types.GroupServer {
 		return store.ChatTitleSourcePlaceholder
 	}
 	if !info.IsFromMe && strings.TrimSpace(info.PushName) != "" {
@@ -549,6 +805,7 @@ func normalizeContactEvent(event *events.Contact) []Event {
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
 			JID:         event.JID.String(),
+			ChatID:      event.JID.String(),
 			DisplayName: displayName,
 			Phone:       phone,
 			UpdatedAt:   event.Timestamp,
@@ -565,6 +822,7 @@ func normalizePushNameEvent(event *events.PushName) []Event {
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
 			JID:         event.JID.String(),
+			ChatID:      event.JID.String(),
 			NotifyName:  strings.TrimSpace(event.NewPushName),
 			UpdatedAt:   time.Now(),
 			TitleSource: store.ChatTitleSourcePushName,
@@ -596,6 +854,20 @@ func senderJID(info types.MessageInfo) string {
 		return info.Sender.String()
 	}
 	return ""
+}
+
+func contactPhoneJID(raw string) types.JID {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return types.EmptyJID
+	}
+	if strings.Contains(raw, "@") {
+		jid, err := types.ParseJID(raw)
+		if err == nil {
+			return jid
+		}
+	}
+	return types.NewJID(raw, types.DefaultUserServer)
 }
 
 func localMessageID(chatID, remoteID string) string {
