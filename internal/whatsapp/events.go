@@ -487,7 +487,7 @@ func chatTitle(info types.MessageInfo) string {
 	if info.Chat.Server == types.GroupServer {
 		return "Unnamed group"
 	}
-	if strings.TrimSpace(info.PushName) != "" {
+	if !info.IsFromMe && strings.TrimSpace(info.PushName) != "" {
 		return strings.TrimSpace(info.PushName)
 	}
 	if info.Chat.User != "" {
@@ -500,7 +500,7 @@ func chatTitleSource(info types.MessageInfo) string {
 	if info.Chat.Server == types.GroupServer {
 		return store.ChatTitleSourcePlaceholder
 	}
-	if strings.TrimSpace(info.PushName) != "" {
+	if !info.IsFromMe && strings.TrimSpace(info.PushName) != "" {
 		return store.ChatTitleSourcePushName
 	}
 	return store.ChatTitleSourceJID

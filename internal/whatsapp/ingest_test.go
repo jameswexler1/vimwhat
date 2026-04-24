@@ -304,3 +304,48 @@ func TestIngestorUpdatesExistingChatFromContactWithoutCreatingChat(t *testing.T)
 		t.Fatalf("chat after contact = %+v, want Alice/contact_display", chats)
 	}
 }
+
+func TestIngestorDoesNotLetOutgoingDirectFallbackOverwritePushName(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          "12345@s.whatsapp.net",
+			JID:         "12345@s.whatsapp.net",
+			Title:       "Alice",
+			TitleSource: store.ChatTitleSourcePushName,
+			Kind:        "direct",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(incoming title) error = %v", err)
+	}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          "12345@s.whatsapp.net",
+			JID:         "12345@s.whatsapp.net",
+			Title:       "12345",
+			TitleSource: store.ChatTitleSourceJID,
+			Kind:        "direct",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(outgoing fallback title) error = %v", err)
+	}
+
+	chats, err := db.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].Title != "Alice" || chats[0].TitleSource != store.ChatTitleSourcePushName {
+		t.Fatalf("chat after outgoing fallback = %+v, want Alice/push_name", chats)
+	}
+}

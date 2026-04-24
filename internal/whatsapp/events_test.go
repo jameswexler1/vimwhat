@@ -84,6 +84,39 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageEventUsesJIDTitleForOutgoingDirectMessages(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	sender := types.NewJID("99999", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   sender,
+				IsFromMe: true,
+			},
+			ID:        "OUT1",
+			PushName:  "Gustavo",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{Conversation: proto.String("sent from desktop")},
+	})
+
+	if len(normalized) != 2 {
+		t.Fatalf("len(normalized) = %d, want 2: %+v", len(normalized), normalized)
+	}
+	if normalized[0].Kind != EventChatUpsert ||
+		normalized[0].Chat.Title != "12345" ||
+		normalized[0].Chat.TitleSource != store.ChatTitleSourceJID {
+		t.Fatalf("chat event = %+v, want direct chat JID title fallback", normalized[0])
+	}
+	if normalized[1].Kind != EventMessageUpsert ||
+		normalized[1].Message.Sender != "me" ||
+		!normalized[1].Message.IsOutgoing {
+		t.Fatalf("message event = %+v, want outgoing message from me", normalized[1])
+	}
+}
+
 func TestNormalizeMessageEventSkipsEmptyUnsupportedMessages(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	chat := types.NewJID("12345", types.DefaultUserServer)
