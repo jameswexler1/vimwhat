@@ -674,15 +674,17 @@ func (m Model) renderChats(width, height int) string {
 func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	border := borderColor
 	previewFG := softFG
+	borderShape := lipgloss.NormalBorder()
 	if active {
-		border = activeBorder
+		border = focusedLine
 		previewFG = accentFG
+		borderShape = lipgloss.ThickBorder()
 	}
 
 	style := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(border).
+		Border(borderShape).
 		Padding(0, 1)
+	style = cursorItemBorderStyle(style, border, active)
 	contentWidth := panelContentWidth(style, width)
 
 	title := m.sanitizeDisplayLine(chat.DisplayTitle())
@@ -1086,9 +1088,9 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(border).
+		Border(messageBubbleBorder(active)).
 		Padding(0, 1)
+	boxStyle = cursorItemBorderStyle(boxStyle, border, active)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
 	if m.messageUsesMediaBubbleWidth(message, active) {
 		maxBubbleWidth = max(6, mediaBubbleWidth(availableWidth))
@@ -1128,6 +1130,25 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
+}
+
+func messageBubbleBorder(active bool) lipgloss.Border {
+	if active {
+		return lipgloss.ThickBorder()
+	}
+	return lipgloss.RoundedBorder()
+}
+
+func cursorItemBorderStyle(style lipgloss.Style, border lipgloss.Color, active bool) lipgloss.Style {
+	style = style.BorderForeground(border)
+	if !active {
+		return style
+	}
+	return style.
+		BorderTopForeground(focusedLine).
+		BorderLeftForeground(focusedLine).
+		BorderRightForeground(activeBorder).
+		BorderBottomForeground(activeBorder)
 }
 
 func (m Model) messageQuoteLine(message store.Message, width int) string {

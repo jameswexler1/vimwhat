@@ -2010,7 +2010,7 @@ func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 			t.Fatalf("chat list missing %q\n%s", want, view)
 		}
 	}
-	if !strings.Contains(view, "┌") || !strings.Contains(view, "└") {
+	if !strings.Contains(view, "┏") || !strings.Contains(view, "┗") {
 		t.Fatalf("chat list did not render bordered cells\n%s", view)
 	}
 }
@@ -2171,6 +2171,32 @@ func TestChatSearchHighlightsTitlesOnlyAndHoveredChat(t *testing.T) {
 	}
 }
 
+func TestActiveChatCellUsesStrongerCursorBorder(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	inactiveView := stripANSI(model.renderChatCell(model.chats[1], false, 40))
+	if !strings.Contains(inactiveView, "┌") || !strings.Contains(inactiveView, "└") {
+		t.Fatalf("inactive chat cell did not keep normal border\n%s", inactiveView)
+	}
+	if strings.Contains(inactiveView, "┏") || strings.Contains(inactiveView, "┗") {
+		t.Fatalf("inactive chat cell used cursor border\n%s", inactiveView)
+	}
+
+	activeView := stripANSI(model.renderChatCell(model.chats[0], true, 40))
+	if !strings.Contains(activeView, "┏") || !strings.Contains(activeView, "┗") {
+		t.Fatalf("active chat cell did not use thick cursor border\n%s", activeView)
+	}
+}
+
 func TestMessageSearchHighlightsBodiesOnlyAndHoveredMessage(t *testing.T) {
 	withANSIStyles(t)
 
@@ -2207,6 +2233,31 @@ func TestMessageSearchHighlightsBodiesOnlyAndHoveredMessage(t *testing.T) {
 	}
 	if !hasSGRCode(activeBodyCodes, "3") || !hasSGRCode(activeBodyCodes, "4") || !hasSGRCode(activeBodyCodes, "48") {
 		t.Fatalf("active body codes = %v, want current match highlight", activeBodyCodes)
+	}
+}
+
+func TestActiveMessageBubbleUsesStrongerCursorBorder(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	message := store.Message{ID: "m-1", ChatID: "chat-1", Body: "hello"}
+
+	inactiveBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, false, false, nil))
+	if !strings.Contains(inactiveBubble, "╭") || !strings.Contains(inactiveBubble, "╰") {
+		t.Fatalf("inactive message bubble did not keep rounded border\n%s", inactiveBubble)
+	}
+	if strings.Contains(inactiveBubble, "┏") || strings.Contains(inactiveBubble, "┗") {
+		t.Fatalf("inactive message bubble used cursor border\n%s", inactiveBubble)
+	}
+
+	activeBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, true, false, nil))
+	if !strings.Contains(activeBubble, "┏") || !strings.Contains(activeBubble, "┗") {
+		t.Fatalf("active message bubble did not use thick cursor border\n%s", activeBubble)
 	}
 }
 
