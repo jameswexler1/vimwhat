@@ -28,6 +28,7 @@ type Config struct {
 	AudioPlayerCommand  string
 	FileOpenerCommand   string
 	LeaderKey           string
+	Keymap              Keymap
 	PreviewMaxWidth     int
 	PreviewMaxHeight    int
 	PreviewDelayMS      int
@@ -83,6 +84,7 @@ func Default(paths Paths) Config {
 		AudioPlayerCommand:  "mpv --no-video --no-terminal --really-quiet {path}",
 		FileOpenerCommand:   "xdg-open {path}",
 		LeaderKey:           "space",
+		Keymap:              DefaultKeymap(),
 		PreviewMaxWidth:     67,
 		PreviewMaxHeight:    18,
 		PreviewDelayMS:      80,
@@ -123,6 +125,12 @@ func parseSimpleTOML(input string, cfg *Config) error {
 		parsed, err := parseValue(value)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if strings.HasPrefix(key, "key_") {
+			if err := SetKeyBinding(&cfg.Keymap, key, parsed); err != nil {
+				return fmt.Errorf("line %d: %s: %w", lineNo, key, err)
+			}
+			continue
 		}
 
 		switch key {
@@ -180,7 +188,7 @@ func parseSimpleTOML(input string, cfg *Config) error {
 		case "file_opener_command":
 			cfg.FileOpenerCommand = parsed
 		case "leader_key":
-			cfg.LeaderKey, err = parseLeaderKey(parsed)
+			cfg.LeaderKey, err = ParseLeaderKey(parsed)
 			if err != nil {
 				return fmt.Errorf("line %d: leader_key: %w", lineNo, err)
 			}
@@ -207,6 +215,10 @@ func parseSimpleTOML(input string, cfg *Config) error {
 	}
 
 	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	if err := ValidateKeymap(*cfg); err != nil {
 		return err
 	}
 
@@ -313,7 +325,7 @@ func isHexColor(value string) bool {
 	return true
 }
 
-func parseLeaderKey(value string) (string, error) {
+func ParseLeaderKey(value string) (string, error) {
 	if value == " " || strings.EqualFold(strings.TrimSpace(value), "space") {
 		return "space", nil
 	}

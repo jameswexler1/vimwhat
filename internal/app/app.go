@@ -61,6 +61,9 @@ func Bootstrap() (Environment, error) {
 	if err := paths.Ensure(); err != nil {
 		return Environment{}, err
 	}
+	if err := config.EnsureDefaultFile(paths); err != nil {
+		return Environment{}, err
+	}
 
 	cfg, err := config.Load(paths)
 	if err != nil {

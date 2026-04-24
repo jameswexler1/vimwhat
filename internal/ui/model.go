@@ -377,6 +377,7 @@ func normalizeConfig(cfg config.Config) config.Config {
 	if cfg.LeaderKey == "" {
 		cfg.LeaderKey = "space"
 	}
+	cfg.Keymap = config.NormalizeKeymap(cfg.Keymap)
 	switch cfg.EmojiMode {
 	case config.EmojiModeAuto, config.EmojiModeFull, config.EmojiModeCompat:
 	default:
@@ -680,7 +681,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC {
+	if m.keyMatches(msg, m.config.Keymap.GlobalQuit) {
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -703,14 +704,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keys := m.config.Keymap
 	if m.helpVisible {
-		switch msg.Type {
-		case tea.KeyEsc:
-			m.helpVisible = false
-			m.status = "help closed"
-			return m, nil
-		}
-		if msg.String() == "?" {
+		if m.keyMatches(msg, keys.HelpClose) || m.keyMatches(msg, keys.HelpCloseAlt) {
 			m.helpVisible = false
 			m.status = "help closed"
 			return m, nil
@@ -721,7 +717,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.leaderPending {
 		return m.handleLeaderKey(msg)
 	}
-	if msg.Type == tea.KeyEsc {
+	if m.keyMatches(msg, keys.NormalCancel) {
 		m.pendingCount = 0
 		if m.activeSearch != "" || strings.TrimSpace(m.lastSearch) != "" || len(m.searchMatches) > 0 || m.searchIndex != -1 {
 			m.clearSearch()
@@ -729,7 +725,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if keyMatchesLeader(msg, m.config.LeaderKey) {
+	if m.keyMatchesLeaderStart(msg) {
 		m.leaderPending = true
 		m.leaderSequence = ""
 		m.pendingCount = 0
@@ -741,24 +737,162 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	count := m.consumeCount()
 
-	switch msg.String() {
-	case "q":
+	action := m.normalActionForKey(msg)
+	if action == "" {
+		return m, nil
+	}
+	return m.runNormalAction(action, count)
+}
+
+const (
+	normalActionQuit             = "quit"
+	normalActionHelp             = "help"
+	normalActionInsert           = "insert"
+	normalActionReply            = "reply"
+	normalActionRetryFailedMedia = "retry_failed_media"
+	normalActionVisual           = "visual"
+	normalActionCommand          = "command"
+	normalActionSearch           = "search"
+	normalActionFocusNext        = "focus_next"
+	normalActionFocusPrevious    = "focus_previous"
+	normalActionFocusLeft        = "focus_left"
+	normalActionFocusRightReply  = "focus_right_or_reply"
+	normalActionMoveDown         = "move_down"
+	normalActionMoveUp           = "move_up"
+	normalActionGoTop            = "go_top"
+	normalActionGoBottom         = "go_bottom"
+	normalActionOpen             = "open"
+	normalActionOpenMedia        = "open_media"
+	normalActionSearchNext       = "search_next"
+	normalActionSearchPrevious   = "search_previous"
+	normalActionToggleUnread     = "toggle_unread"
+	normalActionTogglePinned     = "toggle_pinned"
+	normalActionSaveMedia        = "save_media"
+	normalActionUnloadPreviews   = "unload_previews"
+)
+
+func (m Model) normalActionForKey(msg tea.KeyMsg) string {
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.NormalQuit):
+		return normalActionQuit
+	case m.keyMatches(msg, keys.NormalHelp):
+		return normalActionHelp
+	case m.keyMatches(msg, keys.NormalInsert):
+		return normalActionInsert
+	case m.keyMatches(msg, keys.NormalReply):
+		return normalActionReply
+	case m.keyMatches(msg, keys.NormalRetryFailedMedia):
+		return normalActionRetryFailedMedia
+	case m.keyMatches(msg, keys.NormalVisual):
+		return normalActionVisual
+	case m.keyMatches(msg, keys.NormalCommand):
+		return normalActionCommand
+	case m.keyMatches(msg, keys.NormalSearch):
+		return normalActionSearch
+	case m.keyMatches(msg, keys.NormalFocusNext):
+		return normalActionFocusNext
+	case m.keyMatches(msg, keys.NormalFocusPrevious):
+		return normalActionFocusPrevious
+	case m.keyMatches(msg, keys.NormalFocusLeft):
+		return normalActionFocusLeft
+	case m.keyMatches(msg, keys.NormalFocusRightOrReply):
+		return normalActionFocusRightReply
+	case m.keyMatches(msg, keys.NormalMoveDown):
+		return normalActionMoveDown
+	case m.keyMatches(msg, keys.NormalMoveUp):
+		return normalActionMoveUp
+	case m.keyMatches(msg, keys.NormalGoTop):
+		return normalActionGoTop
+	case m.keyMatches(msg, keys.NormalGoBottom):
+		return normalActionGoBottom
+	case m.keyMatches(msg, keys.NormalOpen):
+		return normalActionOpen
+	case m.keyMatches(msg, keys.NormalOpenMedia):
+		return normalActionOpenMedia
+	case m.keyMatches(msg, keys.NormalSearchNext):
+		return normalActionSearchNext
+	case m.keyMatches(msg, keys.NormalSearchPrevious):
+		return normalActionSearchPrevious
+	case m.keyMatches(msg, keys.NormalToggleUnread):
+		return normalActionToggleUnread
+	case m.keyMatches(msg, keys.NormalTogglePinned):
+		return normalActionTogglePinned
+	case m.keyMatches(msg, keys.NormalSaveMedia):
+		return normalActionSaveMedia
+	case m.keyMatches(msg, keys.NormalUnloadPreviews):
+		return normalActionUnloadPreviews
+	}
+	return ""
+}
+
+func (m Model) normalActionForLeaderSequence(sequence []string) (action string, exact bool, prefix bool) {
+	for _, binding := range m.normalActionBindings() {
+		matches, partial := leaderBindingMatch(binding.binding, sequence)
+		if matches {
+			return binding.action, true, false
+		}
+		if partial {
+			prefix = true
+		}
+	}
+	return "", false, prefix
+}
+
+type normalActionBinding struct {
+	binding string
+	action  string
+}
+
+func (m Model) normalActionBindings() []normalActionBinding {
+	keys := m.config.Keymap
+	return []normalActionBinding{
+		{binding: keys.NormalQuit, action: normalActionQuit},
+		{binding: keys.NormalHelp, action: normalActionHelp},
+		{binding: keys.NormalInsert, action: normalActionInsert},
+		{binding: keys.NormalReply, action: normalActionReply},
+		{binding: keys.NormalRetryFailedMedia, action: normalActionRetryFailedMedia},
+		{binding: keys.NormalVisual, action: normalActionVisual},
+		{binding: keys.NormalCommand, action: normalActionCommand},
+		{binding: keys.NormalSearch, action: normalActionSearch},
+		{binding: keys.NormalFocusNext, action: normalActionFocusNext},
+		{binding: keys.NormalFocusPrevious, action: normalActionFocusPrevious},
+		{binding: keys.NormalFocusLeft, action: normalActionFocusLeft},
+		{binding: keys.NormalFocusRightOrReply, action: normalActionFocusRightReply},
+		{binding: keys.NormalMoveDown, action: normalActionMoveDown},
+		{binding: keys.NormalMoveUp, action: normalActionMoveUp},
+		{binding: keys.NormalGoTop, action: normalActionGoTop},
+		{binding: keys.NormalGoBottom, action: normalActionGoBottom},
+		{binding: keys.NormalOpen, action: normalActionOpen},
+		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
+		{binding: keys.NormalSearchNext, action: normalActionSearchNext},
+		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
+		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
+		{binding: keys.NormalTogglePinned, action: normalActionTogglePinned},
+		{binding: keys.NormalSaveMedia, action: normalActionSaveMedia},
+		{binding: keys.NormalUnloadPreviews, action: normalActionUnloadPreviews},
+	}
+}
+
+func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
+	switch action {
+	case normalActionQuit:
 		m.quitting = true
 		return m, tea.Quit
-	case "?":
+	case normalActionHelp:
 		m.helpVisible = true
 		m.status = "help"
-	case "i":
+	case normalActionInsert:
 		if len(m.chats) == 0 {
 			m.status = "no chat selected"
 			return m, nil
 		}
 		return m.beginInsert(nil)
-	case "r":
+	case normalActionReply:
 		return m.beginReplyToFocusedMessage()
-	case "R":
+	case normalActionRetryFailedMedia:
 		m.retryFocusedMediaMessage()
-	case "v":
+	case normalActionVisual:
 		if len(m.currentMessages()) == 0 {
 			m.status = "no messages to select"
 			return m, nil
@@ -766,28 +900,28 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeVisual
 		m.focus = FocusMessages
 		m.visualAnchor = m.messageCursor
-	case ":":
+	case normalActionCommand:
 		m.mode = ModeCommand
 		m.commandLine = ""
-	case "/":
+	case normalActionSearch:
 		m.mode = ModeSearch
 		m.searchLine = ""
-	case "tab":
+	case normalActionFocusNext:
 		m.cycleFocus(1)
-	case "shift+tab":
+	case normalActionFocusPrevious:
 		m.cycleFocus(-1)
-	case "h":
+	case normalActionFocusLeft:
 		m.moveFocus(-1)
-	case "l":
+	case normalActionFocusRightReply:
 		if m.focus == FocusMessages && (!m.infoPaneVisible || m.compactLayout) {
 			return m.beginReplyToFocusedMessage()
 		}
 		m.moveFocus(1)
-	case "j":
+	case normalActionMoveDown:
 		m.moveCursor(count)
-	case "k":
+	case normalActionMoveUp:
 		m.moveCursor(-count)
-	case "g":
+	case normalActionGoTop:
 		if m.focus == FocusMessages {
 			m.messageCursor = 0
 			m.messageScrollTop = 0
@@ -801,7 +935,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.showCurrentChatLatest()
 		}
-	case "G":
+	case normalActionGoBottom:
 		if m.focus == FocusMessages {
 			if messageCount := len(m.currentMessages()); messageCount > 0 {
 				target := messageCount - 1
@@ -827,7 +961,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.showCurrentChatLatest()
 			}
 		}
-	case "enter":
+	case normalActionOpen:
 		if m.focus == FocusChats {
 			if len(m.chats) == 0 {
 				m.status = "no chat selected"
@@ -844,22 +978,26 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.focus == FocusMessages || m.focus == FocusPreview {
 			return m.activateFocusedMediaPreview()
 		}
-	case "o":
+	case normalActionOpenMedia:
 		return m.openFocusedMedia()
-	case "n":
+	case normalActionSearchNext:
 		m.advanceSearch(1)
-	case "N":
+	case normalActionSearchPrevious:
 		m.advanceSearch(-1)
-	case "u":
+	case normalActionToggleUnread:
 		if err := m.setUnreadOnly(!m.unreadOnly); err != nil {
 			m.status = fmt.Sprintf("filter failed: %v", err)
 			return m, nil
 		}
-	case "p":
+	case normalActionTogglePinned:
 		if err := m.setPinnedFirst(!m.pinnedFirst); err != nil {
 			m.status = fmt.Sprintf("sort failed: %v", err)
 			return m, nil
 		}
+	case normalActionSaveMedia:
+		return m.saveFocusedMedia()
+	case normalActionUnloadPreviews:
+		return m.clearMediaPreviews("media previews unloaded")
 	default:
 		return m, nil
 	}
@@ -1017,40 +1155,39 @@ func readableMessages(messages []store.Message) []store.Message {
 }
 
 func (m Model) handleLeaderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyEsc {
+	if m.keyMatches(msg, m.config.Keymap.NormalCancel) {
 		m.leaderPending = false
 		m.leaderSequence = ""
 		m.status = "leader cancelled"
 		return m, nil
 	}
-	key := msg.String()
-	sequence := m.leaderSequence + key
-	switch sequence {
-	case "s":
+	key := keyTokenFromMsg(msg)
+	sequence := strings.Fields(m.leaderSequence)
+	sequence = append(sequence, key)
+	sequenceText := strings.Join(sequence, "")
+	action, exact, prefix := m.normalActionForLeaderSequence(sequence)
+	if exact {
 		m.leaderPending = false
 		m.leaderSequence = ""
-		return m.saveFocusedMedia()
-	case "h":
-		m.leaderSequence = "h"
-		m.status = "leader: h"
-		return m, nil
-	case "hf":
-		m.leaderPending = false
-		m.leaderSequence = ""
-		return m.clearMediaPreviews("media previews unloaded")
-	default:
-		m.leaderPending = false
-		m.leaderSequence = ""
-		m.status = fmt.Sprintf("unknown leader key: %s", sequence)
+		return m.runNormalAction(action, 1)
+	}
+	if prefix {
+		m.leaderSequence = strings.Join(sequence, " ")
+		m.status = fmt.Sprintf("leader: %s", sequenceText)
 		return m, nil
 	}
+	m.leaderPending = false
+	m.leaderSequence = ""
+	m.status = fmt.Sprintf("unknown leader key: %s", sequenceText)
+	return m, nil
 }
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "ctrl+f" {
+	keys := m.config.Keymap
+	if m.keyMatches(msg, keys.InsertAttach) {
 		return m.startAttachmentPicker()
 	}
-	if msg.String() == "ctrl+x" {
+	if m.keyMatches(msg, keys.InsertRemoveAttachment) {
 		if len(m.attachments) == 0 {
 			m.status = "no staged attachments"
 			return m, nil
@@ -1060,14 +1197,14 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("removed attachment: %s", removed.FileName)
 		return m, nil
 	}
-	if msg.String() == "alt+enter" || msg.String() == "ctrl+j" {
+	if m.keyMatches(msg, keys.InsertNewline) || m.keyMatches(msg, keys.InsertNewlineAlt) {
 		m.composer += "\n"
 		m.sendOwnPresence(m.currentChat().ID, true)
 		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc:
+	switch {
+	case m.keyMatches(msg, keys.InsertCancel):
 		if err := m.persistCurrentDraft(); err != nil {
 			m.status = fmt.Sprintf("save draft failed: %v", err)
 			return m, nil
@@ -1075,7 +1212,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sendOwnPresence(m.currentChat().ID, false)
 		m.replyTo = nil
 		m.mode = ModeNormal
-	case tea.KeyEnter:
+	case m.keyMatches(msg, keys.InsertSend):
 		body := strings.TrimSpace(m.composer)
 		if body == "" && len(m.attachments) == 0 {
 			m.status = "empty message"
@@ -1171,7 +1308,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = ModeInsert
 		m.focus = FocusMessages
 		m.status = "message queued"
-	case tea.KeyBackspace, tea.KeyCtrlH:
+	case m.keyMatches(msg, keys.InsertBackspace) || m.keyMatches(msg, keys.InsertBackspaceAlt):
 		m.composer = trimLastCluster(m.composer)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -1185,11 +1322,12 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.CommandCancel):
 		m.mode = ModeNormal
 		m.commandLine = ""
-	case tea.KeyEnter:
+	case m.keyMatches(msg, keys.CommandRun):
 		cmd := strings.TrimSpace(m.commandLine)
 		m.commandLine = ""
 		m.mode = ModeNormal
@@ -1197,7 +1335,7 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.commandHistory = append(m.commandHistory, cmd)
 		}
 		return m.executeCommand(cmd)
-	case tea.KeyBackspace, tea.KeyCtrlH:
+	case m.keyMatches(msg, keys.CommandBackspace) || m.keyMatches(msg, keys.CommandBackspaceAlt):
 		m.commandLine = trimLastCluster(m.commandLine)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -1209,12 +1347,13 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.SearchCancel):
 		m.clearSearch()
 		m.mode = ModeNormal
 		m.status = "search cleared"
-	case tea.KeyEnter:
+	case m.keyMatches(msg, keys.SearchRun):
 		m.lastSearch = m.searchLine
 		m.lastSearchFocus = m.focus
 		if strings.TrimSpace(m.lastSearch) == "" {
@@ -1229,7 +1368,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.rebuildSearchMatches()
 		m.advanceSearch(1)
 		m.mode = ModeNormal
-	case tea.KeyBackspace, tea.KeyCtrlH:
+	case m.keyMatches(msg, keys.SearchBackspace) || m.keyMatches(msg, keys.SearchBackspaceAlt):
 		m.searchLine = trimLastCluster(m.searchLine)
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
@@ -1241,33 +1380,31 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateVisual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.VisualCancel):
 		m.mode = ModeNormal
-	case tea.KeyRunes:
-		switch msg.String() {
-		case "j":
-			m.moveCursor(1)
-		case "k":
-			m.moveCursor(-1)
-		case "y":
-			selected := m.selectedMessages()
-			var parts []string
-			for _, message := range selected {
-				parts = append(parts, message.Body)
-			}
-			m.yankRegister = strings.Join(parts, "\n")
-			m.mode = ModeNormal
-			if m.copyToClipboard == nil {
-				m.status = fmt.Sprintf("yanked %d message(s) to register", len(selected))
-				return m, nil
-			}
-			count := len(selected)
-			text := m.yankRegister
-			m.status = fmt.Sprintf("yanked %d message(s); copying clipboard", count)
-			return m, func() tea.Msg {
-				return clipboardCopiedMsg{Count: count, Err: m.copyToClipboard(text)}
-			}
+	case m.keyMatches(msg, keys.VisualMoveDown):
+		m.moveCursor(1)
+	case m.keyMatches(msg, keys.VisualMoveUp):
+		m.moveCursor(-1)
+	case m.keyMatches(msg, keys.VisualYank):
+		selected := m.selectedMessages()
+		var parts []string
+		for _, message := range selected {
+			parts = append(parts, message.Body)
+		}
+		m.yankRegister = strings.Join(parts, "\n")
+		m.mode = ModeNormal
+		if m.copyToClipboard == nil {
+			m.status = fmt.Sprintf("yanked %d message(s) to register", len(selected))
+			return m, nil
+		}
+		count := len(selected)
+		text := m.yankRegister
+		m.status = fmt.Sprintf("yanked %d message(s); copying clipboard", count)
+		return m, func() tea.Msg {
+			return clipboardCopiedMsg{Count: count, Err: m.copyToClipboard(text)}
 		}
 	}
 
@@ -3476,17 +3613,6 @@ func (m *Model) clearMediaDownloadInFlight(messageID string) {
 		return
 	}
 	delete(m.mediaDownloadInflight, messageID)
-}
-
-func keyMatchesLeader(msg tea.KeyMsg, leader string) bool {
-	leader = strings.TrimSpace(leader)
-	if leader == "" {
-		leader = "space"
-	}
-	if strings.EqualFold(leader, "space") {
-		return msg.Type == tea.KeySpace || msg.String() == " " || msg.String() == "space"
-	}
-	return msg.Type == tea.KeyRunes && msg.String() == leader
 }
 
 func leaderDisplay(leader string) string {

@@ -7,7 +7,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 ### Implemented now
 
 - Go CLI entrypoint with `vimwhat`, `doctor`, `demo seed`, and `demo clear`.
-- XDG config/data/cache path resolution and config loading, including emoji rendering mode and per-mode status indicator color overrides.
+- XDG config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
@@ -26,7 +26,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Direct-chat identity hardening for WhatsApp PN/LID aliases: canonicalize mapped 1:1 chats onto a single chat ID, merge already-split alias rows/messages/drafts/history cursors in SQLite, and preserve the active conversation when a live merge remaps the selected chat.
 - Large-history TUI guardrails: historical imports avoid refresh storms, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` overlays are cleared while scrolling.
-- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, non-redundant mode prompts, search match counts in the status bar, and `Esc` clearing active search state from both search and normal mode.
+- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, non-redundant mode prompts, configurable help/prompt key hints, search match counts in the status bar, and configurable cancellation/search-clear bindings.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
@@ -74,7 +74,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   `vimwhat media open <message-id>`
   `vimwhat export chat <jid>`
 - Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml`.
-- Config supports `emoji_mode = "auto" | "full" | "compat"`, per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, plus `notification_backend = "auto" | "none" | "command" | "linux-dbus" | "macos-osascript" | "windows-powershell"` and `notification_command` for desktop delivery overrides.
+- Config supports `emoji_mode = "auto" | "full" | "compat"`, per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, flat `key_<mode>_<action>` keybinding overrides, plus `notification_backend = "auto" | "none" | "command" | "linux-dbus" | "macos-osascript" | "windows-powershell"` and `notification_command` for desktop delivery overrides.
 - Data dir: `$XDG_DATA_HOME/vimwhat/`.
 - Cache dir: `$XDG_CACHE_HOME/vimwhat/`.
 - Transient cache dir: per-user app directory under `os.TempDir()`.
@@ -312,8 +312,8 @@ The next protocol milestone is live validation/polish of the completed notificat
 - Per-chat draft indicator in the chat list.
 - Desktop notifications for inactive, unmuted chats with native backend auto-detection and command override support.
 - Download/open attachment commands with sane default save paths.
-- `:help` with discoverable keymaps and mode-specific bindings.
-- Optional keymap override file, but ship a strong default instead of making the user design their own from scratch.
+- `:help` with discoverable keymaps, mode-specific bindings, and configured key hints.
+- Editable keymap overrides in the generated default `config.toml`, while still shipping a strong default instead of making the user design their own from scratch.
 
 ### Internal architecture
 

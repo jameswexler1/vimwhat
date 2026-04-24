@@ -4443,6 +4443,183 @@ func TestLeaderPrefixConsumesHWithoutMovingFocus(t *testing.T) {
 	}
 }
 
+func TestCustomNormalMovementAndOpenKeys(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.NormalMoveDown = "x"
+	keymap.NormalMoveUp = "z"
+	keymap.NormalOpen = "e"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": nil,
+				"chat-2": nil,
+			},
+		},
+	})
+
+	unchanged, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = unchanged.(Model)
+	if model.activeChat != 0 {
+		t.Fatalf("default j moved active chat with custom keymap: %d", model.activeChat)
+	}
+
+	moved, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	model = moved.(Model)
+	if model.activeChat != 1 {
+		t.Fatalf("activeChat after x = %d, want 1", model.activeChat)
+	}
+
+	up, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	model = up.(Model)
+	if model.activeChat != 0 {
+		t.Fatalf("activeChat after z = %d, want 0", model.activeChat)
+	}
+
+	opened, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = opened.(Model)
+	if model.focus != FocusMessages || !strings.Contains(model.status, "opened Alice") {
+		t.Fatalf("open state = focus %s status %q, want messages/opened", model.focus, model.status)
+	}
+}
+
+func TestCustomLeaderSequenceClearsMediaPreviews(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendChafa)
+	model.config.Keymap.NormalUnloadPreviews = "leader u p"
+	cacheOverlayPreview(t, &model, localPath)
+	if len(model.previewCache) == 0 {
+		t.Fatal("preview cache is empty before custom unload key")
+	}
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	prefix, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("u")})
+	model = prefix.(Model)
+	if !model.leaderPending || model.leaderSequence != "u" {
+		t.Fatalf("leader prefix = pending %v sequence %q, want pending u", model.leaderPending, model.leaderSequence)
+	}
+	cleared, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	model = cleared.(Model)
+	if len(model.previewCache) != 0 || !strings.Contains(model.status, "unloaded") {
+		t.Fatalf("custom leader clear = cache %d status %q", len(model.previewCache), model.status)
+	}
+}
+
+func TestLeaderSequenceCanRunAnyNormalAction(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.NormalOpen = "leader e"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+		},
+	})
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	opened, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = opened.(Model)
+	if model.focus != FocusMessages || !strings.Contains(model.status, "opened Alice") {
+		t.Fatalf("leader open = focus %s status %q", model.focus, model.status)
+	}
+}
+
+func TestCustomInsertSendAndNewlineKeys(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.InsertSend = "ctrl+s"
+	keymap.InsertNewline = "ctrl+n"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "hello"
+
+	enter, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	model = enter.(Model)
+	if len(model.messagesByChat["chat-1"]) != 0 || model.composer != "hello" {
+		t.Fatalf("enter sent or changed composer with custom send key: messages=%d composer=%q", len(model.messagesByChat["chat-1"]), model.composer)
+	}
+
+	newlined, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlN})
+	model = newlined.(Model)
+	if model.composer != "hello\n" {
+		t.Fatalf("composer after ctrl+n = %q, want newline", model.composer)
+	}
+
+	sent, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlS})
+	model = sent.(Model)
+	if len(model.messagesByChat["chat-1"]) != 1 || strings.TrimSpace(model.composer) != "" {
+		t.Fatalf("ctrl+s send = messages=%d composer=%q", len(model.messagesByChat["chat-1"]), model.composer)
+	}
+}
+
+func TestCustomVisualCommandAndSearchKeys(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.VisualMoveDown = "x"
+	keymap.VisualMoveUp = "z"
+	keymap.VisualYank = "c"
+	keymap.CommandRun = "!"
+	keymap.SearchRun = "!"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "hello one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "hello two"},
+			}},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+
+	moved, _ := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	model = moved.(Model)
+	if model.messageCursor != 1 {
+		t.Fatalf("visual cursor after x = %d, want 1", model.messageCursor)
+	}
+	yanked, _ := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	model = yanked.(Model)
+	if model.mode != ModeNormal || !strings.Contains(model.yankRegister, "hello two") {
+		t.Fatalf("visual yank = mode %s register %q", model.mode, model.yankRegister)
+	}
+
+	model.mode = ModeCommand
+	model.commandLine = "help"
+	commanded, _ := model.updateCommand(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	model = commanded.(Model)
+	if !model.helpVisible {
+		t.Fatal("custom command run key did not execute :help")
+	}
+
+	model.helpVisible = false
+	model.mode = ModeSearch
+	model.focus = FocusMessages
+	model.searchLine = "two"
+	searched, _ := model.updateSearch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	model = searched.(Model)
+	if model.mode != ModeNormal || model.activeSearch != "two" || model.messageCursor != 1 {
+		t.Fatalf("custom search run = mode %s active %q cursor %d", model.mode, model.activeSearch, model.messageCursor)
+	}
+}
+
 func TestRemoteOpenAndSaveShowDownloadNotImplemented(t *testing.T) {
 	model := mediaTestModel("", media.BackendChafa)
 

@@ -1,0 +1,88 @@
+# vimwhat configuration
+# This file is created on first run and is safe to edit.
+# Key tokens: printable single keys, space, enter, esc, tab, shift+tab, backspace, ctrl+x, alt+x, alt+enter, and leader sequences.
+
+editor = "vi"
+preview_backend = "auto"
+emoji_mode = "auto"
+indicator_normal = "pywal"
+indicator_insert = "pywal"
+indicator_visual = "pywal"
+indicator_command = "pywal"
+indicator_search = "pywal"
+notification_backend = "auto"
+notification_command = ""
+clipboard_command = ""
+file_picker_command = "yazi --chooser-file {chooser}"
+image_viewer_command = "nsxiv {path}"
+video_player_command = "mpv {path}"
+audio_player_command = "mpv --no-video --no-terminal --really-quiet {path}"
+file_opener_command = "xdg-open {path}"
+preview_max_width = 67
+preview_max_height = 18
+preview_delay_ms = 80
+downloads_dir = "~/Downloads"
+
+leader_key = "space"
+
+# Global
+key_global_quit = "ctrl+c"
+
+# Help overlay
+key_help_close = "esc"
+key_help_close_alt = "?"
+
+# Normal mode
+key_normal_cancel = "esc"
+key_normal_quit = "q"
+key_normal_help = "?"
+key_normal_insert = "i"
+key_normal_reply = "r"
+key_normal_retry_failed_media = "R"
+key_normal_visual = "v"
+key_normal_command = ":"
+key_normal_search = "/"
+key_normal_focus_next = "tab"
+key_normal_focus_previous = "shift+tab"
+key_normal_focus_left = "h"
+key_normal_focus_right_or_reply = "l"
+key_normal_move_down = "j"
+key_normal_move_up = "k"
+key_normal_go_top = "g"
+key_normal_go_bottom = "G"
+key_normal_open = "enter"
+key_normal_open_media = "o"
+key_normal_search_next = "n"
+key_normal_search_previous = "N"
+key_normal_toggle_unread = "u"
+key_normal_toggle_pinned = "p"
+key_normal_save_media = "leader s"
+key_normal_unload_previews = "leader h f"
+
+# Insert mode
+key_insert_attach = "ctrl+f"
+key_insert_remove_attachment = "ctrl+x"
+key_insert_newline = "ctrl+j"
+key_insert_newline_alt = "alt+enter"
+key_insert_cancel = "esc"
+key_insert_send = "enter"
+key_insert_backspace = "backspace"
+key_insert_backspace_alt = "ctrl+h"
+
+# Visual mode
+key_visual_cancel = "esc"
+key_visual_move_down = "j"
+key_visual_move_up = "k"
+key_visual_yank = "y"
+
+# Command mode
+key_command_cancel = "esc"
+key_command_run = "enter"
+key_command_backspace = "backspace"
+key_command_backspace_alt = "ctrl+h"
+
+# Search mode
+key_search_cancel = "esc"
+key_search_run = "enter"
+key_search_backspace = "backspace"
+key_search_backspace_alt = "ctrl+h"

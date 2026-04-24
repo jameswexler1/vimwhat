@@ -46,7 +46,9 @@ Runtime state is kept out of the repository:
 - Non-exported chat media cache: `$TMPDIR/vimwhat-*/media`
 - Generated preview cache: `$TMPDIR/vimwhat-*/preview`
 
-Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Files saved explicitly with `leader s` still go to the configured downloads directory and are not part of the transient cache.
+Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Files saved explicitly with the configured save-media key still go to the configured downloads directory and are not part of the transient cache.
+
+On first run, `vimwhat` creates `$XDG_CONFIG_HOME/vimwhat/config.toml` with the full default configuration so it can be edited in place. The same baseline is checked in as `config.example.toml`.
 
 ## Emoji rendering
 
@@ -65,6 +67,26 @@ indicator_search = "pywal"
 ```
 
 Replace any value with a hex color such as `"#7ED7C1"` or `"#f0a"` to override only that mode.
+
+## Keybindings
+
+All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<action>` variables. Bindings accept printable single keys plus named tokens such as `space`, `enter`, `esc`, `tab`, `shift+tab`, `backspace`, `ctrl+x`, `alt+x`, and leader sequences.
+
+```toml
+leader_key = "space"
+
+key_normal_open = "enter"
+key_normal_open_media = "o"
+key_normal_save_media = "leader s"
+key_normal_unload_previews = "leader h f"
+
+key_insert_send = "enter"
+key_insert_newline = "ctrl+j"
+key_insert_attach = "ctrl+f"
+key_insert_remove_attachment = "ctrl+x"
+```
+
+Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.
 
 ## Notifications
 

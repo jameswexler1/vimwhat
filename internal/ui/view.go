@@ -1413,15 +1413,15 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 		if strings.TrimSpace(item.ThumbnailPath) != "" {
 			return "thumbnail only"
 		}
-		return "enter download"
+		return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " download"
 	}
 	if strings.TrimSpace(item.LocalPath) == "" && strings.TrimSpace(item.ThumbnailPath) == "" {
-		return "enter download"
+		return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " download"
 	}
 	if m.previewRequested != nil && m.previewRequested[mediaActivationKey(message, item)] {
 		return "preview pending"
 	}
-	return "enter preview"
+	return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " preview"
 }
 
 func (m Model) audioAttachmentState(message store.Message, item store.MediaMetadata) string {
@@ -1429,7 +1429,7 @@ func (m Model) audioAttachmentState(message store.Message, item store.MediaMetad
 	key := mediaActivationKey(message, item)
 	if m.audioMediaKey == key {
 		if m.audioProcess != nil {
-			return "playing; enter stop"
+			return "playing; " + displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " stop"
 		}
 		return "starting"
 	}
@@ -1438,11 +1438,11 @@ func (m Model) audioAttachmentState(message store.Message, item store.MediaMetad
 	}
 	if strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
-			return "enter download"
+			return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " download"
 		}
 		return ""
 	}
-	return "enter play"
+	return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " play"
 }
 
 func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
@@ -1850,11 +1850,15 @@ func defaultModeStatusColor(mode Mode) lipgloss.Color {
 }
 
 func (m Model) renderInput() string {
+	keys := m.config.Keymap
+	leader := m.config.LeaderKey
 	switch m.mode {
 	case ModeCommand:
-		return m.renderPrompt(":"+m.commandLine, "enter run  esc cancel")
+		hint := fmt.Sprintf("%s run  %s cancel", displayBinding(keys.CommandRun, leader), displayBinding(keys.CommandCancel, leader))
+		return m.renderPrompt(":"+m.commandLine, hint)
 	case ModeSearch:
-		return m.renderPrompt("/"+m.searchLine, "enter search  esc cancel  empty clears")
+		hint := fmt.Sprintf("%s search  %s cancel  empty clears", displayBinding(keys.SearchRun, leader), displayBinding(keys.SearchCancel, leader))
+		return m.renderPrompt("/"+m.searchLine, hint)
 	default:
 		return ""
 	}
@@ -2008,15 +2012,56 @@ func (m Model) composerHeight() int {
 }
 
 func (m Model) renderHelp(width int) string {
+	keys := m.config.Keymap
+	leader := m.config.LeaderKey
 	lines := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("vimwhat help"),
 		"",
-		"normal:  j/k move    5j count    g/G top/bottom    h pane    l right/edge-reply    tab cycle",
-		"         enter preview/open  o open media  <leader>s save  <leader>hf unload previews",
-		"         i insert    r reply    R retry failed media    v visual    / search    : command    u unread    p sort",
-		"         n/N next search   ? help      q quit",
-		"insert:  enter send  ctrl+j newline  ctrl+f attach  ctrl+x remove attachment  esc save draft",
-		"visual:  j/k extend  y yank clipboard  esc normal",
+		fmt.Sprintf("normal:  %s/%s move    5%s count    %s/%s top/bottom    %s pane    %s right/edge-reply    %s cycle",
+			displayBinding(keys.NormalMoveDown, leader),
+			displayBinding(keys.NormalMoveUp, leader),
+			displayBinding(keys.NormalMoveDown, leader),
+			displayBinding(keys.NormalGoTop, leader),
+			displayBinding(keys.NormalGoBottom, leader),
+			displayBinding(keys.NormalFocusLeft, leader),
+			displayBinding(keys.NormalFocusRightOrReply, leader),
+			displayBinding(keys.NormalFocusNext, leader),
+		),
+		fmt.Sprintf("         %s preview/open  %s open media  %s save  %s unload previews",
+			displayBinding(keys.NormalOpen, leader),
+			displayBinding(keys.NormalOpenMedia, leader),
+			displayBinding(keys.NormalSaveMedia, leader),
+			displayBinding(keys.NormalUnloadPreviews, leader),
+		),
+		fmt.Sprintf("         %s insert    %s reply    %s retry failed media    %s visual    %s search    %s command    %s unread    %s sort",
+			displayBinding(keys.NormalInsert, leader),
+			displayBinding(keys.NormalReply, leader),
+			displayBinding(keys.NormalRetryFailedMedia, leader),
+			displayBinding(keys.NormalVisual, leader),
+			displayBinding(keys.NormalSearch, leader),
+			displayBinding(keys.NormalCommand, leader),
+			displayBinding(keys.NormalToggleUnread, leader),
+			displayBinding(keys.NormalTogglePinned, leader),
+		),
+		fmt.Sprintf("         %s/%s next search   %s help      %s quit",
+			displayBinding(keys.NormalSearchNext, leader),
+			displayBinding(keys.NormalSearchPrevious, leader),
+			displayBinding(keys.NormalHelp, leader),
+			displayBinding(keys.NormalQuit, leader),
+		),
+		fmt.Sprintf("insert:  %s send  %s newline  %s attach  %s remove attachment  %s save draft",
+			displayBinding(keys.InsertSend, leader),
+			displayBindings(leader, keys.InsertNewline, keys.InsertNewlineAlt),
+			displayBinding(keys.InsertAttach, leader),
+			displayBinding(keys.InsertRemoveAttachment, leader),
+			displayBinding(keys.InsertCancel, leader),
+		),
+		fmt.Sprintf("visual:  %s/%s extend  %s yank clipboard  %s normal",
+			displayBinding(keys.VisualMoveDown, leader),
+			displayBinding(keys.VisualMoveUp, leader),
+			displayBinding(keys.VisualYank, leader),
+			displayBinding(keys.VisualCancel, leader),
+		),
 		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
 		"         sort pinned/recent  preview  media-preview  media-open  media-save  media-hide",
 		"         history fetch  mark-read  quote-jump  react <emoji>|clear  retry-message|retry",

@@ -42,6 +42,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.InsertAttach != "ctrl+f" {
+		t.Fatalf("keymap defaults = open %q unload %q attach %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.InsertAttach)
+	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
 	}
@@ -70,6 +73,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`audio_player_command = "mpv --no-video {path}"`,
 		`file_opener_command = ""`,
 		`leader_key = ","`,
+		`key_normal_quit = "x"`,
+		`key_normal_save_media = "leader y"`,
+		`key_insert_send = "ctrl+s"`,
 		`preview_max_width = 44`,
 		`preview_max_height = 10`,
 		`preview_delay_ms = 0`,
@@ -124,6 +130,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertSend != "ctrl+s" {
+		t.Fatalf("keymap = quit %q save %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertSend)
+	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
 	}
@@ -159,6 +168,74 @@ func TestLoadRejectsInvalidLeaderKey(t *testing.T) {
 	_, err := Load(Paths{ConfigFile: path})
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid leader error")
+	}
+}
+
+func TestLoadRejectsLeaderKeyDigit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`leader_key = "1"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want digit leader error")
+	}
+	if !strings.Contains(err.Error(), "digits are reserved") {
+		t.Fatalf("Load() error = %v, want digit reservation context", err)
+	}
+}
+
+func TestLoadRejectsInvalidKeyBinding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`key_normal_quit = "escape"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid key binding error")
+	}
+	if !strings.Contains(err.Error(), "key_normal_quit") {
+		t.Fatalf("Load() error = %v, want key binding context", err)
+	}
+}
+
+func TestLoadRejectsDuplicateKeyBindingInMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`key_normal_quit = "i"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want duplicate key binding error")
+	}
+	if !strings.Contains(err.Error(), "key_normal_quit") || !strings.Contains(err.Error(), "key_normal_insert") {
+		t.Fatalf("Load() error = %v, want duplicate binding context", err)
+	}
+}
+
+func TestLoadRejectsLeaderPrefixConflict(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`key_normal_quit = "space"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want leader prefix conflict")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Fatalf("Load() error = %v, want prefix conflict context", err)
 	}
 }
 
@@ -207,6 +284,65 @@ func TestLoadRejectsInvalidNotificationBackend(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "notification_backend") {
 		t.Fatalf("Load() error = %v, want notification_backend context", err)
+	}
+}
+
+func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vimwhat", "config.toml")
+	paths := Paths{
+		ConfigDir:  filepath.Dir(path),
+		ConfigFile: path,
+	}
+
+	if err := EnsureDefaultFile(paths); err != nil {
+		t.Fatalf("EnsureDefaultFile() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`leader_key = "space"`,
+		`key_normal_unload_previews = "leader h f"`,
+		`key_insert_attach = "ctrl+f"`,
+		`downloads_dir = "~/Downloads"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("default config missing %q:\n%s", want, content)
+		}
+	}
+	if _, err := Load(paths); err != nil {
+		t.Fatalf("Load(default config) error = %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte(`editor = "ed"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := EnsureDefaultFile(paths); err != nil {
+		t.Fatalf("EnsureDefaultFile(existing) error = %v", err)
+	}
+	unchanged, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(existing) error = %v", err)
+	}
+	if string(unchanged) != `editor = "ed"` {
+		t.Fatalf("existing config was overwritten: %q", string(unchanged))
+	}
+}
+
+func TestExampleConfigParses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join("..", "..", "config.example.toml")
+
+	cfg, err := Load(Paths{ConfigFile: path})
+	if err != nil {
+		t.Fatalf("Load(config.example.toml) error = %v", err)
+	}
+	if cfg.Keymap.NormalUnloadPreviews != "leader h f" {
+		t.Fatalf("NormalUnloadPreviews = %q, want leader h f", cfg.Keymap.NormalUnloadPreviews)
 	}
 }
 
