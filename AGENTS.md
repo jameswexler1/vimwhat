@@ -42,6 +42,10 @@ Use idiomatic Go and standard formatting. Let `gofmt` define indentation and spa
 
 Favor small packages with explicit responsibilities. Keep protocol, storage, UI, and media concerns separated.
 
+## Keybinding Features
+
+Any feature that introduces a keyboard shortcut must use the existing configurable keymap model. Add a named `key_<mode>_<action>` entry in `internal/config/keymap.go`, wire the UI action through `internal/ui/keymap.go`/normal-mode action dispatch as appropriate, and avoid hard-coded shortcuts outside the keymap layer. Also update the generated first-run config source and the checked-in `config.example.toml` so users can discover and edit the new binding.
+
 ## Testing Guidelines
 
 Write table-driven Go tests with the standard `testing` package. Name files `*_test.go` and tests `TestXxx`. Add integration tests around SQLite, history sync, and event ingestion early; the lazy-loading and modal behavior are high-risk areas and should not rely only on manual testing.

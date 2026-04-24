@@ -157,6 +157,9 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 				if normalized.Kind == EventMediaMetadata {
 					normalized.Media.Historical = true
 				}
+				if normalized.Kind == EventMessageDelete {
+					normalized.Delete.Historical = true
+				}
 				out = append(out, normalized)
 			}
 		}
@@ -295,6 +298,14 @@ func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.
 			LastMessageAt: event.Info.Timestamp,
 		},
 	}}
+
+	if deleted, ok := messageDeleteEvent(chatID, event); ok {
+		normalized = append(normalized, Event{
+			Kind:   EventMessageDelete,
+			Delete: deleted,
+		})
+		return normalized
+	}
 
 	if hasReaction {
 		normalized = append(normalized, Event{
@@ -501,6 +512,14 @@ func normalizeMessageEvent(event *events.Message) []Event {
 		},
 	}}
 
+	if deleted, ok := messageDeleteEvent(chatID, event); ok {
+		normalized = append(normalized, Event{
+			Kind:   EventMessageDelete,
+			Delete: deleted,
+		})
+		return normalized
+	}
+
 	if hasReaction {
 		normalized = append(normalized, Event{
 			Kind:     EventReactionUpdate,
@@ -584,6 +603,28 @@ func messageNotificationPreview(body string, item MediaEvent, hasMedia bool) str
 
 func reactionEvent(chatID string, event *events.Message) (ReactionEvent, bool) {
 	return reactionEventForSender(chatID, senderJID(event.Info), event)
+}
+
+func messageDeleteEvent(chatID string, event *events.Message) (MessageDeleteEvent, bool) {
+	if event == nil || event.Message == nil {
+		return MessageDeleteEvent{}, false
+	}
+	protocol := event.Message.GetProtocolMessage()
+	if protocol == nil || protocol.GetType() != waE2E.ProtocolMessage_REVOKE || protocol.GetKey() == nil {
+		return MessageDeleteEvent{}, false
+	}
+	remoteID := strings.TrimSpace(protocol.GetKey().GetID())
+	if remoteID == "" || strings.TrimSpace(chatID) == "" {
+		return MessageDeleteEvent{}, false
+	}
+	return MessageDeleteEvent{
+		MessageID:     localMessageID(chatID, remoteID),
+		RemoteID:      remoteID,
+		ChatID:        chatID,
+		ChatJID:       chatID,
+		DeletedReason: "everyone",
+		Timestamp:     event.Info.Timestamp,
+	}, true
 }
 
 func reactionEventForSender(chatID, senderJID string, event *events.Message) (ReactionEvent, bool) {

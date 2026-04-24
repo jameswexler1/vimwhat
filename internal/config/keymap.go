@@ -22,31 +22,32 @@ type Keymap struct {
 	HelpClose    string
 	HelpCloseAlt string
 
-	NormalCancel            string
-	NormalQuit              string
-	NormalHelp              string
-	NormalInsert            string
-	NormalReply             string
-	NormalRetryFailedMedia  string
-	NormalVisual            string
-	NormalCommand           string
-	NormalSearch            string
-	NormalFocusNext         string
-	NormalFocusPrevious     string
-	NormalFocusLeft         string
-	NormalFocusRightOrReply string
-	NormalMoveDown          string
-	NormalMoveUp            string
-	NormalGoTop             string
-	NormalGoBottom          string
-	NormalOpen              string
-	NormalOpenMedia         string
-	NormalSearchNext        string
-	NormalSearchPrevious    string
-	NormalToggleUnread      string
-	NormalTogglePinned      string
-	NormalSaveMedia         string
-	NormalUnloadPreviews    string
+	NormalCancel             string
+	NormalQuit               string
+	NormalHelp               string
+	NormalInsert             string
+	NormalReply              string
+	NormalRetryFailedMedia   string
+	NormalVisual             string
+	NormalCommand            string
+	NormalSearch             string
+	NormalFocusNext          string
+	NormalFocusPrevious      string
+	NormalFocusLeft          string
+	NormalFocusRightOrReply  string
+	NormalMoveDown           string
+	NormalMoveUp             string
+	NormalGoTop              string
+	NormalGoBottom           string
+	NormalOpen               string
+	NormalOpenMedia          string
+	NormalSearchNext         string
+	NormalSearchPrevious     string
+	NormalToggleUnread       string
+	NormalTogglePinned       string
+	NormalSaveMedia          string
+	NormalUnloadPreviews     string
+	NormalDeleteForEverybody string
 
 	InsertAttach           string
 	InsertRemoveAttachment string
@@ -86,31 +87,32 @@ func DefaultKeymap() Keymap {
 		HelpClose:    "esc",
 		HelpCloseAlt: "?",
 
-		NormalCancel:            "esc",
-		NormalQuit:              "q",
-		NormalHelp:              "?",
-		NormalInsert:            "i",
-		NormalReply:             "r",
-		NormalRetryFailedMedia:  "R",
-		NormalVisual:            "v",
-		NormalCommand:           ":",
-		NormalSearch:            "/",
-		NormalFocusNext:         "tab",
-		NormalFocusPrevious:     "shift+tab",
-		NormalFocusLeft:         "h",
-		NormalFocusRightOrReply: "l",
-		NormalMoveDown:          "j",
-		NormalMoveUp:            "k",
-		NormalGoTop:             "g",
-		NormalGoBottom:          "G",
-		NormalOpen:              "enter",
-		NormalOpenMedia:         "o",
-		NormalSearchNext:        "n",
-		NormalSearchPrevious:    "N",
-		NormalToggleUnread:      "u",
-		NormalTogglePinned:      "p",
-		NormalSaveMedia:         "leader s",
-		NormalUnloadPreviews:    "leader h f",
+		NormalCancel:             "esc",
+		NormalQuit:               "q",
+		NormalHelp:               "?",
+		NormalInsert:             "i",
+		NormalReply:              "r",
+		NormalRetryFailedMedia:   "R",
+		NormalVisual:             "v",
+		NormalCommand:            ":",
+		NormalSearch:             "/",
+		NormalFocusNext:          "tab",
+		NormalFocusPrevious:      "shift+tab",
+		NormalFocusLeft:          "h",
+		NormalFocusRightOrReply:  "l",
+		NormalMoveDown:           "j",
+		NormalMoveUp:             "k",
+		NormalGoTop:              "g",
+		NormalGoBottom:           "G",
+		NormalOpen:               "enter",
+		NormalOpenMedia:          "o",
+		NormalSearchNext:         "n",
+		NormalSearchPrevious:     "N",
+		NormalToggleUnread:       "u",
+		NormalTogglePinned:       "p",
+		NormalSaveMedia:          "leader s",
+		NormalUnloadPreviews:     "leader h f",
+		NormalDeleteForEverybody: "leader d e",
 
 		InsertAttach:           "ctrl+f",
 		InsertRemoveAttachment: "ctrl+x",
@@ -225,6 +227,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.NormalUnloadPreviews == "" {
 		input.NormalUnloadPreviews = defaults.NormalUnloadPreviews
 	}
+	if input.NormalDeleteForEverybody == "" {
+		input.NormalDeleteForEverybody = defaults.NormalDeleteForEverybody
+	}
 	if input.InsertAttach == "" {
 		input.InsertAttach = defaults.InsertAttach
 	}
@@ -319,6 +324,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_toggle_pinned", Mode: KeyModeNormal, Value: k.NormalTogglePinned},
 		{Name: "key_normal_save_media", Mode: KeyModeNormal, Value: k.NormalSaveMedia},
 		{Name: "key_normal_unload_previews", Mode: KeyModeNormal, Value: k.NormalUnloadPreviews},
+		{Name: "key_normal_delete_for_everybody", Mode: KeyModeNormal, Value: k.NormalDeleteForEverybody},
 		{Name: "key_insert_attach", Mode: KeyModeInsert, Value: k.InsertAttach},
 		{Name: "key_insert_remove_attachment", Mode: KeyModeInsert, Value: k.InsertRemoveAttachment},
 		{Name: "key_insert_newline", Mode: KeyModeInsert, Value: k.InsertNewline},
@@ -405,6 +411,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalSaveMedia = normalized
 	case "key_normal_unload_previews":
 		k.NormalUnloadPreviews = normalized
+	case "key_normal_delete_for_everybody":
+		k.NormalDeleteForEverybody = normalized
 	case "key_insert_attach":
 		k.InsertAttach = normalized
 	case "key_insert_remove_attachment":

@@ -186,6 +186,68 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}
 }
 
+func TestIngestorAppliesMessageDeleteEvent(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	when := time.Unix(1_700_000_000, 0)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(chat) error = %v", err)
+	}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventMessageUpsert,
+		Message: MessageEvent{
+			ID:         "chat-1/remote-1",
+			RemoteID:   "remote-1",
+			ChatID:     "chat-1",
+			ChatJID:    "chat-1@s.whatsapp.net",
+			Sender:     "me",
+			SenderJID:  "me",
+			Body:       "remove me",
+			Timestamp:  when,
+			IsOutgoing: true,
+			Status:     "sent",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(message) error = %v", err)
+	}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventMessageDelete,
+		Delete: MessageDeleteEvent{
+			MessageID: "chat-1/remote-1",
+			RemoteID:  "remote-1",
+			ChatID:    "chat-1",
+			ChatJID:   "chat-1@s.whatsapp.net",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(delete) error = %v", err)
+	}
+
+	messages, err := db.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("messages after delete = %+v, want none", messages)
+	}
+}
+
 func TestIngestorApplyReportsInsertedOnlyForFirstLiveMessage(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))

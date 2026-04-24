@@ -42,8 +42,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.InsertAttach != "ctrl+f" {
-		t.Fatalf("keymap defaults = open %q unload %q attach %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.InsertAttach)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" {
+		t.Fatalf("keymap defaults = open %q unload %q delete-everybody %q attach %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -307,6 +307,7 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 	for _, want := range []string{
 		`leader_key = "space"`,
 		`key_normal_unload_previews = "leader h f"`,
+		`key_normal_delete_for_everybody = "leader d e"`,
 		`key_insert_attach = "ctrl+f"`,
 		`downloads_dir = "~/Downloads"`,
 	} {
@@ -343,6 +344,9 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.NormalUnloadPreviews != "leader h f" {
 		t.Fatalf("NormalUnloadPreviews = %q, want leader h f", cfg.Keymap.NormalUnloadPreviews)
+	}
+	if cfg.Keymap.NormalDeleteForEverybody != "leader d e" {
+		t.Fatalf("NormalDeleteForEverybody = %q, want leader d e", cfg.Keymap.NormalDeleteForEverybody)
 	}
 }
 

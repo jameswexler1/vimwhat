@@ -4906,6 +4906,89 @@ func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T)
 	}
 }
 
+func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) {
+	var queued store.Message
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "keep", IsOutgoing: true, Status: "sent"},
+					{ID: "m-2", RemoteID: "remote-2", ChatID: "chat-1", Sender: "me", Body: "delete me", IsOutgoing: true, Status: "sent"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			queued = message
+			return func() tea.Msg {
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+
+	armed, _ := model.executeCommand("delete-message-everybody")
+	got := armed.(Model)
+	if queued.ID != "" {
+		t.Fatal("delete-message-everybody queued without confirmation")
+	}
+	if got.deleteForEveryoneConfirmID != "m-2" {
+		t.Fatalf("deleteForEveryoneConfirmID = %q, want m-2", got.deleteForEveryoneConfirmID)
+	}
+
+	confirmed, cmd := got.executeCommand("delete-message-everybody confirm")
+	got = confirmed.(Model)
+	if queued.ID != "m-2" {
+		t.Fatalf("queued message = %+v, want m-2", queued)
+	}
+	if len(got.messagesByChat["chat-1"]) != 2 {
+		t.Fatalf("message removed before completion: %+v", got.messagesByChat["chat-1"])
+	}
+	if cmd == nil {
+		t.Fatal("confirm command = nil, want delete command")
+	}
+
+	handled, _ := got.Update(cmd())
+	got = handled.(Model)
+	messages := got.messagesByChat["chat-1"]
+	if len(messages) != 1 || messages[0].ID != "m-1" {
+		t.Fatalf("messages after delete completion = %+v", messages)
+	}
+}
+
+func TestDeleteMessageForEverybodyRejectsIncomingMessage(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "Alice", Body: "incoming"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			return func() tea.Msg {
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.focus = FocusMessages
+
+	updated, cmd := model.executeCommand("delete-message-everybody")
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatalf("delete-message-everybody command = %T, want nil", cmd)
+	}
+	if got.deleteForEveryoneConfirmID != "" || !strings.Contains(got.status, "only your outgoing messages") {
+		t.Fatalf("state = confirm %q status %q", got.deleteForEveryoneConfirmID, got.status)
+	}
+}
+
 func TestCompactInsertComposerVisibleAt80ColumnsWithDatedMessages(t *testing.T) {
 	now := time.Date(2026, 4, 21, 20, 0, 0, 0, time.UTC)
 	messages := []store.Message{

@@ -366,6 +366,43 @@ func TestNormalizeReactionMessageEvent(t *testing.T) {
 	}
 }
 
+func TestNormalizeRevokeMessageEvent(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   types.NewJID("99999", types.DefaultUserServer),
+				IsFromMe: true,
+			},
+			ID:        "REVOKE1",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{
+			ProtocolMessage: &waE2E.ProtocolMessage{
+				Key: &waCommon.MessageKey{
+					RemoteJID: proto.String(chat.String()),
+					FromMe:    proto.Bool(true),
+					ID:        proto.String("TARGET1"),
+				},
+				Type: waE2E.ProtocolMessage_REVOKE.Enum(),
+			},
+		},
+	})
+	if len(normalized) != 2 {
+		t.Fatalf("len(normalized) = %d, want chat+delete", len(normalized))
+	}
+	if normalized[1].Kind != EventMessageDelete {
+		t.Fatalf("event kind = %s, want %s", normalized[1].Kind, EventMessageDelete)
+	}
+	if normalized[1].Delete.MessageID != "12345@s.whatsapp.net/TARGET1" ||
+		normalized[1].Delete.RemoteID != "TARGET1" ||
+		normalized[1].Delete.DeletedReason != "everyone" {
+		t.Fatalf("delete event = %+v", normalized[1].Delete)
+	}
+}
+
 func TestNormalizeChatPresenceEvent(t *testing.T) {
 	chat := types.NewJID("12345", types.DefaultUserServer)
 	sender := types.NewJID("67890", types.DefaultUserServer)

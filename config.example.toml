@@ -2,11 +2,11 @@
 # This file is created on first run and is safe to edit.
 # Key tokens: printable single keys, space, enter, esc, tab, shift+tab, backspace, ctrl+x, alt+x, alt+enter, and leader sequences.
 
-editor = "vi"
+editor = "nvim"
 preview_backend = "auto"
-emoji_mode = "auto"
+emoji_mode = "compat"
 indicator_normal = "pywal"
-indicator_insert = "pywal"
+indicator_insert = "#ff8800"
 indicator_visual = "pywal"
 indicator_command = "pywal"
 indicator_search = "pywal"
@@ -23,7 +23,7 @@ preview_max_height = 18
 preview_delay_ms = 80
 downloads_dir = "~/Downloads"
 
-leader_key = "space"
+leader_key = ","
 
 # Global
 key_global_quit = "ctrl+c"
@@ -58,6 +58,7 @@ key_normal_toggle_unread = "u"
 key_normal_toggle_pinned = "p"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
+key_normal_delete_for_everybody = "leader d e"
 
 # Insert mode
 key_insert_attach = "ctrl+f"

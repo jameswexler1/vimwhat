@@ -957,13 +957,32 @@ func (s *Store) ListMessageReactions(ctx context.Context, messageID string) ([]R
 }
 
 func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
+	deleted, err := s.markMessageDeleted(ctx, messageID, "local", true)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return fmt.Errorf("message %s does not exist", messageID)
+	}
+	return nil
+}
+
+func (s *Store) DeleteMessageForEveryone(ctx context.Context, messageID string) (bool, error) {
+	return s.markMessageDeleted(ctx, messageID, "everyone", false)
+}
+
+func (s *Store) markMessageDeleted(ctx context.Context, messageID, reason string, requireExisting bool) (bool, error) {
 	if strings.TrimSpace(messageID) == "" {
-		return fmt.Errorf("message id is required")
+		return false, fmt.Errorf("message id is required")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "local"
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin delete message: %w", err)
+		return false, fmt.Errorf("begin delete message: %w", err)
 	}
 
 	var chatID string
@@ -976,9 +995,12 @@ func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
 	if err != nil {
 		_ = tx.Rollback()
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("message %s does not exist", messageID)
+			if requireExisting {
+				return false, fmt.Errorf("message %s does not exist", messageID)
+			}
+			return false, nil
 		}
-		return fmt.Errorf("load message %s for delete: %w", messageID, err)
+		return false, fmt.Errorf("load message %s for delete: %w", messageID, err)
 	}
 
 	now := time.Now().Unix()
@@ -986,22 +1008,25 @@ func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
 		UPDATE messages
 		SET body = '',
 			deleted_at = ?,
-			deleted_reason = 'local'
+			deleted_reason = ?
 		WHERE id = ?
 			AND deleted_at = 0
-	`, now, messageID)
+	`, now, reason, messageID)
 	if err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("delete message %s: %w", messageID, err)
+		return false, fmt.Errorf("delete message %s: %w", messageID, err)
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		_ = tx.Rollback()
-		return fmt.Errorf("message %s does not exist", messageID)
+		if requireExisting {
+			return false, fmt.Errorf("message %s does not exist", messageID)
+		}
+		return false, nil
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, messageID); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("clear fts for deleted message %s: %w", messageID, err)
+		return false, fmt.Errorf("clear fts for deleted message %s: %w", messageID, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -1016,14 +1041,14 @@ func (s *Store) DeleteMessage(ctx context.Context, messageID string) error {
 		WHERE id = ?
 	`, chatID, now, chatID); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("refresh chat %s after delete: %w", chatID, err)
+		return false, fmt.Errorf("refresh chat %s after delete: %w", chatID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit delete message: %w", err)
+		return false, fmt.Errorf("commit delete message: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 func (s *Store) SaveDraft(ctx context.Context, chatID, body string) error {

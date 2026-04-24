@@ -63,6 +63,16 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			MessageInserted: inserted,
 			Message:         event.Message,
 		}, err
+	case EventMessageDelete:
+		messageID := strings.TrimSpace(event.Delete.MessageID)
+		if messageID == "" && strings.TrimSpace(event.Delete.ChatID) != "" && strings.TrimSpace(event.Delete.RemoteID) != "" {
+			messageID = LocalMessageID(event.Delete.ChatID, event.Delete.RemoteID)
+		}
+		if messageID == "" {
+			return ApplyResult{}, fmt.Errorf("delete message id is required")
+		}
+		_, err := i.Store.DeleteMessageForEveryone(ctx, messageID)
+		return ApplyResult{}, err
 	case EventMediaMetadata:
 		metadata := store.MediaMetadata{
 			MessageID:          event.Media.MessageID,

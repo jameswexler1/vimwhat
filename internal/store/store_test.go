@@ -759,6 +759,73 @@ func TestMessageMediaAndLocalDelete(t *testing.T) {
 	}
 }
 
+func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", JID: "chat-1@s.whatsapp.net", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:         "chat-1/remote-1",
+		RemoteID:   "remote-1",
+		ChatID:     "chat-1",
+		ChatJID:    "chat-1@s.whatsapp.net",
+		Sender:     "me",
+		Body:       "remove from everyone",
+		Timestamp:  time.Unix(1_700_000_000, 0),
+		IsOutgoing: true,
+		Status:     "sent",
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	deleted, err := store.DeleteMessageForEveryone(ctx, "chat-1/remote-1")
+	if err != nil {
+		t.Fatalf("DeleteMessageForEveryone() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteMessageForEveryone() deleted = false, want true")
+	}
+
+	var body, reason string
+	var deletedAt int64
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT body, deleted_at, deleted_reason
+		FROM messages
+		WHERE id = ?
+	`, "chat-1/remote-1").Scan(&body, &deletedAt, &reason); err != nil {
+		t.Fatalf("query deleted message: %v", err)
+	}
+	if body != "" || deletedAt == 0 || reason != "everyone" {
+		t.Fatalf("deleted row = body %q deletedAt %d reason %q", body, deletedAt, reason)
+	}
+
+	results, err := store.SearchMessages(ctx, "chat-1", "remove", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("search results after delete = %+v, want none", results)
+	}
+
+	deleted, err = store.DeleteMessageForEveryone(ctx, "chat-1/remote-1")
+	if err != nil {
+		t.Fatalf("DeleteMessageForEveryone(second) error = %v", err)
+	}
+	if deleted {
+		t.Fatal("DeleteMessageForEveryone(second) deleted = true, want false")
+	}
+}
+
 func TestListChatsUsesStickerPreviewLabel(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

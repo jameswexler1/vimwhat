@@ -147,147 +147,155 @@ type MediaOpenFinishedMsg struct {
 	Err       error
 }
 
+type MessageDeletedForEveryoneMsg struct {
+	MessageID string
+	Err       error
+}
+
 type AudioProcess interface {
 	Wait() error
 	Stop() error
 }
 
 type Options struct {
-	Paths                config.Paths
-	Config               config.Config
-	PreviewReport        media.Report
-	Snapshot             store.Snapshot
-	ConnectionState      ConnectionState
-	LiveUpdates          <-chan LiveUpdate
-	BlockSending         bool
-	BlockAttachments     bool
-	RequireOnlineForSend bool
-	PersistMessage       func(OutgoingMessage) (store.Message, error)
-	RetryMessage         func(message store.Message) (store.Message, error)
-	MarkRead             func(chat store.Chat, messages []store.Message) error
-	SendReaction         func(message store.Message, emoji string) error
-	SendPresence         func(chatID string, composing bool) error
-	SubscribePresence    func(chatID string) error
-	LoadMessages         func(chatID string, limit int) ([]store.Message, error)
-	LoadOlderMessages    func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	RequestHistory       func(chatID string) error
-	ReloadSnapshot       func(activeChatID string, limit int) (store.Snapshot, error)
-	SaveDraft            func(chatID, body string) error
-	SearchChats          func(query string) ([]store.Chat, error)
-	SearchMessages       func(chatID, query string, limit int) ([]store.Message, error)
-	CopyToClipboard      func(text string) error
-	PickAttachment       func() tea.Cmd
-	OpenMedia            func(media store.MediaMetadata) tea.Cmd
-	StartAudio           func(media store.MediaMetadata) (AudioProcess, error)
-	DeleteMessage        func(messageID string) error
-	SaveMedia            func(media store.MediaMetadata) error
-	DownloadMedia        func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	ActiveChatChanged    func(chatID string)
-	AppFocusChanged      func(focused bool)
-	VisibleChatsChanged  func(chatIDs []string)
+	Paths                    config.Paths
+	Config                   config.Config
+	PreviewReport            media.Report
+	Snapshot                 store.Snapshot
+	ConnectionState          ConnectionState
+	LiveUpdates              <-chan LiveUpdate
+	BlockSending             bool
+	BlockAttachments         bool
+	RequireOnlineForSend     bool
+	PersistMessage           func(OutgoingMessage) (store.Message, error)
+	RetryMessage             func(message store.Message) (store.Message, error)
+	MarkRead                 func(chat store.Chat, messages []store.Message) error
+	SendReaction             func(message store.Message, emoji string) error
+	SendPresence             func(chatID string, composing bool) error
+	SubscribePresence        func(chatID string) error
+	LoadMessages             func(chatID string, limit int) ([]store.Message, error)
+	LoadOlderMessages        func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	RequestHistory           func(chatID string) error
+	ReloadSnapshot           func(activeChatID string, limit int) (store.Snapshot, error)
+	SaveDraft                func(chatID, body string) error
+	SearchChats              func(query string) ([]store.Chat, error)
+	SearchMessages           func(chatID, query string, limit int) ([]store.Message, error)
+	CopyToClipboard          func(text string) error
+	PickAttachment           func() tea.Cmd
+	OpenMedia                func(media store.MediaMetadata) tea.Cmd
+	StartAudio               func(media store.MediaMetadata) (AudioProcess, error)
+	DeleteMessage            func(messageID string) error
+	DeleteMessageForEveryone func(message store.Message) tea.Cmd
+	SaveMedia                func(media store.MediaMetadata) error
+	DownloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	ActiveChatChanged        func(chatID string)
+	AppFocusChanged          func(focused bool)
+	VisibleChatsChanged      func(chatIDs []string)
 }
 
 type Model struct {
-	width                    int
-	height                   int
-	mode                     Mode
-	focus                    Focus
-	allChats                 []store.Chat
-	chats                    []store.Chat
-	messagesByChat           map[string][]store.Message
-	draftsByChat             map[string]string
-	activeChat               int
-	chatScrollTop            int
-	messageCursor            int
-	messageScrollTop         int
-	visualAnchor             int
-	previewReport            media.Report
-	previewCache             map[string]media.Preview
-	previewInflight          map[string]bool
-	previewRequested         map[string]bool
-	previewGeneration        int
-	overlay                  *media.OverlayManager
-	overlaySignature         string
-	mediaDownloadInflight    map[string]bool
-	suppressOverlay          bool
-	audioProcess             AudioProcess
-	audioSession             int
-	audioMessageID           string
-	audioMediaKey            string
-	audioDisplayName         string
-	paths                    config.Paths
-	config                   config.Config
-	status                   string
-	connectionState          ConnectionState
-	commandLine              string
-	searchLine               string
-	composer                 string
-	attachments              []Attachment
-	lastSearch               string
-	lastSearchFocus          Focus
-	activeSearch             string
-	searchChatSource         []store.Chat
-	searchMatches            []int
-	searchIndex              int
-	messageFilter            string
-	unfilteredByChat         map[string][]store.Message
-	pendingCount             int
-	leaderPending            bool
-	leaderSequence           string
-	yankRegister             string
-	quitting                 bool
-	compactLayout            bool
-	infoPaneVisible          bool
-	helpVisible              bool
-	unreadOnly               bool
-	pinnedFirst              bool
-	commandHistory           []string
-	searchHistory            []string
-	deleteConfirmID          string
-	replyTo                  *store.Message
-	presenceByChat           map[string]PresenceUpdate
-	readReceiptInflight      map[string]bool
-	presenceSubscribed       map[string]bool
-	ownPresenceChatID        string
-	ownPresenceComposing     bool
-	ownPresenceGeneration    int
-	persistMessage           func(OutgoingMessage) (store.Message, error)
-	retryMessage             func(message store.Message) (store.Message, error)
-	markRead                 func(chat store.Chat, messages []store.Message) error
-	sendReaction             func(message store.Message, emoji string) error
-	sendPresence             func(chatID string, composing bool) error
-	subscribePresence        func(chatID string) error
-	loadMessages             func(chatID string, limit int) ([]store.Message, error)
-	loadOlderMessages        func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	requestHistory           func(chatID string) error
-	reloadSnapshot           func(activeChatID string, limit int) (store.Snapshot, error)
-	saveDraft                func(chatID, body string) error
-	searchChats              func(query string) ([]store.Chat, error)
-	searchMessages           func(chatID, query string, limit int) ([]store.Message, error)
-	copyToClipboard          func(text string) error
-	pickAttachment           func() tea.Cmd
-	openMedia                func(media store.MediaMetadata) tea.Cmd
-	startAudio               func(media store.MediaMetadata) (AudioProcess, error)
-	deleteMessage            func(messageID string) error
-	saveMedia                func(media store.MediaMetadata) error
-	downloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	activeChatChanged        func(chatID string)
-	lastReportedActiveChat   string
-	appFocusKnown            bool
-	appFocused               bool
-	appFocusChanged          func(focused bool)
-	visibleChatsChanged      func(chatIDs []string)
-	lastReportedVisibleChats string
-	liveUpdates              <-chan LiveUpdate
-	reloadInFlight           bool
-	refreshQueued            bool
-	refreshDebouncePending   bool
-	refreshPreferredChatID   string
-	blockSending             bool
-	blockAttachments         bool
-	requireOnlineForSend     bool
-	messageLimitsByChat      map[string]int
-	historyRequestedByChat   map[string]bool
+	width                      int
+	height                     int
+	mode                       Mode
+	focus                      Focus
+	allChats                   []store.Chat
+	chats                      []store.Chat
+	messagesByChat             map[string][]store.Message
+	draftsByChat               map[string]string
+	activeChat                 int
+	chatScrollTop              int
+	messageCursor              int
+	messageScrollTop           int
+	visualAnchor               int
+	previewReport              media.Report
+	previewCache               map[string]media.Preview
+	previewInflight            map[string]bool
+	previewRequested           map[string]bool
+	previewGeneration          int
+	overlay                    *media.OverlayManager
+	overlaySignature           string
+	mediaDownloadInflight      map[string]bool
+	suppressOverlay            bool
+	audioProcess               AudioProcess
+	audioSession               int
+	audioMessageID             string
+	audioMediaKey              string
+	audioDisplayName           string
+	paths                      config.Paths
+	config                     config.Config
+	status                     string
+	connectionState            ConnectionState
+	commandLine                string
+	searchLine                 string
+	composer                   string
+	attachments                []Attachment
+	lastSearch                 string
+	lastSearchFocus            Focus
+	activeSearch               string
+	searchChatSource           []store.Chat
+	searchMatches              []int
+	searchIndex                int
+	messageFilter              string
+	unfilteredByChat           map[string][]store.Message
+	pendingCount               int
+	leaderPending              bool
+	leaderSequence             string
+	yankRegister               string
+	quitting                   bool
+	compactLayout              bool
+	infoPaneVisible            bool
+	helpVisible                bool
+	unreadOnly                 bool
+	pinnedFirst                bool
+	commandHistory             []string
+	searchHistory              []string
+	deleteConfirmID            string
+	deleteForEveryoneConfirmID string
+	replyTo                    *store.Message
+	presenceByChat             map[string]PresenceUpdate
+	readReceiptInflight        map[string]bool
+	presenceSubscribed         map[string]bool
+	ownPresenceChatID          string
+	ownPresenceComposing       bool
+	ownPresenceGeneration      int
+	persistMessage             func(OutgoingMessage) (store.Message, error)
+	retryMessage               func(message store.Message) (store.Message, error)
+	markRead                   func(chat store.Chat, messages []store.Message) error
+	sendReaction               func(message store.Message, emoji string) error
+	sendPresence               func(chatID string, composing bool) error
+	subscribePresence          func(chatID string) error
+	loadMessages               func(chatID string, limit int) ([]store.Message, error)
+	loadOlderMessages          func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	requestHistory             func(chatID string) error
+	reloadSnapshot             func(activeChatID string, limit int) (store.Snapshot, error)
+	saveDraft                  func(chatID, body string) error
+	searchChats                func(query string) ([]store.Chat, error)
+	searchMessages             func(chatID, query string, limit int) ([]store.Message, error)
+	copyToClipboard            func(text string) error
+	pickAttachment             func() tea.Cmd
+	openMedia                  func(media store.MediaMetadata) tea.Cmd
+	startAudio                 func(media store.MediaMetadata) (AudioProcess, error)
+	deleteMessage              func(messageID string) error
+	deleteMessageForEveryone   func(message store.Message) tea.Cmd
+	saveMedia                  func(media store.MediaMetadata) error
+	downloadMedia              func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	activeChatChanged          func(chatID string)
+	lastReportedActiveChat     string
+	appFocusKnown              bool
+	appFocused                 bool
+	appFocusChanged            func(focused bool)
+	visibleChatsChanged        func(chatIDs []string)
+	lastReportedVisibleChats   string
+	liveUpdates                <-chan LiveUpdate
+	reloadInFlight             bool
+	refreshQueued              bool
+	refreshDebouncePending     bool
+	refreshPreferredChatID     string
+	blockSending               bool
+	blockAttachments           bool
+	requireOnlineForSend       bool
+	messageLimitsByChat        map[string]int
+	historyRequestedByChat     map[string]bool
 }
 
 const messageLoadLimit = 200
@@ -317,56 +325,57 @@ func NewModel(opts Options) Model {
 	}
 
 	model := Model{
-		mode:                   ModeNormal,
-		focus:                  FocusChats,
-		allChats:               slices.Clone(chats),
-		chats:                  chats,
-		messagesByChat:         cloneMessages(opts.Snapshot.MessagesByChat),
-		draftsByChat:           cloneDrafts(opts.Snapshot.DraftsByChat),
-		activeChat:             activeChat,
-		previewReport:          opts.PreviewReport,
-		previewCache:           map[string]media.Preview{},
-		previewInflight:        map[string]bool{},
-		previewRequested:       map[string]bool{},
-		mediaDownloadInflight:  map[string]bool{},
-		paths:                  opts.Paths,
-		config:                 normalizeConfig(opts.Config),
-		status:                 "ready",
-		connectionState:        opts.ConnectionState,
-		pinnedFirst:            true,
-		persistMessage:         opts.PersistMessage,
-		retryMessage:           opts.RetryMessage,
-		loadMessages:           opts.LoadMessages,
-		loadOlderMessages:      opts.LoadOlderMessages,
-		requestHistory:         opts.RequestHistory,
-		reloadSnapshot:         opts.ReloadSnapshot,
-		saveDraft:              opts.SaveDraft,
-		searchChats:            opts.SearchChats,
-		searchMessages:         opts.SearchMessages,
-		copyToClipboard:        opts.CopyToClipboard,
-		pickAttachment:         opts.PickAttachment,
-		openMedia:              opts.OpenMedia,
-		startAudio:             opts.StartAudio,
-		deleteMessage:          opts.DeleteMessage,
-		saveMedia:              opts.SaveMedia,
-		downloadMedia:          opts.DownloadMedia,
-		activeChatChanged:      opts.ActiveChatChanged,
-		appFocusChanged:        opts.AppFocusChanged,
-		visibleChatsChanged:    opts.VisibleChatsChanged,
-		markRead:               opts.MarkRead,
-		sendReaction:           opts.SendReaction,
-		sendPresence:           opts.SendPresence,
-		subscribePresence:      opts.SubscribePresence,
-		liveUpdates:            opts.LiveUpdates,
-		blockSending:           opts.BlockSending,
-		blockAttachments:       opts.BlockAttachments,
-		requireOnlineForSend:   opts.RequireOnlineForSend,
-		unfilteredByChat:       map[string][]store.Message{},
-		presenceByChat:         map[string]PresenceUpdate{},
-		readReceiptInflight:    map[string]bool{},
-		presenceSubscribed:     map[string]bool{},
-		messageLimitsByChat:    map[string]int{},
-		historyRequestedByChat: map[string]bool{},
+		mode:                     ModeNormal,
+		focus:                    FocusChats,
+		allChats:                 slices.Clone(chats),
+		chats:                    chats,
+		messagesByChat:           cloneMessages(opts.Snapshot.MessagesByChat),
+		draftsByChat:             cloneDrafts(opts.Snapshot.DraftsByChat),
+		activeChat:               activeChat,
+		previewReport:            opts.PreviewReport,
+		previewCache:             map[string]media.Preview{},
+		previewInflight:          map[string]bool{},
+		previewRequested:         map[string]bool{},
+		mediaDownloadInflight:    map[string]bool{},
+		paths:                    opts.Paths,
+		config:                   normalizeConfig(opts.Config),
+		status:                   "ready",
+		connectionState:          opts.ConnectionState,
+		pinnedFirst:              true,
+		persistMessage:           opts.PersistMessage,
+		retryMessage:             opts.RetryMessage,
+		loadMessages:             opts.LoadMessages,
+		loadOlderMessages:        opts.LoadOlderMessages,
+		requestHistory:           opts.RequestHistory,
+		reloadSnapshot:           opts.ReloadSnapshot,
+		saveDraft:                opts.SaveDraft,
+		searchChats:              opts.SearchChats,
+		searchMessages:           opts.SearchMessages,
+		copyToClipboard:          opts.CopyToClipboard,
+		pickAttachment:           opts.PickAttachment,
+		openMedia:                opts.OpenMedia,
+		startAudio:               opts.StartAudio,
+		deleteMessage:            opts.DeleteMessage,
+		deleteMessageForEveryone: opts.DeleteMessageForEveryone,
+		saveMedia:                opts.SaveMedia,
+		downloadMedia:            opts.DownloadMedia,
+		activeChatChanged:        opts.ActiveChatChanged,
+		appFocusChanged:          opts.AppFocusChanged,
+		visibleChatsChanged:      opts.VisibleChatsChanged,
+		markRead:                 opts.MarkRead,
+		sendReaction:             opts.SendReaction,
+		sendPresence:             opts.SendPresence,
+		subscribePresence:        opts.SubscribePresence,
+		liveUpdates:              opts.LiveUpdates,
+		blockSending:             opts.BlockSending,
+		blockAttachments:         opts.BlockAttachments,
+		requireOnlineForSend:     opts.RequireOnlineForSend,
+		unfilteredByChat:         map[string][]store.Message{},
+		presenceByChat:           map[string]PresenceUpdate{},
+		readReceiptInflight:      map[string]bool{},
+		presenceSubscribed:       map[string]bool{},
+		messageLimitsByChat:      map[string]int{},
+		historyRequestedByChat:   map[string]bool{},
 	}
 	model.reportActiveChatChanged()
 	model.reportVisibleChatsChanged()
@@ -664,6 +673,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("opened media: %s", msg.Path)
 		}
 		return m.withPreviewCmd(nil)
+	case MessageDeletedForEveryoneMsg:
+		m.handleMessageDeletedForEveryone(msg)
+		return m.withPreviewCmd(nil)
 	case mediaOverlayMsg:
 		if msg.Err != nil {
 			m.status = fmt.Sprintf("overlay failed: %s", shortError(msg.Err))
@@ -745,30 +757,31 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 const (
-	normalActionQuit             = "quit"
-	normalActionHelp             = "help"
-	normalActionInsert           = "insert"
-	normalActionReply            = "reply"
-	normalActionRetryFailedMedia = "retry_failed_media"
-	normalActionVisual           = "visual"
-	normalActionCommand          = "command"
-	normalActionSearch           = "search"
-	normalActionFocusNext        = "focus_next"
-	normalActionFocusPrevious    = "focus_previous"
-	normalActionFocusLeft        = "focus_left"
-	normalActionFocusRightReply  = "focus_right_or_reply"
-	normalActionMoveDown         = "move_down"
-	normalActionMoveUp           = "move_up"
-	normalActionGoTop            = "go_top"
-	normalActionGoBottom         = "go_bottom"
-	normalActionOpen             = "open"
-	normalActionOpenMedia        = "open_media"
-	normalActionSearchNext       = "search_next"
-	normalActionSearchPrevious   = "search_previous"
-	normalActionToggleUnread     = "toggle_unread"
-	normalActionTogglePinned     = "toggle_pinned"
-	normalActionSaveMedia        = "save_media"
-	normalActionUnloadPreviews   = "unload_previews"
+	normalActionQuit              = "quit"
+	normalActionHelp              = "help"
+	normalActionInsert            = "insert"
+	normalActionReply             = "reply"
+	normalActionRetryFailedMedia  = "retry_failed_media"
+	normalActionVisual            = "visual"
+	normalActionCommand           = "command"
+	normalActionSearch            = "search"
+	normalActionFocusNext         = "focus_next"
+	normalActionFocusPrevious     = "focus_previous"
+	normalActionFocusLeft         = "focus_left"
+	normalActionFocusRightReply   = "focus_right_or_reply"
+	normalActionMoveDown          = "move_down"
+	normalActionMoveUp            = "move_up"
+	normalActionGoTop             = "go_top"
+	normalActionGoBottom          = "go_bottom"
+	normalActionOpen              = "open"
+	normalActionOpenMedia         = "open_media"
+	normalActionSearchNext        = "search_next"
+	normalActionSearchPrevious    = "search_previous"
+	normalActionToggleUnread      = "toggle_unread"
+	normalActionTogglePinned      = "toggle_pinned"
+	normalActionSaveMedia         = "save_media"
+	normalActionUnloadPreviews    = "unload_previews"
+	normalActionDeleteForEveryone = "delete_for_everyone"
 )
 
 func (m Model) normalActionForKey(msg tea.KeyMsg) string {
@@ -822,6 +835,8 @@ func (m Model) normalActionForKey(msg tea.KeyMsg) string {
 		return normalActionSaveMedia
 	case m.keyMatches(msg, keys.NormalUnloadPreviews):
 		return normalActionUnloadPreviews
+	case m.keyMatches(msg, keys.NormalDeleteForEverybody):
+		return normalActionDeleteForEveryone
 	}
 	return ""
 }
@@ -871,6 +886,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalTogglePinned, action: normalActionTogglePinned},
 		{binding: keys.NormalSaveMedia, action: normalActionSaveMedia},
 		{binding: keys.NormalUnloadPreviews, action: normalActionUnloadPreviews},
+		{binding: keys.NormalDeleteForEverybody, action: normalActionDeleteForEveryone},
 	}
 }
 
@@ -998,6 +1014,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.saveFocusedMedia()
 	case normalActionUnloadPreviews:
 		return m.clearMediaPreviews("media previews unloaded")
+	case normalActionDeleteForEveryone:
+		m.armDeleteFocusedMessageForEveryone()
 	default:
 		return m, nil
 	}
@@ -1643,6 +1661,16 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("delete failed: %v", err)
 			break
 		}
+	case cmd == "delete-message-everybody" || cmd == "delete message everybody" || cmd == "delete-message-everyone" || cmd == "delete message everyone":
+		m.armDeleteFocusedMessageForEveryone()
+	case cmd == "delete-message-everybody confirm" || cmd == "delete message everybody confirm" || cmd == "delete-message-everyone confirm" || cmd == "delete message everyone confirm":
+		return m.deleteConfirmedMessageForEveryone()
+	case cmd == "delete-message-everybody!" || cmd == "delete message everybody!" || cmd == "delete-message-everyone!" || cmd == "delete message everyone!":
+		m.armDeleteFocusedMessageForEveryone()
+		if m.deleteForEveryoneConfirmID == "" {
+			break
+		}
+		return m.deleteConfirmedMessageForEveryone()
 	default:
 		m.status = fmt.Sprintf("unknown command: %s", cmd)
 	}
@@ -3438,6 +3466,8 @@ func (m Model) mediaForLocalMessage(messageID string, attachments []Attachment) 
 }
 
 func (m *Model) armDeleteFocusedMessage() {
+	m.deleteConfirmID = ""
+	m.deleteForEveryoneConfirmID = ""
 	message, ok := m.focusedMessage()
 	if !ok {
 		m.status = "no message selected"
@@ -3463,17 +3493,113 @@ func (m *Model) deleteConfirmedMessage() error {
 		}
 	}
 
-	chatID := m.currentChat().ID
-	m.messagesByChat[chatID] = removeMessageByID(m.messagesByChat[chatID], message.ID)
-	if base, ok := m.unfilteredByChat[chatID]; ok {
-		m.unfilteredByChat[chatID] = removeMessageByID(base, message.ID)
-	}
-	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
-	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
+	m.removeLoadedMessage(message.ID)
 	m.deleteConfirmID = ""
 	m.rebuildSearchMatches()
 	m.status = "deleted message locally"
 	return nil
+}
+
+func (m *Model) armDeleteFocusedMessageForEveryone() {
+	m.deleteForEveryoneConfirmID = ""
+	m.deleteConfirmID = ""
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return
+	}
+	if err := m.validateDeleteForEveryone(message); err != nil {
+		m.status = fmt.Sprintf("delete for everybody unavailable: %v", err)
+		return
+	}
+	m.deleteForEveryoneConfirmID = message.ID
+	m.status = "run :delete-message-everybody confirm to delete for everybody"
+}
+
+func (m Model) deleteConfirmedMessageForEveryone() (Model, tea.Cmd) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.deleteForEveryoneConfirmID = ""
+		m.status = "delete for everybody failed: no message selected"
+		return m, nil
+	}
+	if m.deleteForEveryoneConfirmID != message.ID {
+		m.deleteForEveryoneConfirmID = ""
+		m.status = "delete for everybody failed: confirmation expired"
+		return m, nil
+	}
+	if err := m.validateDeleteForEveryone(message); err != nil {
+		m.deleteForEveryoneConfirmID = ""
+		m.status = fmt.Sprintf("delete for everybody failed: %v", err)
+		return m, nil
+	}
+	cmd := m.deleteMessageForEveryone(message)
+	if cmd == nil {
+		m.deleteForEveryoneConfirmID = ""
+		m.status = "delete for everybody failed: unavailable"
+		return m, nil
+	}
+	m.deleteForEveryoneConfirmID = ""
+	m.status = "delete for everybody queued"
+	return m, cmd
+}
+
+func (m Model) validateDeleteForEveryone(message store.Message) error {
+	if m.deleteMessageForEveryone == nil {
+		return fmt.Errorf("live delete is unavailable")
+	}
+	if m.connectionState != ConnectionOnline {
+		return fmt.Errorf("WhatsApp must be online")
+	}
+	if !message.IsOutgoing {
+		return fmt.Errorf("only your outgoing messages can be deleted for everybody")
+	}
+	if strings.TrimSpace(message.RemoteID) == "" {
+		return fmt.Errorf("message has no WhatsApp id")
+	}
+	return nil
+}
+
+func (m *Model) handleMessageDeletedForEveryone(msg MessageDeletedForEveryoneMsg) {
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("delete for everybody failed: %s", shortError(msg.Err))
+		return
+	}
+	messageID := strings.TrimSpace(msg.MessageID)
+	if messageID == "" {
+		m.status = "delete for everybody failed: missing message id"
+		return
+	}
+	if !m.removeLoadedMessage(messageID) {
+		m.status = "deleted message for everybody"
+		return
+	}
+	m.rebuildSearchMatches()
+	m.status = "deleted message for everybody"
+}
+
+func (m *Model) removeLoadedMessage(messageID string) bool {
+	if strings.TrimSpace(messageID) == "" {
+		return false
+	}
+	removed := false
+	for chatID, messages := range m.messagesByChat {
+		updated := removeMessageByID(messages, messageID)
+		if len(updated) != len(messages) {
+			removed = true
+			m.messagesByChat[chatID] = updated
+		}
+	}
+	for chatID, messages := range m.unfilteredByChat {
+		updated := removeMessageByID(messages, messageID)
+		if len(updated) != len(messages) {
+			removed = true
+			m.unfilteredByChat[chatID] = updated
+		}
+	}
+	m.messageCursor = clamp(m.messageCursor, 0, max(0, len(m.currentMessages())-1))
+	m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(m.currentMessages())-1))
+	return removed
 }
 
 func (m Model) focusedMessage() (store.Message, bool) {

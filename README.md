@@ -79,6 +79,7 @@ key_normal_open = "enter"
 key_normal_open_media = "o"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
+key_normal_delete_for_everybody = "leader d e"
 
 key_insert_send = "enter"
 key_insert_newline = "ctrl+j"

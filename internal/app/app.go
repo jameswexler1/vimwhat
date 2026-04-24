@@ -141,6 +141,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	mediaSendRequests := make(chan mediaSendRequest, mediaSendQueueSize)
 	readReceiptRequests := make(chan readReceiptRequest, readReceiptQueueSize)
 	reactionRequests := make(chan reactionRequest, reactionQueueSize)
+	deleteEveryoneRequests := make(chan deleteEveryoneRequest, deleteEveryoneQueueSize)
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
@@ -155,7 +156,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -344,6 +345,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		DeleteMessage: func(messageID string) error {
 			return env.Store.DeleteMessage(context.Background(), messageID)
 		},
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			return deleteMessageForEveryoneCmd(liveEnabled, deleteEveryoneRequests, message)
+		},
 		SaveMedia: func(media store.MediaMetadata) error {
 			return env.Store.UpsertMediaMetadata(context.Background(), media)
 		},
@@ -417,28 +421,31 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 }
 
 const (
-	historyPageSize         = 50
-	historyRequestTimeout   = 30 * time.Second
-	metadataRefreshTimeout  = 30 * time.Second
-	textSendQueueSize       = 16
-	textSendQueueTimeout    = 5 * time.Second
-	textSendTimeout         = 90 * time.Second
-	mediaSendQueueSize      = 16
-	mediaSendQueueTimeout   = 5 * time.Second
-	mediaSendTimeout        = 10 * time.Minute
-	readReceiptQueueSize    = 16
-	readReceiptQueueTimeout = 5 * time.Second
-	readReceiptTimeout      = 30 * time.Second
-	reactionQueueSize       = 16
-	reactionQueueTimeout    = 5 * time.Second
-	reactionSendTimeout     = 90 * time.Second
-	presenceQueueSize       = 32
-	presenceSendTimeout     = 5 * time.Second
-	mediaDownloadWorkers    = 2
-	mediaDownloadQueueSize  = 16
-	mediaDownloadTimeout    = 5 * time.Minute
-	avatarRefreshQueueSize  = 32
-	avatarRefreshTimeout    = 30 * time.Second
+	historyPageSize            = 50
+	historyRequestTimeout      = 30 * time.Second
+	metadataRefreshTimeout     = 30 * time.Second
+	textSendQueueSize          = 16
+	textSendQueueTimeout       = 5 * time.Second
+	textSendTimeout            = 90 * time.Second
+	mediaSendQueueSize         = 16
+	mediaSendQueueTimeout      = 5 * time.Second
+	mediaSendTimeout           = 10 * time.Minute
+	readReceiptQueueSize       = 16
+	readReceiptQueueTimeout    = 5 * time.Second
+	readReceiptTimeout         = 30 * time.Second
+	reactionQueueSize          = 16
+	reactionQueueTimeout       = 5 * time.Second
+	reactionSendTimeout        = 90 * time.Second
+	deleteEveryoneQueueSize    = 16
+	deleteEveryoneQueueTimeout = 5 * time.Second
+	deleteEveryoneTimeout      = 90 * time.Second
+	presenceQueueSize          = 32
+	presenceSendTimeout        = 5 * time.Second
+	mediaDownloadWorkers       = 2
+	mediaDownloadQueueSize     = 16
+	mediaDownloadTimeout       = 5 * time.Minute
+	avatarRefreshQueueSize     = 32
+	avatarRefreshTimeout       = 30 * time.Second
 )
 
 type textSendRequest struct {
@@ -497,6 +504,48 @@ type reactionRequest struct {
 	Result  chan<- error
 }
 
+type deleteEveryoneRequest struct {
+	Message store.Message
+	Result  chan<- deleteEveryoneResult
+}
+
+type deleteEveryoneResult struct {
+	MessageID string
+	Err       error
+}
+
+func deleteMessageForEveryoneCmd(liveEnabled bool, requests chan<- deleteEveryoneRequest, message store.Message) tea.Cmd {
+	return func() tea.Msg {
+		if !liveEnabled {
+			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("whatsapp is not paired")}
+		}
+		if requests == nil {
+			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("delete queue is unavailable")}
+		}
+		result := make(chan deleteEveryoneResult, 1)
+		request := deleteEveryoneRequest{Message: message, Result: result}
+
+		queueCtx, cancelQueue := context.WithTimeout(context.Background(), deleteEveryoneQueueTimeout)
+		defer cancelQueue()
+		select {
+		case requests <- request:
+		case <-queueCtx.Done():
+			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("delete queue timed out")}
+		default:
+			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("delete request queue is full")}
+		}
+
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), deleteEveryoneTimeout)
+		defer cancelWait()
+		select {
+		case deleted := <-result:
+			return ui.MessageDeletedForEveryoneMsg{MessageID: deleted.MessageID, Err: deleted.Err}
+		case <-waitCtx.Done():
+			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("delete for everybody timed out")}
+		}
+	}
+}
+
 type presenceRequest struct {
 	ChatID    string
 	Composing bool
@@ -537,6 +586,7 @@ func runLiveWhatsApp(
 	mediaSendRequests <-chan mediaSendRequest,
 	readReceiptRequests <-chan readReceiptRequest,
 	reactionRequests <-chan reactionRequest,
+	deleteEveryoneRequests <-chan deleteEveryoneRequest,
 	presenceRequests <-chan presenceRequest,
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
@@ -734,6 +784,11 @@ func runLiveWhatsApp(
 				return
 			}
 			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-deleteEveryoneRequests:
+			if !ok {
+				return
+			}
+			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
 		case request, ok := <-presenceRequests:
 			if !ok {
 				return
@@ -1492,6 +1547,100 @@ func completeReaction(ctx context.Context, db *store.Store, live WhatsAppLiveSes
 	})
 }
 
+func handleDeleteEveryoneRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request deleteEveryoneRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if db == nil {
+		sendDeleteEveryoneResult(ctx, request, "", fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, fmt.Errorf("delete for everybody needs WhatsApp online"))
+		return
+	}
+	if !request.Message.IsOutgoing {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, fmt.Errorf("only your outgoing messages can be deleted for everybody"))
+		return
+	}
+	if strings.TrimSpace(request.Message.RemoteID) == "" {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, fmt.Errorf("delete target has no WhatsApp id"))
+		return
+	}
+	chatJID, err := canonicalizeLiveChatID(ctx, live, retryChatID(request.Message))
+	if err != nil {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, err)
+		return
+	}
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeDeleteForEveryone(ctx, db, live, updates, request, chatJID)
+		}()
+		return
+	}
+	completeDeleteForEveryone(ctx, db, live, updates, request, chatJID)
+}
+
+func sendDeleteEveryoneResult(ctx context.Context, request deleteEveryoneRequest, messageID string, err error) {
+	if request.Result == nil {
+		return
+	}
+	if messageID == "" {
+		messageID = request.Message.ID
+	}
+	select {
+	case request.Result <- deleteEveryoneResult{MessageID: messageID, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func completeDeleteForEveryone(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, request deleteEveryoneRequest, chatJID string) {
+	sendCtx, cancel := context.WithTimeout(ctx, deleteEveryoneTimeout)
+	defer cancel()
+	result, err := live.DeleteMessageForEveryone(sendCtx, whatsapp.DeleteForEveryoneRequest{
+		ChatJID:        chatJID,
+		TargetRemoteID: request.Message.RemoteID,
+	})
+	if err != nil {
+		sendDeleteEveryoneResult(ctx, request, request.Message.ID, err)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Status: fmt.Sprintf("delete for everybody failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	messageID := strings.TrimSpace(request.Message.ID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(result.MessageID)
+	}
+	if _, err := db.DeleteMessageForEveryone(context.Background(), messageID); err != nil {
+		sendDeleteEveryoneResult(ctx, request, messageID, err)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("delete local state failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendDeleteEveryoneResult(ctx, request, messageID, nil)
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  "deleted message for everybody",
+	})
+}
+
 func handlePresenceRequest(ctx context.Context, live WhatsAppLiveSession, online bool, request presenceRequest) {
 	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
 		return
@@ -2056,6 +2205,8 @@ func isHistoricalImportEvent(event whatsapp.Event) bool {
 		return event.Chat.Historical
 	case whatsapp.EventMessageUpsert:
 		return event.Message.Historical
+	case whatsapp.EventMessageDelete:
+		return event.Delete.Historical
 	case whatsapp.EventMediaMetadata:
 		return event.Media.Historical
 	default:

@@ -68,6 +68,7 @@ type Adapter interface {
 	SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error)
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
+	DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error)
 	SendChatPresence(ctx context.Context, chatJID string, composing bool) error
 	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
@@ -490,6 +491,11 @@ type ReactionSendRequest struct {
 	RemoteID        string
 }
 
+type DeleteForEveryoneRequest struct {
+	ChatJID        string
+	TargetRemoteID string
+}
+
 func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendResult, error) {
 	if c == nil || c.client == nil {
 		return SendResult{}, ErrClientNotOpen
@@ -710,6 +716,38 @@ func reactionTargetSender(senderJID string) (types.JID, error) {
 		return types.EmptyJID, fmt.Errorf("parse reaction sender jid: %w", err)
 	}
 	return sender, nil
+}
+
+func (c *Client) DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error) {
+	if c == nil || c.client == nil {
+		return SendResult{}, ErrClientNotOpen
+	}
+	chatJID, err := NormalizeSendChatJID(request.ChatJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	targetRemoteID := strings.TrimSpace(request.TargetRemoteID)
+	if targetRemoteID == "" {
+		return SendResult{}, fmt.Errorf("delete target message id is required")
+	}
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("parse delete chat jid: %w", err)
+	}
+	resp, err := c.client.SendMessage(ctx, chat, c.client.BuildRevoke(chat, types.EmptyJID, types.MessageID(targetRemoteID)))
+	if err != nil {
+		return SendResult{}, fmt.Errorf("send whatsapp delete for everybody: %w", err)
+	}
+	timestamp := resp.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return SendResult{
+		MessageID: LocalMessageID(chatJID, targetRemoteID),
+		RemoteID:  targetRemoteID,
+		Status:    "deleted",
+		Timestamp: timestamp,
+	}, nil
 }
 
 func (c *Client) SendChatPresence(ctx context.Context, chatJID string, composing bool) error {
@@ -1002,6 +1040,7 @@ type EventKind string
 const (
 	EventChatUpsert       EventKind = "chat_upsert"
 	EventMessageUpsert    EventKind = "message_upsert"
+	EventMessageDelete    EventKind = "message_delete"
 	EventReceiptUpdate    EventKind = "receipt_update"
 	EventReactionUpdate   EventKind = "reaction_update"
 	EventPresenceUpdate   EventKind = "presence_update"
@@ -1027,6 +1066,7 @@ type Event struct {
 	Kind       EventKind
 	Chat       ChatEvent
 	Message    MessageEvent
+	Delete     MessageDeleteEvent
 	Receipt    ReceiptEvent
 	Reaction   ReactionEvent
 	Presence   PresenceEvent
@@ -1087,6 +1127,16 @@ type MessageEvent struct {
 	QuotedMessageID     string
 	QuotedRemoteID      string
 	Historical          bool
+}
+
+type MessageDeleteEvent struct {
+	MessageID     string
+	RemoteID      string
+	ChatID        string
+	ChatJID       string
+	DeletedReason string
+	Timestamp     time.Time
+	Historical    bool
 }
 
 type HistoryEvent struct {
