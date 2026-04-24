@@ -183,6 +183,7 @@ type Options struct {
 	SaveMedia            func(media store.MediaMetadata) error
 	DownloadMedia        func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 	ActiveChatChanged    func(chatID string)
+	AppFocusChanged      func(focused bool)
 	VisibleChatsChanged  func(chatIDs []string)
 }
 
@@ -272,6 +273,9 @@ type Model struct {
 	downloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 	activeChatChanged        func(chatID string)
 	lastReportedActiveChat   string
+	appFocusKnown            bool
+	appFocused               bool
+	appFocusChanged          func(focused bool)
 	visibleChatsChanged      func(chatIDs []string)
 	lastReportedVisibleChats string
 	liveUpdates              <-chan LiveUpdate
@@ -291,7 +295,7 @@ const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
 
 func Run(opts Options) error {
-	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen())
+	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen(), tea.WithReportFocus())
 	final, err := p.Run()
 	if closer, ok := final.(interface{ Close() error }); ok {
 		if closeErr := closer.Close(); err == nil {
@@ -347,6 +351,7 @@ func NewModel(opts Options) Model {
 		saveMedia:              opts.SaveMedia,
 		downloadMedia:          opts.DownloadMedia,
 		activeChatChanged:      opts.ActiveChatChanged,
+		appFocusChanged:        opts.AppFocusChanged,
 		visibleChatsChanged:    opts.VisibleChatsChanged,
 		markRead:               opts.MarkRead,
 		sendReaction:           opts.SendReaction,
@@ -599,6 +604,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Generation == m.ownPresenceGeneration && msg.ChatID == m.ownPresenceChatID && m.ownPresenceComposing {
 			m.sendOwnPresence(msg.ChatID, false)
 		}
+		return m, nil
+	case tea.FocusMsg:
+		m.reportAppFocusChanged(true)
+		return m, nil
+	case tea.BlurMsg:
+		m.reportAppFocusChanged(false)
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -2114,6 +2125,17 @@ func (m *Model) reportActiveChatChanged() {
 	}
 	m.lastReportedActiveChat = chatID
 	m.activeChatChanged(chatID)
+}
+
+func (m *Model) reportAppFocusChanged(focused bool) {
+	if m.appFocusKnown && m.appFocused == focused {
+		return
+	}
+	m.appFocusKnown = true
+	m.appFocused = focused
+	if m.appFocusChanged != nil {
+		m.appFocusChanged(focused)
+	}
 }
 
 func (m *Model) keepActiveChatVisible() {

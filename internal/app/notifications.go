@@ -85,7 +85,13 @@ func queueNotification(jobs chan<- notify.Notification, job notify.Notification)
 	}
 }
 
-func buildNotification(ctx context.Context, db *store.Store, activeChatID string, result whatsapp.ApplyResult) (notify.Notification, bool) {
+type notificationContext struct {
+	activeChatID  string
+	appFocused    bool
+	appFocusKnown bool
+}
+
+func buildNotification(ctx context.Context, db *store.Store, view notificationContext, result whatsapp.ApplyResult) (notify.Notification, bool) {
 	if db == nil || !result.MessageInserted {
 		return notify.Notification{}, false
 	}
@@ -93,7 +99,7 @@ func buildNotification(ctx context.Context, db *store.Store, activeChatID string
 	if message.IsOutgoing || message.Historical || strings.TrimSpace(message.ChatID) == "" {
 		return notify.Notification{}, false
 	}
-	if strings.TrimSpace(message.ChatID) == strings.TrimSpace(activeChatID) {
+	if suppressActiveChatNotification(message.ChatID, view) {
 		return notify.Notification{}, false
 	}
 	chat, ok, err := db.ChatByID(ctx, message.ChatID)
@@ -106,4 +112,13 @@ func buildNotification(ctx context.Context, db *store.Store, activeChatID string
 		Sender:    message.Sender,
 		Preview:   message.NotificationPreview,
 	}), true
+}
+
+func suppressActiveChatNotification(chatID string, view notificationContext) bool {
+	chatID = strings.TrimSpace(chatID)
+	activeChatID := strings.TrimSpace(view.activeChatID)
+	if chatID == "" || activeChatID == "" || chatID != activeChatID {
+		return false
+	}
+	return view.appFocusKnown && view.appFocused
 }

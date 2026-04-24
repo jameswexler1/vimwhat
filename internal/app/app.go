@@ -142,6 +142,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
 	activeChatNotifications := make(chan string, 16)
+	appFocusNotifications := make(chan bool, 16)
 	visibleChatNotifications := make(chan []string, 16)
 	var liveUpdateSource <-chan ui.LiveUpdate
 	ctx, cancel := context.WithCancel(context.Background())
@@ -151,7 +152,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, visibleChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -379,6 +380,12 @@ func runTUI(env Environment, stderr io.Writer) int {
 			default:
 			}
 		}
+		opts.AppFocusChanged = func(focused bool) {
+			select {
+			case appFocusNotifications <- focused:
+			default:
+			}
+		}
 		opts.VisibleChatsChanged = func(chatIDs []string) {
 			select {
 			case visibleChatNotifications <- slices.Clone(chatIDs):
@@ -531,6 +538,7 @@ func runLiveWhatsApp(
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
 	activeChatUpdates <-chan string,
+	appFocusUpdates <-chan bool,
 	visibleChatUpdates <-chan []string,
 ) {
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
@@ -618,7 +626,7 @@ func runLiveWhatsApp(
 	historyInflight := map[string]time.Time{}
 	avatarInflight := map[string]bool{}
 	metadataResults := refreshChatMetadata(ctx, live)
-	activeChatID := ""
+	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
 	for {
@@ -628,7 +636,7 @@ func runLiveWhatsApp(
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOffline})
 				return
 			}
-			activeChatID = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, visibleChatUpdates, activeChatID)
+			viewState = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, appFocusUpdates, visibleChatUpdates, viewState)
 			if event.Kind == whatsapp.EventConnectionState {
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
@@ -642,8 +650,8 @@ func runLiveWhatsApp(
 					})
 					continue
 				}
-				if activeChatID != "" && slices.Contains(mergedAliases, activeChatID) {
-					activeChatID = event.Chat.ID
+				if viewState.activeChatID != "" && slices.Contains(mergedAliases, viewState.activeChatID) {
+					viewState.activeChatID = event.Chat.ID
 					pendingPreferredChatID = event.Chat.ID
 				}
 			}
@@ -690,7 +698,7 @@ func runLiveWhatsApp(
 			if isHistoricalImportEvent(event) {
 				continue
 			}
-			if note, ok := buildNotification(context.Background(), env.Store, activeChatID, result); ok {
+			if note, ok := buildNotification(context.Background(), env.Store, viewState, result); ok {
 				queueNotification(notificationJobs, note)
 			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
@@ -764,15 +772,22 @@ func runLiveWhatsApp(
 				activeChatUpdates = nil
 				continue
 			}
-			activeChatID = chatID
+			viewState.activeChatID = chatID
 			enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+		case focused, ok := <-appFocusUpdates:
+			if !ok {
+				appFocusUpdates = nil
+				continue
+			}
+			viewState.appFocusKnown = true
+			viewState.appFocused = focused
 		case chatIDs, ok := <-visibleChatUpdates:
 			if !ok {
 				visibleChatUpdates = nil
 				continue
 			}
-			if activeChatID != "" {
-				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, activeChatID)
+			if viewState.activeChatID != "" {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, viewState.activeChatID)
 			}
 			for _, chatID := range chatIDs {
 				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
@@ -830,9 +845,10 @@ func drainPendingLiveViewState(
 	avatarJobs chan<- avatarRefreshRequest,
 	avatarInflight map[string]bool,
 	activeChatUpdates <-chan string,
+	appFocusUpdates <-chan bool,
 	visibleChatUpdates <-chan []string,
-	activeChatID string,
-) string {
+	state notificationContext,
+) notificationContext {
 	for {
 		select {
 		case chatID, ok := <-activeChatUpdates:
@@ -840,21 +856,28 @@ func drainPendingLiveViewState(
 				activeChatUpdates = nil
 				continue
 			}
-			activeChatID = chatID
+			state.activeChatID = chatID
 			enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
+		case focused, ok := <-appFocusUpdates:
+			if !ok {
+				appFocusUpdates = nil
+				continue
+			}
+			state.appFocusKnown = true
+			state.appFocused = focused
 		case chatIDs, ok := <-visibleChatUpdates:
 			if !ok {
 				visibleChatUpdates = nil
 				continue
 			}
-			if activeChatID != "" {
-				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, activeChatID)
+			if state.activeChatID != "" {
+				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, state.activeChatID)
 			}
 			for _, chatID := range chatIDs {
 				enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, chatID)
 			}
 		default:
-			return activeChatID
+			return state
 		}
 	}
 }

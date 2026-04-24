@@ -21,7 +21,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Real outbound send from the inline composer for plain text plus one local attachment per message, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, captions for image/video/document sends, audio-caption rejection before queueing, ffprobe-backed generic audio send, and document fallback when audio metadata is unavailable.
 - CLI helpers for persisted data: `vimwhat media open <message-id>` reuses the normal opener flow and auto-downloads remote media when possible, while `vimwhat export chat <jid>` writes a local-only Markdown transcript into the configured downloads directory.
 - Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, text replies with quoted metadata, quote-jump into loaded history, a right-edge `l` reply gesture from the message pane when no further pane exists to the right, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
-- Cross-platform desktop notifications for new incoming messages in inactive, unmuted chats, with native Linux/macOS/Windows backends, safe command override support, notification preview formatting for media-only messages, and backend diagnostics in `doctor`.
+- Cross-platform desktop notifications for new incoming messages in inactive, unmuted chats, with native Linux/macOS/Windows backends, safe command override support, notification preview formatting for media-only messages, backend diagnostics in `doctor`, and active-chat suppression that only applies while the app window is known to be focused.
 - Retry/resend UX for failed outgoing media rows in the TUI via `R` and `:retry-message`, keeping the original failed row in chat and queueing a brand-new send attempt when the local attachment file still exists.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Direct-chat identity hardening for WhatsApp PN/LID aliases: canonicalize mapped 1:1 chats onto a single chat ID, merge already-split alias rows/messages/drafts/history cursors in SQLite, and preserve the active conversation when a live merge remaps the selected chat.
@@ -169,7 +169,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 
 ## Near-Term Execution Order
 
-1. Run a manual notification pass first: inactive-chat delivery, active-chat suppression, muted-chat suppression, Linux native backend selection, `notification_command` override behavior, and a fresh-config verification that `notification_backend` truly defaults to `auto` without requiring an explicit config entry.
+1. Run a manual notification pass first: inactive-chat delivery, focused-window active-chat suppression, blurred-window active-chat delivery, muted-chat suppression, Linux native backend selection, `notification_command` override behavior, and a fresh-config verification that `notification_backend` truly defaults to `auto` without requiring an explicit config entry.
 2. Validate remote media download plus sticker auto-render/download and chat-avatar refresh on live WhatsApp traffic.
 3. Validate real text send for plain text composer submissions against live direct and group chats.
 4. Validate protocol-backed read receipts, reactions, presence, replies/quote-jump, and the right-edge `l` reply gesture against real chats.
@@ -241,7 +241,7 @@ The TUI stability and modal polish milestone is implemented:
 The desktop notification milestone is implemented:
 
 - Add `notification_backend` selection plus `notification_command` override support in config, with `doctor` reporting the selected delivery path and backend availability.
-- Deliver notifications only for genuinely new incoming messages, suppressing duplicates, outgoing sends, historical imports, reaction-only updates, muted chats, and the currently selected chat.
+- Deliver notifications only for genuinely new incoming messages, suppressing duplicates, outgoing sends, historical imports, reaction-only updates, muted chats, and the currently selected chat only while the app window is known to be focused.
 - Format notification payloads from normalized message previews so bodyless media messages still show attachment-aware summaries.
 - Auto-select native backends for Linux (`gdbus` / `dbus-send` / `notify-send`), macOS (`osascript`), and Windows (`powershell.exe`), while keeping command execution argv-safe and shell-free.
 
@@ -398,7 +398,7 @@ The next protocol milestone is live validation/polish of the completed notificat
 - Default compose mode is inline; external `nvim` compose is optional per message and never mandatory.
 - Default preview mode is auto-detect with graceful fallback.
 - Default notification mode is auto-detect with native OS delivery; when `notification_command` is set alongside `notification_backend = "auto"`, the configured command overrides native selection.
-- Default notification policy is one desktop notification per genuinely new incoming message in an inactive, unmuted chat.
+- Default notification policy is one desktop notification per genuinely new incoming message in an inactive, unmuted chat, plus the selected chat whenever app-window focus is unknown or blurred.
 - Default emoji mode is `auto`; terminals known to misreport complex emoji widths should use the compatibility renderer unless explicitly forced to `full`.
 - Default mode indicator colors come from pywal; users can override each mode with a hex color in config.
 - v1 supports DMs and groups only.

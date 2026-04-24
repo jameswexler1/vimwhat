@@ -8,7 +8,7 @@
 - SQLite state under XDG data paths with migrations, FTS message indexing, drafts, contacts, media metadata, sync cursors, and UI snapshot storage.
 - Demo seeding commands for local development without a live WhatsApp session.
 - Preview backend detection plus in-chat image/video thumbnail rendering through Sixel/`chafa`, and focused audio playback through `mpv`.
-- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, inactive-chat desktop notifications, `media open`, and `export chat` exist.
+- WhatsApp QR login/logout, live inbound ingestion, focused-chat remote history fetch, on-demand remote media download, real outbound text plus single-attachment media send, desktop notifications for inactive chats plus the selected chat when the app window is blurred or focus reporting is unavailable, `media open`, and `export chat` exist.
 - `vimwhat logout` clears local app/session state and returns the client to first-use state while leaving config and explicit Downloads saves intact.
 
 ## Commands
@@ -68,7 +68,7 @@ Replace any value with a hex color such as `"#7ED7C1"` or `"#f0a"` to override o
 
 ## Notifications
 
-Desktop notifications default to `notification_backend = "auto"` and notify only for new incoming messages from inactive, unmuted chats. `notification_command` remains available as an explicit override and is treated as an argv template rather than a shell snippet.
+Desktop notifications default to `notification_backend = "auto"` and notify only for new incoming messages from unmuted chats that are not actively visible in a focused Vimwhat window. If the app window is blurred, or the terminal never reports focus, the selected chat still notifies rather than risking missed messages. `notification_command` remains available as an explicit override and is treated as an argv template rather than a shell snippet.
 
 ```toml
 notification_backend = "auto"

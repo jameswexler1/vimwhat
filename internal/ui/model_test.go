@@ -146,6 +146,44 @@ func TestApplySnapshotReportsChangedActiveChat(t *testing.T) {
 	}
 }
 
+func TestFocusMsgReportsAppFocusChanged(t *testing.T) {
+	var reported []bool
+	model := NewModel(Options{
+		AppFocusChanged: func(focused bool) {
+			reported = append(reported, focused)
+		},
+	})
+
+	updated, _ := model.Update(tea.FocusMsg{})
+	got := updated.(Model)
+
+	if len(reported) != 1 || !reported[0] {
+		t.Fatalf("reported = %#v, want [true]", reported)
+	}
+	if !got.appFocusKnown || !got.appFocused {
+		t.Fatalf("focus state = known:%v focused:%v, want known:true focused:true", got.appFocusKnown, got.appFocused)
+	}
+}
+
+func TestBlurMsgReportsAppFocusChanged(t *testing.T) {
+	var reported []bool
+	model := NewModel(Options{
+		AppFocusChanged: func(focused bool) {
+			reported = append(reported, focused)
+		},
+	})
+
+	updated, _ := model.Update(tea.BlurMsg{})
+	got := updated.(Model)
+
+	if len(reported) != 1 || reported[0] {
+		t.Fatalf("reported = %#v, want [false]", reported)
+	}
+	if !got.appFocusKnown || got.appFocused {
+		t.Fatalf("focus state = known:%v focused:%v, want known:true focused:false", got.appFocusKnown, got.appFocused)
+	}
+}
+
 func TestInsertEscPersistsDraft(t *testing.T) {
 	var savedChatID string
 	var savedBody string
