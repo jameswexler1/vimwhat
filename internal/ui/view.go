@@ -684,7 +684,7 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	style := lipgloss.NewStyle().
 		Border(borderShape).
 		Padding(0, 1)
-	style = cursorItemBorderStyle(style, border, active)
+	style = highlightedItemBorderStyle(style, border, active, false)
 	contentWidth := panelContentWidth(style, width)
 
 	title := m.sanitizeDisplayLine(chat.DisplayTitle())
@@ -1088,9 +1088,9 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 
 	boxStyle := lipgloss.NewStyle().
-		Border(messageBubbleBorder(active)).
+		Border(messageBubbleBorder(active, selected)).
 		Padding(0, 1)
-	boxStyle = cursorItemBorderStyle(boxStyle, border, active)
+	boxStyle = highlightedItemBorderStyle(boxStyle, border, active, selected)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
 	if m.messageUsesMediaBubbleWidth(message, active) {
 		maxBubbleWidth = max(6, mediaBubbleWidth(availableWidth))
@@ -1132,23 +1132,30 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
 }
 
-func messageBubbleBorder(active bool) lipgloss.Border {
-	if active {
+func messageBubbleBorder(active, selected bool) lipgloss.Border {
+	if active || selected {
 		return lipgloss.ThickBorder()
 	}
 	return lipgloss.RoundedBorder()
 }
 
-func cursorItemBorderStyle(style lipgloss.Style, border lipgloss.Color, active bool) lipgloss.Style {
+func highlightedItemBorderStyle(style lipgloss.Style, border lipgloss.Color, active, selected bool) lipgloss.Style {
 	style = style.BorderForeground(border)
-	if !active {
-		return style
+	if active {
+		return style.
+			BorderTopForeground(focusedLine).
+			BorderLeftForeground(focusedLine).
+			BorderRightForeground(activeBorder).
+			BorderBottomForeground(activeBorder)
 	}
-	return style.
-		BorderTopForeground(focusedLine).
-		BorderLeftForeground(focusedLine).
-		BorderRightForeground(activeBorder).
-		BorderBottomForeground(activeBorder)
+	if selected {
+		return style.
+			BorderTopForeground(selectedLine).
+			BorderLeftForeground(selectedLine).
+			BorderRightForeground(borderColor).
+			BorderBottomForeground(borderColor)
+	}
+	return style
 }
 
 func (m Model) messageQuoteLine(message store.Message, width int) string {

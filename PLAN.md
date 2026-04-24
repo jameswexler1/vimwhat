@@ -236,8 +236,8 @@ The TUI stability and modal polish milestone is implemented:
 - Emoji rendering is configurable through `emoji_mode`; `auto` preserves full emoji on capable UTF-8 terminals and falls back to compatibility rendering for terminals such as `st`.
 - The status bar has a single authoritative mode indicator, keeps pywal colors by default, and supports per-mode hex overrides.
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
-- The current chat and message cursor items use a stronger terminal-safe border/shadow treatment so the hovered row or bubble is easier to spot.
-- Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, and current-item cursor styling.
+- The current chat/message cursor items and visual-mode selected message ranges use stronger terminal-safe border/shadow treatments so the hovered row, bubble, or range is easier to spot.
+- Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, current-item cursor styling, and visual-mode selection styling.
 
 The desktop notification milestone is implemented:
 

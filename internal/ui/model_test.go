@@ -2259,6 +2259,16 @@ func TestActiveMessageBubbleUsesStrongerCursorBorder(t *testing.T) {
 	if !strings.Contains(activeBubble, "┏") || !strings.Contains(activeBubble, "┗") {
 		t.Fatalf("active message bubble did not use thick cursor border\n%s", activeBubble)
 	}
+
+	selectedBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, false, true, nil))
+	if !strings.Contains(selectedBubble, "┏") || !strings.Contains(selectedBubble, "┗") {
+		t.Fatalf("selected message bubble did not use thick visual border\n%s", selectedBubble)
+	}
+
+	activeSelectedBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, true, true, nil))
+	if !strings.Contains(activeSelectedBubble, "┏") || !strings.Contains(activeSelectedBubble, "┗") {
+		t.Fatalf("active selected message bubble did not keep thick cursor border\n%s", activeSelectedBubble)
+	}
 }
 
 func TestChatFilterClampsCellViewport(t *testing.T) {
@@ -3021,6 +3031,36 @@ func TestVisualFooterIsMinimal(t *testing.T) {
 		if strings.Contains(view, unwanted) {
 			t.Fatalf("visual footer retained noisy workflow text %q\n%s", unwanted, view)
 		}
+	}
+}
+
+func TestVisualSelectionRangeUsesStrongerBorders(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "second"},
+					{ID: "m-3", ChatID: "chat-1", Sender: "Alice", Body: "third"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 2
+	model.messageScrollTop = 0
+
+	view := stripANSI(model.renderMessages(70, 14))
+	if got := strings.Count(view, "┏"); got != 3 {
+		t.Fatalf("visual selected thick border count = %d, want 3\n%s", got, view)
+	}
+	if strings.Contains(view, "╭") || strings.Contains(view, "╰") {
+		t.Fatalf("visual selected range kept rounded borders\n%s", view)
 	}
 }
 
