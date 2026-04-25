@@ -2,7 +2,6 @@ package media
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -21,25 +20,41 @@ const (
 type Report struct {
 	Requested        Backend
 	Selected         Backend
+	Platform         string
 	Reasons          map[Backend]string
 	UeberzugPPOutput string
 }
 
 var lookPath = exec.LookPath
 
+type platformCapabilities struct {
+	Name                        string
+	UeberzugPPOutput            string
+	UeberzugPPUnavailableReason string
+	SixelSupported              bool
+	SixelUnsupportedReason      string
+	ExternalCommands            []string
+	ExternalUnavailableReason   string
+}
+
 func Detect(requested string) Report {
+	return detectWithPlatform(requested, currentPlatformCapabilities())
+}
+
+func detectWithPlatform(requested string, platform platformCapabilities) Report {
 	normalized := normalize(requested)
 	report := Report{
 		Requested:        normalized,
+		Platform:         platform.Name,
 		Reasons:          make(map[Backend]string),
-		UeberzugPPOutput: DetectUeberzugPPOutput(),
+		UeberzugPPOutput: platform.UeberzugPPOutput,
 	}
 	if normalized == BackendNone {
 		report.Selected = BackendNone
 		return report
 	}
 
-	available := detectAvailable()
+	available := detectAvailable(platform)
 	order := []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal}
 
 	for _, backend := range order {
@@ -47,7 +62,7 @@ func Detect(requested string) Report {
 			report.Reasons[backend] = "available"
 			continue
 		}
-		report.Reasons[backend] = unavailableReason(backend)
+		report.Reasons[backend] = unavailableReason(backend, platform)
 	}
 
 	if normalized != BackendAuto && available[normalized] {
@@ -66,63 +81,63 @@ func Detect(requested string) Report {
 	return report
 }
 
-func unavailableReason(backend Backend) string {
+func unavailableReason(backend Backend, platform platformCapabilities) string {
 	switch backend {
 	case BackendSixel:
-		if !supportsSixel() {
+		if !platform.SixelSupported {
+			if platform.SixelUnsupportedReason != "" {
+				return platform.SixelUnsupportedReason
+			}
 			return "terminal sixel support not detected"
 		}
-		return "sixel renderer command not found"
+		return "sixel renderer command not found (install chafa or img2sixel)"
 	case BackendUeberzugPP:
 		if !hasCommand("ueberzugpp") {
 			return "ueberzugpp not found in PATH"
 		}
-		if DetectUeberzugPPOutput() == "" {
+		if platform.UeberzugPPOutput == "" {
+			if platform.UeberzugPPUnavailableReason != "" {
+				return platform.UeberzugPPUnavailableReason
+			}
 			return "DISPLAY/WAYLAND_DISPLAY not set"
 		}
 		return "ueberzugpp not available"
 	case BackendChafa:
 		return "chafa not found in PATH"
 	case BackendExternal:
-		return "xdg-open not found in PATH"
+		if platform.ExternalUnavailableReason != "" {
+			return platform.ExternalUnavailableReason
+		}
+		return "external opener command not found in PATH"
 	default:
 		return "not available"
 	}
 }
 
-func detectAvailable() map[Backend]bool {
+func detectAvailable(platform platformCapabilities) map[Backend]bool {
 	return map[Backend]bool{
-		BackendSixel:      supportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
-		BackendUeberzugPP: hasCommand("ueberzugpp") && DetectUeberzugPPOutput() != "",
+		BackendSixel:      platform.SixelSupported && hasAnyCommand("chafa", "img2sixel"),
+		BackendUeberzugPP: hasCommand("ueberzugpp") && platform.UeberzugPPOutput != "",
 		BackendChafa:      hasCommand("chafa"),
-		BackendExternal:   hasCommand("xdg-open"),
+		BackendExternal:   hasAnyCommand(platform.ExternalCommands...),
 	}
-}
-
-func DetectUeberzugPPOutput() string {
-	if os.Getenv("DISPLAY") != "" {
-		return "x11"
-	}
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		return "wayland"
-	}
-	return ""
-}
-
-func supportsSixel() bool {
-	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
-		return true
-	}
-
-	term := strings.ToLower(os.Getenv("TERM"))
-	program := strings.ToLower(os.Getenv("TERM_PROGRAM"))
-
-	return strings.Contains(term, "sixel") || strings.Contains(program, "wezterm")
 }
 
 func hasCommand(name string) bool {
 	_, err := lookPath(name)
 	return err == nil
+}
+
+func hasAnyCommand(names ...string) bool {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if hasCommand(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalize(input string) Backend {
@@ -205,6 +220,12 @@ func (r Report) QualityPath() string {
 	case BackendChafa:
 		if r.Requested == BackendChafa && r.Reasons[BackendUeberzugPP] == "available" {
 			return "symbol fallback forced by preview_backend=chafa; ueberzug++ is available"
+		}
+		if r.Platform == "windows" {
+			if reason := strings.TrimSpace(r.Reasons[BackendSixel]); reason != "" && reason != "available" {
+				return "symbol fallback via chafa on windows; " + reason
+			}
+			return "symbol fallback via chafa on windows"
 		}
 		return "symbol fallback via chafa"
 	case BackendExternal:

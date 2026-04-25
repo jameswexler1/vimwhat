@@ -111,6 +111,98 @@ func TestDetectReportsNoneWhenNoBackendIsAvailable(t *testing.T) {
 	}
 }
 
+func TestDetectWindowsWezTermUsesSixelWithChafa(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = fakeLookPath("chafa")
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	report := detectWithPlatform("auto", testWindowsPlatform(true))
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
+	}
+	if report.Reasons[BackendSixel] != "available" {
+		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
+	}
+	if got := report.QualityPath(); got != "pixel output via sixel" {
+		t.Fatalf("QualityPath() = %q, want sixel quality path", got)
+	}
+}
+
+func TestDetectWindowsWezTermUsesSixelWithImg2Sixel(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = fakeLookPath("img2sixel")
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	report := detectWithPlatform("auto", testWindowsPlatform(true))
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
+	}
+}
+
+func TestDetectWindowsFallsBackToChafaWithoutSixelTerminal(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = fakeLookPath("chafa")
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	report := detectWithPlatform("auto", testWindowsPlatform(false))
+	if report.Selected != BackendChafa {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendChafa)
+	}
+	if got := report.QualityPath(); !strings.Contains(got, "symbol fallback via chafa on windows") || !strings.Contains(got, "Windows terminal sixel support not detected") {
+		t.Fatalf("QualityPath() = %q, want Windows chafa fallback hint", got)
+	}
+}
+
+func TestDetectWindowsForcedSixelNeedsRenderer(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = fakeLookPath()
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	report := detectWithPlatform("auto", testWindowsPlatform(true))
+	if report.Selected != BackendNone {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendNone)
+	}
+	if got := report.Reasons[BackendSixel]; !strings.Contains(got, "install chafa or img2sixel") {
+		t.Fatalf("sixel reason = %q, want renderer install hint", got)
+	}
+}
+
+func fakeLookPath(commands ...string) func(string) (string, error) {
+	available := map[string]bool{}
+	for _, command := range commands {
+		available[command] = true
+	}
+	return func(name string) (string, error) {
+		if available[name] {
+			return "/usr/bin/" + name, nil
+		}
+		return "", errors.New("not found")
+	}
+}
+
+func testWindowsPlatform(sixelSupported bool) platformCapabilities {
+	reason := ""
+	if !sixelSupported {
+		reason = "Windows terminal sixel support not detected"
+	}
+	return platformCapabilities{
+		Name:                        "windows",
+		UeberzugPPUnavailableReason: "ueberzug++ overlays require X11/Wayland; unavailable on native Windows",
+		SixelSupported:              sixelSupported,
+		SixelUnsupportedReason:      reason,
+		ExternalCommands:            []string{"rundll32.exe"},
+		ExternalUnavailableReason:   "Windows opener command not found in PATH",
+	}
+}
+
 func TestAvatarPreviewBackendPrefersSelectedOverlay(t *testing.T) {
 	backend, ok := AvatarPreviewBackend(Report{
 		Selected: BackendUeberzugPP,
@@ -234,6 +326,96 @@ func TestPreviewerRendersImageWithChafaSymbols(t *testing.T) {
 	}
 	if got := preview.Lines; len(got) != 2 || got[0] != "aa" || got[1] != "bb" {
 		t.Fatalf("preview lines = %+v", preview.Lines)
+	}
+}
+
+func TestPreviewerRendersSixelWithChafa(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = fakeLookPath("chafa")
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	var calledName string
+	var calledArgs []string
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calledName = name
+		calledArgs = slices.Clone(args)
+		return []byte("\x1bPq...\x1b\\\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendSixel}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if calledName != "chafa" || !slices.Contains(calledArgs, "--format=sixels") || slices.Contains(calledArgs, "--format=symbols") {
+		t.Fatalf("called %s %v, want chafa sixels output", calledName, calledArgs)
+	}
+	if preview.RenderedBackend != BackendSixel || preview.Display != PreviewDisplayText || len(preview.Lines) == 0 {
+		t.Fatalf("preview = %+v, want ready sixel text preview", preview)
+	}
+}
+
+func TestPreviewerRendersSixelWithImg2Sixel(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = fakeLookPath("img2sixel")
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	var calledName string
+	var calledArgs []string
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calledName = name
+		calledArgs = slices.Clone(args)
+		return []byte("\x1bPq...\x1b\\\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendSixel}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	for _, want := range []string{"-w", "80", "-h", "64"} {
+		if !slices.Contains(calledArgs, want) {
+			t.Fatalf("called %s %v, want arg %s", calledName, calledArgs, want)
+		}
+	}
+	if calledName != "img2sixel" || preview.RenderedBackend != BackendSixel || len(preview.Lines) == 0 {
+		t.Fatalf("preview = %+v after %s %v, want img2sixel sixel preview", preview, calledName, calledArgs)
 	}
 }
 

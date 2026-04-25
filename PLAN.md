@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, Windows WezTerm/Sixel preview auto-detection, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -11,7 +11,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, normal/visual message yanking, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.
-- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
+- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths; backend probing is platform-specific, including WezTerm/Sixel detection on Windows and X11/Wayland `ueberzug++` detection on Unix.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, first-use-state local reset on logout, and `doctor` session status reporting.
 - Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
@@ -57,8 +57,8 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 - Storage: `SQLite` in XDG data dir, plaintext in v1.
 - Search: `SQLite FTS5` for chat and message indexing.
 - Media preview backends, in priority order:
-  `sixel` if available in the current terminal,
-  `ueberzug++` if available,
+  `sixel` if available in the current terminal, including WezTerm on Windows,
+  `ueberzug++` if available on X11/Wayland,
   `chafa` text/image fallback,
   external opener fallback via `xdg-open`/configured command.
 - Packaging: single static-ish Linux binary plus config/data/cache dirs under XDG; no Arch-only assumptions in runtime behavior.
@@ -301,7 +301,7 @@ The next protocol milestone is live validation/polish of the completed notificat
 - Optional right info/details pane behavior:
   shows verbose metadata, debug/status information, selected message details, and alternate actions only when toggled on;
   it is not the primary media preview surface.
-- Backend detection occurs at startup and can be re-run with `:doctor` or `:preview-backend auto`.
+- Backend detection occurs at startup with platform-specific probes and can be re-run with `:doctor` or `:preview-backend auto`.
 - Preview backend order in v1:
   terminal-native `sixel`,
   `ueberzug++`,
