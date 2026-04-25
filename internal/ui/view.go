@@ -808,24 +808,12 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 
 func (m Model) renderChatAvatarLines(chat store.Chat, title string, border lipgloss.Color) []string {
 	if preview, ok := m.chatAvatarPreview(chat); ok {
-		lines := append([]string{}, preview.Lines...)
-		if len(lines) > 2 {
-			lines = lines[:2]
+		if preview.Display == media.PreviewDisplayOverlay && m.chatAvatarOverlayVisible(preview) {
+			return blankChatAvatarLines(max(chatAvatarPreviewWidth, preview.Width))
 		}
-		width := 0
-		for _, line := range lines {
-			width = max(width, displayWidth(line))
+		if len(preview.Lines) > 0 {
+			return normalizeChatAvatarLines(preview.Lines, max(chatAvatarPreviewWidth, preview.Width))
 		}
-		if width <= 0 {
-			width = 4
-		}
-		for len(lines) < 2 {
-			lines = append(lines, "")
-		}
-		for i := range lines {
-			lines[i] = padDisplay(lines[i], width)
-		}
-		return lines
 	}
 
 	badge := chatAvatarBadge(title, chat.Kind)
@@ -835,6 +823,42 @@ func (m Model) renderChatAvatarLines(chat store.Chat, title string, border lipgl
 		style.Render(badge),
 		style.Render(strings.Repeat(" ", width)),
 	}
+}
+
+func normalizeChatAvatarLines(source []string, width int) []string {
+	lines := append([]string{}, source...)
+	if len(lines) > chatAvatarPreviewHeight {
+		lines = lines[:chatAvatarPreviewHeight]
+	}
+	for _, line := range lines {
+		width = max(width, displayWidth(line))
+	}
+	if width <= 0 {
+		width = chatAvatarPreviewWidth
+	}
+	for len(lines) < chatAvatarPreviewHeight {
+		lines = append(lines, "")
+	}
+	for i := range lines {
+		lines[i] = padDisplay(lines[i], width)
+	}
+	return lines
+}
+
+func blankChatAvatarLines(width int) []string {
+	width = max(1, width)
+	lines := make([]string, chatAvatarPreviewHeight)
+	for i := range lines {
+		lines[i] = strings.Repeat(" ", width)
+	}
+	return lines
+}
+
+func (m Model) chatAvatarOverlayVisible(preview media.Preview) bool {
+	if preview.Display != media.PreviewDisplayOverlay || strings.TrimSpace(m.overlaySignature) == "" {
+		return false
+	}
+	return overlaySignatureContainsIdentifier(m.overlaySignature, overlayIdentifier(preview.Key))
 }
 
 func renderChatTitleLine(title, suffix string, width int, query string, current bool) string {
@@ -877,7 +901,7 @@ func (m Model) chatAvatarPreview(chat store.Chat) (media.Preview, bool) {
 		return media.Preview{}, false
 	}
 	preview, ok := m.previewCache[media.PreviewKey(request)]
-	if !ok || !preview.Ready() || preview.Display == media.PreviewDisplayOverlay {
+	if !ok || !preview.Ready() {
 		return media.Preview{}, false
 	}
 	return preview, true

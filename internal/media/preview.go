@@ -40,6 +40,7 @@ type PreviewRequest struct {
 	Backend       Backend
 	Width         int
 	Height        int
+	Compact       bool
 }
 
 type Preview struct {
@@ -168,7 +169,7 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 			return req.LocalPath, SourceLocal, false, nil
 		}
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
-			if !allowsThumbnailFallback(req.Backend) {
+			if !allowsThumbnailFallback(req) {
 				return "", "", false, fmt.Errorf("full image is not downloaded; only a thumbnail is available")
 			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
@@ -183,7 +184,7 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	}
 	if req.LocalPath == "" {
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
-			if !allowsThumbnailFallback(req.Backend) {
+			if !allowsThumbnailFallback(req) {
 				return "", "", false, fmt.Errorf("full video is not downloaded; only a thumbnail is available")
 			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
@@ -192,7 +193,7 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	}
 	if !fileExists(req.LocalPath) {
 		if req.ThumbnailPath != "" && fileExists(req.ThumbnailPath) {
-			if !allowsThumbnailFallback(req.Backend) {
+			if !allowsThumbnailFallback(req) {
 				return "", "", false, fmt.Errorf("video file is missing; only a thumbnail is available")
 			}
 			return req.ThumbnailPath, SourceThumbnail, false, nil
@@ -234,8 +235,8 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	return thumbnailPath, SourceGeneratedThumbnail, true, nil
 }
 
-func allowsThumbnailFallback(backend Backend) bool {
-	return backend == BackendChafa
+func allowsThumbnailFallback(req PreviewRequest) bool {
+	return req.Compact || req.Backend == BackendChafa
 }
 
 func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source string) ([]string, Backend, PreviewDisplay, error) {
@@ -245,7 +246,7 @@ func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source 
 	switch req.Backend {
 	case BackendSixel:
 		if hasCommand("chafa") {
-			lines, err := runChafa(timeoutCtx, "sixels", req.Width, req.Height, source)
+			lines, err := runChafa(timeoutCtx, "sixels", req.Width, req.Height, source, false)
 			if err == nil {
 				return lines, BackendSixel, PreviewDisplayText, nil
 			}
@@ -272,6 +273,9 @@ func (p Previewer) renderOverlayFallback(ctx context.Context, req PreviewRequest
 			return lines
 		}
 	}
+	if req.Compact {
+		return nil
+	}
 	return placeholderPreviewLines(req.Width, req.Height, MediaKind(req.MIMEType, req.FileName))
 }
 
@@ -279,14 +283,14 @@ func (p Previewer) renderChafaFallback(ctx context.Context, req PreviewRequest, 
 	if !hasCommand("chafa") {
 		return nil, BackendNone, "", fmt.Errorf("chafa not found")
 	}
-	lines, err := runChafa(ctx, "symbols", req.Width, req.Height, source)
+	lines, err := runChafa(ctx, "symbols", req.Width, req.Height, source, req.Compact)
 	if err != nil {
 		return nil, BackendChafa, "", err
 	}
 	return lines, BackendChafa, PreviewDisplayText, nil
 }
 
-func runChafa(ctx context.Context, format string, width, height int, source string) ([]string, error) {
+func runChafa(ctx context.Context, format string, width, height int, source string, compact bool) ([]string, error) {
 	args := []string{
 		"--probe=off",
 		"--animate=off",
@@ -294,7 +298,11 @@ func runChafa(ctx context.Context, format string, width, height int, source stri
 		fmt.Sprintf("--size=%dx%d", width, height),
 	}
 	if format == "symbols" {
-		args = append(args, "--symbols=block", "--colors=full")
+		if compact {
+			args = append(args, "--symbols=half+quad+block", "--colors=full", "--work=9")
+		} else {
+			args = append(args, "--symbols=block", "--colors=full")
+		}
 	}
 	args = append(args, source)
 
@@ -375,6 +383,7 @@ func PreviewKey(req PreviewRequest) string {
 		req.ThumbnailPath,
 		string(req.Backend),
 		fmt.Sprintf("%dx%d", req.Width, req.Height),
+		fmt.Sprintf("compact=%t", req.Compact),
 	}, "\x00")
 }
 

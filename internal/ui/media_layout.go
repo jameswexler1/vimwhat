@@ -51,7 +51,7 @@ func (m Model) visibleOverlayIdentifiers() map[string]bool {
 	if strings.TrimSpace(m.overlaySignature) == "" {
 		return map[string]bool{}
 	}
-	placements := m.visibleMediaPlacements()
+	placements := m.visibleOverlayPlacements()
 	if len(placements) == 0 {
 		return map[string]bool{}
 	}
@@ -66,6 +66,12 @@ func (m Model) visibleOverlayIdentifiers() map[string]bool {
 
 func overlaySignatureContainsIdentifier(signature, identifier string) bool {
 	return strings.Contains(signature, strconv.Quote(identifier))
+}
+
+func (m Model) visibleOverlayPlacements() []media.Placement {
+	placements := m.visibleMediaPlacements()
+	placements = append(placements, m.visibleChatAvatarPlacements()...)
+	return placements
 }
 
 func (m Model) visibleMediaPlacements() []media.Placement {
@@ -121,6 +127,47 @@ func (m Model) visibleMediaPlacements() []media.Placement {
 	return placements
 }
 
+func (m Model) visibleChatAvatarPlacements() []media.Placement {
+	if m.width <= 0 || m.height <= 0 {
+		return nil
+	}
+	geometry, ok := m.chatPaneGeometry()
+	if !ok {
+		return nil
+	}
+	visible := visibleChatCellCount(geometry.height)
+	if visible <= 0 || len(m.chats) == 0 {
+		return nil
+	}
+	start := adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visible)
+	end := min(len(m.chats), start+visible)
+
+	const avatarXOffset = 2
+	placements := make([]media.Placement, 0, end-start)
+	for i := start; i < end; i++ {
+		chat := m.chats[i]
+		preview, ok := m.chatAvatarPreview(chat)
+		if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+			continue
+		}
+		row := i - start
+		yOffset := chatHeaderHeight + row*chatCellHeight + 1
+		if yOffset+preview.Height > geometry.height {
+			continue
+		}
+		placements = append(placements, media.Placement{
+			Identifier: overlayIdentifier(preview.Key),
+			X:          geometry.x + avatarXOffset,
+			Y:          geometry.y + yOffset,
+			MaxWidth:   min(preview.Width, max(1, geometry.width-avatarXOffset)),
+			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+			Path:       preview.SourcePath,
+			Scaler:     "fit_contain",
+		})
+	}
+	return placements
+}
+
 type paneGeometry struct {
 	x      int
 	y      int
@@ -152,6 +199,32 @@ func (m Model) messagePaneGeometry() (paneGeometry, bool) {
 	}
 	return paneGeometry{
 		x:      panelX + 1 + style.GetPaddingLeft(),
+		y:      1,
+		width:  panelContentWidth(style, panelWidth),
+		height: panelContentHeight(style, bodyHeight),
+	}, true
+}
+
+func (m Model) chatPaneGeometry() (paneGeometry, bool) {
+	if m.compactLayout && m.focus != FocusChats {
+		return paneGeometry{}, false
+	}
+	inputHeight := m.inputHeight()
+	bodyHeight := m.height - 1 - inputHeight
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	style := m.panelStyle(FocusChats)
+	panelWidth := m.width
+	if !m.compactLayout {
+		panelWidth = max(24, m.width/4)
+	}
+	if panelWidth <= 0 {
+		return paneGeometry{}, false
+	}
+	return paneGeometry{
+		x:      1 + style.GetPaddingLeft(),
 		y:      1,
 		width:  panelContentWidth(style, panelWidth),
 		height: panelContentHeight(style, bodyHeight),

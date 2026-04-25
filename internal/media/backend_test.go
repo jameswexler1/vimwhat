@@ -111,9 +111,22 @@ func TestDetectReportsNoneWhenNoBackendIsAvailable(t *testing.T) {
 	}
 }
 
-func TestAvatarPreviewBackendPrefersChafaWhenOverlayIsSelected(t *testing.T) {
+func TestAvatarPreviewBackendPrefersSelectedOverlay(t *testing.T) {
 	backend, ok := AvatarPreviewBackend(Report{
 		Selected: BackendUeberzugPP,
+		Reasons: map[Backend]string{
+			BackendUeberzugPP: "available",
+			BackendChafa:      "available",
+		},
+	})
+	if !ok || backend != BackendUeberzugPP {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want %q, true", backend, ok, BackendUeberzugPP)
+	}
+}
+
+func TestAvatarPreviewBackendUsesSelectedChafa(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{
+		Selected: BackendChafa,
 		Reasons: map[Backend]string{
 			BackendUeberzugPP: "available",
 			BackendChafa:      "available",
@@ -131,12 +144,12 @@ func TestAvatarPreviewBackendAllowsSelectedSixel(t *testing.T) {
 	}
 }
 
-func TestAvatarPreviewBackendUnavailableWhenOnlyOverlayIsAvailable(t *testing.T) {
+func TestAvatarPreviewBackendUnavailableForExternal(t *testing.T) {
 	backend, ok := AvatarPreviewBackend(Report{
-		Selected: BackendUeberzugPP,
+		Selected: BackendExternal,
 		Reasons: map[Backend]string{
-			BackendUeberzugPP: "available",
-			BackendChafa:      "chafa not found in PATH",
+			BackendExternal: "available",
+			BackendChafa:    "chafa not found in PATH",
 		},
 	})
 	if ok || backend != "" {
@@ -154,6 +167,24 @@ func TestAvatarPreviewBackendHonorsPreviewNone(t *testing.T) {
 	})
 	if ok || backend != "" {
 		t.Fatalf("AvatarPreviewBackend() = %q, %v; want unavailable", backend, ok)
+	}
+}
+
+func TestPreviewKeyIncludesCompactFlag(t *testing.T) {
+	request := PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		FileName:  "photo.jpg",
+		LocalPath: "/tmp/photo.jpg",
+		Backend:   BackendChafa,
+		Width:     4,
+		Height:    2,
+	}
+	compact := request
+	compact.Compact = true
+
+	if PreviewKey(request) == PreviewKey(compact) {
+		t.Fatal("PreviewKey() did not distinguish compact and normal previews")
 	}
 }
 
@@ -198,11 +229,60 @@ func TestPreviewerRendersImageWithChafaSymbols(t *testing.T) {
 	if preview.Err != nil {
 		t.Fatalf("Render() error = %v", preview.Err)
 	}
-	if calledName != "chafa" || !slices.Contains(calledArgs, "--format=symbols") || !slices.Contains(calledArgs, "--size=10x4") {
-		t.Fatalf("called %s %v, want chafa symbols size 10x4", calledName, calledArgs)
+	if calledName != "chafa" || !slices.Contains(calledArgs, "--format=symbols") || !slices.Contains(calledArgs, "--size=10x4") || !slices.Contains(calledArgs, "--symbols=block") {
+		t.Fatalf("called %s %v, want normal chafa symbols size 10x4", calledName, calledArgs)
 	}
 	if got := preview.Lines; len(got) != 2 || got[0] != "aa" || got[1] != "bb" {
 		t.Fatalf("preview lines = %+v", preview.Lines)
+	}
+}
+
+func TestPreviewerRendersCompactImageWithDetailedChafaSymbols(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "avatar.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "chafa" {
+			return "/usr/bin/chafa", nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	var calledName string
+	var calledArgs []string
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calledName = name
+		calledArgs = slices.Clone(args)
+		return []byte("aa\nbb\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendChafa}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "chat-avatar:chat-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     4,
+		Height:    2,
+		Compact:   true,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	for _, want := range []string{"--format=symbols", "--size=4x2", "--symbols=half+quad+block", "--colors=full", "--work=9"} {
+		if !slices.Contains(calledArgs, want) {
+			t.Fatalf("called %s %v, want arg %s", calledName, calledArgs, want)
+		}
 	}
 }
 
@@ -277,6 +357,42 @@ func TestPreviewerProvidesFallbackLinesForUeberzugPP(t *testing.T) {
 	}
 	if got := preview.Lines; len(got) != 2 || got[0] != "aa" || got[1] != "bb" {
 		t.Fatalf("preview lines = %+v, want chafa fallback lines", got)
+	}
+}
+
+func TestCompactOverlayPreviewDoesNotUsePlaceholderFallback(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "avatar.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendUeberzugPP}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "chat-avatar:chat-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Backend:   BackendUeberzugPP,
+		Width:     4,
+		Height:    2,
+		Compact:   true,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.Display != PreviewDisplayOverlay || !preview.Ready() {
+		t.Fatalf("preview = %+v, want ready overlay", preview)
+	}
+	if len(preview.Lines) != 0 {
+		t.Fatalf("preview lines = %+v, want no placeholder compact fallback", preview.Lines)
 	}
 }
 

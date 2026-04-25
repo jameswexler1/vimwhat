@@ -2252,7 +2252,7 @@ func TestActiveChatCellUsesStrongerCursorBorder(t *testing.T) {
 	}
 }
 
-func TestChatAvatarPreviewRequestsUseInlineBackendWhenOverlayIsSelected(t *testing.T) {
+func TestChatAvatarPreviewRequestsUseOverlayBackendWhenSelected(t *testing.T) {
 	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
 	model := NewModel(Options{
 		Config: configWithPreview(24, 6),
@@ -2282,8 +2282,8 @@ func TestChatAvatarPreviewRequestsUseInlineBackendWhenOverlayIsSelected(t *testi
 	if len(requests) != 1 {
 		t.Fatalf("requestedAvatarPreviewRequests() = %+v, want one request", requests)
 	}
-	if requests[0].Backend != media.BackendChafa || requests[0].Width != 4 || requests[0].Height != 2 {
-		t.Fatalf("avatar request = %+v, want chafa 4x2", requests[0])
+	if requests[0].Backend != media.BackendUeberzugPP || requests[0].Width != chatAvatarPreviewWidth || requests[0].Height != chatAvatarPreviewHeight || !requests[0].Compact {
+		t.Fatalf("avatar request = %+v, want compact ueberzug++ 4x2", requests[0])
 	}
 }
 
@@ -2335,6 +2335,161 @@ func TestChatAvatarPreviewRendersCachedInlinePreview(t *testing.T) {
 	}
 	if countLines(view) != chatCellHeight {
 		t.Fatalf("renderChatCell() line count = %d, want %d\n%s", countLines(view), chatCellHeight, view)
+	}
+}
+
+func TestChatAvatarOverlayRendersFallbackUntilPlacementIsActive(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      avatarPath,
+		Width:           request.Width,
+		Height:          request.Height,
+		Lines:           []string{"aa", "bb"},
+	}
+
+	fallbackView := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if !strings.Contains(fallbackView, "aa") || !strings.Contains(fallbackView, "bb") {
+		t.Fatalf("renderChatCell() missing overlay fallback lines\n%s", fallbackView)
+	}
+
+	placements := model.visibleChatAvatarPlacements()
+	if len(placements) != 1 {
+		t.Fatalf("visibleChatAvatarPlacements() = %+v, want one placement", placements)
+	}
+	model.overlaySignature = overlayPlacementsSignature(placements)
+	overlayView := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if strings.Contains(overlayView, "aa") || strings.Contains(overlayView, "bb") || strings.Contains(overlayView, "[A]") {
+		t.Fatalf("renderChatCell() did not reserve blank avatar space for active overlay\n%s", overlayView)
+	}
+	if countLines(overlayView) != chatCellHeight {
+		t.Fatalf("renderChatCell() line count = %d, want %d\n%s", countLines(overlayView), chatCellHeight, overlayView)
+	}
+}
+
+func TestChatAvatarOverlayPlacementUsesChatCellCoordinates(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      avatarPath,
+		Width:           request.Width,
+		Height:          request.Height,
+	}
+
+	placements := model.visibleChatAvatarPlacements()
+	if len(placements) != 1 {
+		t.Fatalf("visibleChatAvatarPlacements() = %+v, want one placement", placements)
+	}
+	placement := placements[0]
+	if placement.X != 4 || placement.Y != 3 || placement.MaxWidth != chatAvatarPreviewWidth || placement.MaxHeight != chatAvatarPreviewHeight || placement.Path != avatarPath {
+		t.Fatalf("chat avatar placement = %+v, want x=4 y=3 size=4x2 path=%s", placement, avatarPath)
+	}
+}
+
+func TestChatAvatarOverlayPlacementsSkipHiddenCompactChatPane(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 80
+	model.height = 20
+	model.compactLayout = true
+	model.focus = FocusMessages
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      avatarPath,
+		Width:           request.Width,
+		Height:          request.Height,
+	}
+
+	if placements := model.visibleChatAvatarPlacements(); len(placements) != 0 {
+		t.Fatalf("visibleChatAvatarPlacements() = %+v, want none while compact chat pane is hidden", placements)
 	}
 }
 
@@ -4616,6 +4771,94 @@ func TestSyncOverlayCmdSkipsEmptyPlacementsWithoutManager(t *testing.T) {
 	}
 	if model.overlaySignature != "" {
 		t.Fatalf("overlaySignature = %q, want empty", model.overlaySignature)
+	}
+}
+
+func TestSyncOverlayCmdIncludesChatAvatarPlacements(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      avatarPath,
+		Width:           request.Width,
+		Height:          request.Height,
+	}
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want avatar overlay command")
+	}
+	msg := cmd()
+	if _, ok := msg.(mediaOverlayMsg); !ok {
+		t.Fatalf("overlay command message = %T, want mediaOverlayMsg", msg)
+	}
+	if !strings.Contains(overlay.String(), avatarPath) || !strings.Contains(overlay.String(), `"max_width":4`) || !strings.Contains(overlay.String(), `"max_height":2`) {
+		t.Fatalf("avatar overlay command missing avatar placement:\n%s", overlay.String())
+	}
+}
+
+func TestSyncOverlayCmdClearsWhileSyncOverlayVisible(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+	first := model.syncOverlayCmd()
+	if first == nil {
+		t.Fatal("syncOverlayCmd() = nil, want initial add command")
+	}
+	if msg := first(); msg == nil {
+		t.Fatal("initial overlay command returned nil message")
+	}
+	overlay.Reset()
+	model.syncOverlay.Visible = true
+
+	clearCmd := model.syncOverlayCmd()
+	if clearCmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want clear command while sync overlay is visible")
+	}
+	if model.overlaySignature != "" {
+		t.Fatalf("overlaySignature = %q, want empty", model.overlaySignature)
+	}
+	if msg := clearCmd(); msg == nil {
+		t.Fatal("clear overlay command returned nil message")
+	}
+	if !strings.Contains(overlay.String(), `"action":"remove"`) {
+		t.Fatalf("clear overlay command did not remove overlays:\n%s", overlay.String())
 	}
 }
 

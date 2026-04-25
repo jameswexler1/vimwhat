@@ -145,8 +145,11 @@ func normalize(input string) Backend {
 }
 
 func AvatarPreviewBackend(report Report) (Backend, bool) {
-	if report.Requested == BackendNone || report.Selected == BackendNone {
+	switch report.Selected {
+	case BackendNone, BackendExternal:
 		return "", false
+	case BackendUeberzugPP, BackendChafa, BackendSixel:
+		return report.Selected, true
 	}
 	if report.backendAvailable(BackendChafa) {
 		return BackendChafa, true

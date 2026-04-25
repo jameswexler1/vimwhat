@@ -124,7 +124,11 @@ type mediaPreviewReadyMsg struct {
 	Preview    media.Preview
 }
 
-const chatAvatarPreviewMessagePrefix = "chat-avatar:"
+const (
+	chatAvatarPreviewMessagePrefix = "chat-avatar:"
+	chatAvatarPreviewWidth         = 4
+	chatAvatarPreviewHeight        = 2
+)
 
 type mediaDownloadedMsg struct {
 	MessageID string
@@ -762,6 +766,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.withPreviewCmd(nil)
 	case mediaOverlayMsg:
 		if msg.Err != nil {
+			m.overlaySignature = ""
 			m.status = fmt.Sprintf("overlay failed: %s", shortError(msg.Err))
 		}
 		return m, nil
@@ -2623,10 +2628,10 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.previewReport.Selected != media.BackendUeberzugPP {
 		return m.clearOverlayCmd()
 	}
-	if m.helpVisible {
+	if m.helpVisible || m.syncOverlay.Visible {
 		return m.clearOverlayCmd()
 	}
-	placements := m.visibleMediaPlacements()
+	placements := m.visibleOverlayPlacements()
 	signature := overlayPlacementsSignature(placements)
 	if signature == m.overlaySignature {
 		return nil
@@ -2819,8 +2824,9 @@ func (m Model) chatAvatarPreviewRequestWithBackend(chat store.Chat, backend medi
 		ThumbnailPath: avatarThumbPath,
 		CacheDir:      m.paths.PreviewCacheDir,
 		Backend:       backend,
-		Width:         4,
-		Height:        2,
+		Width:         chatAvatarPreviewWidth,
+		Height:        chatAvatarPreviewHeight,
+		Compact:       true,
 	}, true
 }
 
