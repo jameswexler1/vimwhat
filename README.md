@@ -85,6 +85,9 @@ key_insert_send = "enter"
 key_insert_newline = "ctrl+j"
 key_insert_attach = "ctrl+f"
 key_insert_remove_attachment = "ctrl+x"
+
+key_confirm_run = "enter"
+key_confirm_cancel = "esc"
 ```
 
 Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.

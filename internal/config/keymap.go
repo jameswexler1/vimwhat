@@ -14,6 +14,7 @@ const (
 	KeyModeVisual  = "visual"
 	KeyModeCommand = "command"
 	KeyModeSearch  = "search"
+	KeyModeConfirm = "confirm"
 )
 
 type Keymap struct {
@@ -72,6 +73,11 @@ type Keymap struct {
 	SearchRun          string
 	SearchBackspace    string
 	SearchBackspaceAlt string
+
+	ConfirmCancel       string
+	ConfirmRun          string
+	ConfirmBackspace    string
+	ConfirmBackspaceAlt string
 }
 
 type KeyBinding struct {
@@ -137,6 +143,11 @@ func DefaultKeymap() Keymap {
 		SearchRun:          "enter",
 		SearchBackspace:    "backspace",
 		SearchBackspaceAlt: "ctrl+h",
+
+		ConfirmCancel:       "esc",
+		ConfirmRun:          "enter",
+		ConfirmBackspace:    "backspace",
+		ConfirmBackspaceAlt: "ctrl+h",
 	}
 }
 
@@ -290,6 +301,18 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.SearchBackspaceAlt == "" {
 		input.SearchBackspaceAlt = defaults.SearchBackspaceAlt
 	}
+	if input.ConfirmCancel == "" {
+		input.ConfirmCancel = defaults.ConfirmCancel
+	}
+	if input.ConfirmRun == "" {
+		input.ConfirmRun = defaults.ConfirmRun
+	}
+	if input.ConfirmBackspace == "" {
+		input.ConfirmBackspace = defaults.ConfirmBackspace
+	}
+	if input.ConfirmBackspaceAlt == "" {
+		input.ConfirmBackspaceAlt = defaults.ConfirmBackspaceAlt
+	}
 
 	return input
 }
@@ -345,6 +368,10 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_search_run", Mode: KeyModeSearch, Value: k.SearchRun},
 		{Name: "key_search_backspace", Mode: KeyModeSearch, Value: k.SearchBackspace},
 		{Name: "key_search_backspace_alt", Mode: KeyModeSearch, Value: k.SearchBackspaceAlt},
+		{Name: "key_confirm_cancel", Mode: KeyModeConfirm, Value: k.ConfirmCancel},
+		{Name: "key_confirm_run", Mode: KeyModeConfirm, Value: k.ConfirmRun},
+		{Name: "key_confirm_backspace", Mode: KeyModeConfirm, Value: k.ConfirmBackspace},
+		{Name: "key_confirm_backspace_alt", Mode: KeyModeConfirm, Value: k.ConfirmBackspaceAlt},
 	}
 }
 
@@ -453,6 +480,14 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.SearchBackspace = normalized
 	case "key_search_backspace_alt":
 		k.SearchBackspaceAlt = normalized
+	case "key_confirm_cancel":
+		k.ConfirmCancel = normalized
+	case "key_confirm_run":
+		k.ConfirmRun = normalized
+	case "key_confirm_backspace":
+		k.ConfirmBackspace = normalized
+	case "key_confirm_backspace_alt":
+		k.ConfirmBackspaceAlt = normalized
 	default:
 		return fmt.Errorf("unknown key binding %q", name)
 	}
@@ -565,7 +600,7 @@ func ValidateKeymap(cfg Config) error {
 			}
 		}
 		if binding.Mode == KeyModeGlobal {
-			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeCommand, KeyModeSearch} {
+			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
 				modeBindings[mode] = append(modeBindings[mode], binding)
 			}
 			continue

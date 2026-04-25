@@ -25,6 +25,7 @@ const (
 	ModeVisual  Mode = "visual"
 	ModeCommand Mode = "command"
 	ModeSearch  Mode = "search"
+	ModeConfirm Mode = "confirm"
 )
 
 type Focus string
@@ -227,6 +228,7 @@ type Model struct {
 	connectionState            ConnectionState
 	commandLine                string
 	searchLine                 string
+	confirmLine                string
 	composer                   string
 	attachments                []Attachment
 	lastSearch                 string
@@ -708,6 +710,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateCommand(msg)
 	case ModeSearch:
 		return m.updateSearch(msg)
+	case ModeConfirm:
+		return m.updateConfirm(msg)
 	case ModeVisual:
 		return m.updateVisual(msg)
 	default:
@@ -1391,6 +1395,36 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 			m.searchLine += msg.String()
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.ConfirmCancel):
+		m.mode = ModeNormal
+		m.confirmLine = ""
+		m.deleteForEveryoneConfirmID = ""
+		m.status = "delete for everybody cancelled"
+	case m.keyMatches(msg, keys.ConfirmRun):
+		confirmation := strings.TrimSpace(m.confirmLine)
+		m.confirmLine = ""
+		if confirmation != "Y" {
+			m.mode = ModeNormal
+			m.deleteForEveryoneConfirmID = ""
+			m.status = "delete for everybody cancelled"
+			return m, nil
+		}
+		m.mode = ModeNormal
+		return m.deleteConfirmedMessageForEveryone()
+	case m.keyMatches(msg, keys.ConfirmBackspace) || m.keyMatches(msg, keys.ConfirmBackspaceAlt):
+		m.confirmLine = trimLastCluster(m.confirmLine)
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.confirmLine += msg.String()
 		}
 	}
 
@@ -3503,6 +3537,7 @@ func (m *Model) deleteConfirmedMessage() error {
 func (m *Model) armDeleteFocusedMessageForEveryone() {
 	m.deleteForEveryoneConfirmID = ""
 	m.deleteConfirmID = ""
+	m.confirmLine = ""
 	message, ok := m.focusedMessage()
 	if !ok {
 		m.status = "no message selected"
@@ -3513,33 +3548,40 @@ func (m *Model) armDeleteFocusedMessageForEveryone() {
 		return
 	}
 	m.deleteForEveryoneConfirmID = message.ID
-	m.status = "run :delete-message-everybody confirm to delete for everybody"
+	m.mode = ModeConfirm
+	m.status = "type Y and press enter to delete for everybody"
 }
 
 func (m Model) deleteConfirmedMessageForEveryone() (Model, tea.Cmd) {
+	m.mode = ModeNormal
 	message, ok := m.focusedMessage()
 	if !ok {
 		m.deleteForEveryoneConfirmID = ""
+		m.confirmLine = ""
 		m.status = "delete for everybody failed: no message selected"
 		return m, nil
 	}
 	if m.deleteForEveryoneConfirmID != message.ID {
 		m.deleteForEveryoneConfirmID = ""
+		m.confirmLine = ""
 		m.status = "delete for everybody failed: confirmation expired"
 		return m, nil
 	}
 	if err := m.validateDeleteForEveryone(message); err != nil {
 		m.deleteForEveryoneConfirmID = ""
+		m.confirmLine = ""
 		m.status = fmt.Sprintf("delete for everybody failed: %v", err)
 		return m, nil
 	}
 	cmd := m.deleteMessageForEveryone(message)
 	if cmd == nil {
 		m.deleteForEveryoneConfirmID = ""
+		m.confirmLine = ""
 		m.status = "delete for everybody failed: unavailable"
 		return m, nil
 	}
 	m.deleteForEveryoneConfirmID = ""
+	m.confirmLine = ""
 	m.status = "delete for everybody queued"
 	return m, cmd
 }

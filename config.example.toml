@@ -87,3 +87,9 @@ key_search_cancel = "esc"
 key_search_run = "enter"
 key_search_backspace = "backspace"
 key_search_backspace_alt = "ctrl+h"
+
+# Confirm mode
+key_confirm_cancel = "esc"
+key_confirm_run = "enter"
+key_confirm_backspace = "backspace"
+key_confirm_backspace_alt = "ctrl+h"

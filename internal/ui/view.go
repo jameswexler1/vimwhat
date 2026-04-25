@@ -1844,6 +1844,8 @@ func defaultModeStatusColor(mode Mode) lipgloss.Color {
 		return activeBorder
 	case ModeSearch:
 		return warnFG
+	case ModeConfirm:
+		return warnFG
 	default:
 		return accentFG
 	}
@@ -1859,6 +1861,9 @@ func (m Model) renderInput() string {
 	case ModeSearch:
 		hint := fmt.Sprintf("%s search  %s cancel  empty clears", displayBinding(keys.SearchRun, leader), displayBinding(keys.SearchCancel, leader))
 		return m.renderPrompt("/"+m.searchLine, hint)
+	case ModeConfirm:
+		hint := fmt.Sprintf("%s confirm  %s cancel", displayBinding(keys.ConfirmRun, leader), displayBinding(keys.ConfirmCancel, leader))
+		return m.renderPrompt("delete for everybody? type Y: "+m.confirmLine, hint)
 	default:
 		return ""
 	}
@@ -1947,7 +1952,7 @@ func (m Model) composerAttachmentLines(width int) []string {
 }
 
 func (m Model) renderMessageFooter(width int) string {
-	if m.mode == ModeCommand || m.mode == ModeSearch {
+	if m.mode == ModeCommand || m.mode == ModeSearch || m.mode == ModeConfirm {
 		return ""
 	}
 	if m.mode == ModeInsert {
@@ -1993,7 +1998,7 @@ func (m Model) footerChatTitle() string {
 
 func (m Model) inputHeight() int {
 	switch m.mode {
-	case ModeCommand, ModeSearch:
+	case ModeCommand, ModeSearch, ModeConfirm:
 		return 1
 	default:
 		return 0
@@ -2067,6 +2072,7 @@ func (m Model) renderHelp(width int) string {
 		"         sort pinned/recent  preview  media-preview  media-open  media-save  media-hide",
 		"         history fetch  mark-read  quote-jump  react <emoji>|clear  retry-message|retry",
 		"         preview-backend <name>  clear-preview-cache  attach <path>  delete-message  delete-message-everybody",
+		"confirm: type uppercase Y then enter; anything else cancels",
 		"",
 		"state:",
 		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",

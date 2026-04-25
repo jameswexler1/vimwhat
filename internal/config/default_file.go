@@ -79,6 +79,7 @@ func DefaultFileContent(paths Paths) string {
 	writeKeyGroup(&b, "Visual mode", keyBindingsForMode(bindings, KeyModeVisual))
 	writeKeyGroup(&b, "Command mode", keyBindingsForMode(bindings, KeyModeCommand))
 	writeKeyGroup(&b, "Search mode", keyBindingsForMode(bindings, KeyModeSearch))
+	writeKeyGroup(&b, "Confirm mode", keyBindingsForMode(bindings, KeyModeConfirm))
 
 	return b.String()
 }

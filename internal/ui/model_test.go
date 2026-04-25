@@ -2796,6 +2796,13 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 		t.Fatalf("search prompt missing workflow: %q", prompt)
 	}
 
+	model.mode = ModeConfirm
+	model.confirmLine = "Y"
+	prompt = stripANSI(model.renderInput())
+	if !strings.Contains(prompt, "type Y") || !strings.Contains(prompt, "Y") || !strings.Contains(prompt, "enter confirm") {
+		t.Fatalf("confirm prompt missing workflow: %q", prompt)
+	}
+
 	commandStatus := model.renderStatus()
 	model.mode = ModeInsert
 	insertStatus := model.renderStatus()
@@ -4931,16 +4938,22 @@ func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) 
 	model.focus = FocusMessages
 	model.messageCursor = 1
 
-	armed, _ := model.executeCommand("delete-message-everybody")
-	got := armed.(Model)
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	got := leader.(Model)
+	keyD, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	got = keyD.(Model)
+	armed, _ := got.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	got = armed.(Model)
 	if queued.ID != "" {
-		t.Fatal("delete-message-everybody queued without confirmation")
+		t.Fatal("leader d e queued without confirmation")
 	}
-	if got.deleteForEveryoneConfirmID != "m-2" {
-		t.Fatalf("deleteForEveryoneConfirmID = %q, want m-2", got.deleteForEveryoneConfirmID)
+	if got.mode != ModeConfirm || got.deleteForEveryoneConfirmID != "m-2" {
+		t.Fatalf("confirm state = mode %s id %q, want confirm/m-2", got.mode, got.deleteForEveryoneConfirmID)
 	}
 
-	confirmed, cmd := got.executeCommand("delete-message-everybody confirm")
+	typed, _ := got.updateConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	got = typed.(Model)
+	confirmed, cmd := got.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
 	got = confirmed.(Model)
 	if queued.ID != "m-2" {
 		t.Fatalf("queued message = %+v, want m-2", queued)
@@ -4951,12 +4964,52 @@ func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) 
 	if cmd == nil {
 		t.Fatal("confirm command = nil, want delete command")
 	}
+	if got.mode != ModeNormal {
+		t.Fatalf("mode after confirmation = %s, want normal", got.mode)
+	}
 
 	handled, _ := got.Update(cmd())
 	got = handled.(Model)
 	messages := got.messagesByChat["chat-1"]
 	if len(messages) != 1 || messages[0].ID != "m-1" {
 		t.Fatalf("messages after delete completion = %+v", messages)
+	}
+}
+
+func TestDeleteMessageForEverybodyLowercaseYDoesNotConfirm(t *testing.T) {
+	var queued store.Message
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "delete me", IsOutgoing: true, Status: "sent"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			queued = message
+			return func() tea.Msg {
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.focus = FocusMessages
+	model.armDeleteFocusedMessageForEveryone()
+	if model.mode != ModeConfirm {
+		t.Fatalf("mode = %s, want confirm", model.mode)
+	}
+
+	typed, _ := model.updateConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := typed.(Model)
+	cancelled, cmd := got.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	got = cancelled.(Model)
+	if cmd != nil || queued.ID != "" {
+		t.Fatalf("lowercase y confirmed delete: cmd=%T queued=%+v", cmd, queued)
+	}
+	if got.mode != ModeNormal || got.deleteForEveryoneConfirmID != "" || !strings.Contains(got.status, "cancelled") {
+		t.Fatalf("cancel state = mode %s id %q status %q", got.mode, got.deleteForEveryoneConfirmID, got.status)
 	}
 }
 
