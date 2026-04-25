@@ -81,6 +81,87 @@ func TestDetectLinuxDBusAvailability(t *testing.T) {
 	}
 }
 
+func TestDetectLinuxDBusPrefersNotifySend(t *testing.T) {
+	prevGOOS := runtimeGOOS
+	prevLookPath := lookPath
+	prevGetEnv := getEnv
+	t.Cleanup(func() {
+		runtimeGOOS = prevGOOS
+		lookPath = prevLookPath
+		getEnv = prevGetEnv
+	})
+
+	runtimeGOOS = "linux"
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "notify-send", "gdbus", "dbus-send":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", context.DeadlineExceeded
+		}
+	}
+	getEnv = func(key string) string {
+		if key == "DBUS_SESSION_BUS_ADDRESS" {
+			return "unix:path=/tmp/fake-bus"
+		}
+		return ""
+	}
+
+	report := Detect(config.Config{NotificationBackend: string(BackendAuto)})
+
+	if report.Selected != BackendLinuxDBus {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendLinuxDBus)
+	}
+	if got := report.reason(BackendLinuxDBus); got != "available via notify-send" {
+		t.Fatalf("linux reason = %q, want available via notify-send", got)
+	}
+}
+
+func TestSendLinuxDBusFallsBackAcrossHelpers(t *testing.T) {
+	prevGOOS := runtimeGOOS
+	prevLookPath := lookPath
+	prevRunCommand := runCommand
+	prevGetEnv := getEnv
+	t.Cleanup(func() {
+		runtimeGOOS = prevGOOS
+		lookPath = prevLookPath
+		runCommand = prevRunCommand
+		getEnv = prevGetEnv
+	})
+
+	runtimeGOOS = "linux"
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "notify-send", "gdbus", "dbus-send":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", context.DeadlineExceeded
+		}
+	}
+	getEnv = func(key string) string {
+		if key == "DBUS_SESSION_BUS_ADDRESS" {
+			return "unix:path=/tmp/fake-bus"
+		}
+		return ""
+	}
+	var tried []string
+	runCommand = func(_ context.Context, name string, _ []string) error {
+		tried = append(tried, name)
+		if name == "dbus-send" {
+			return nil
+		}
+		return context.DeadlineExceeded
+	}
+
+	err := sendLinuxDBus(context.Background(), Notification{Title: "Alice", Body: "hello"})
+	if err != nil {
+		t.Fatalf("sendLinuxDBus() error = %v", err)
+	}
+	if got := strings.Join(tried, ","); got != "notify-send,gdbus,dbus-send" {
+		t.Fatalf("helpers tried = %q, want notify-send,gdbus,dbus-send", got)
+	}
+}
+
 func TestConfiguredCommandCandidateAppendsTitleAndBody(t *testing.T) {
 	prevLookPath := lookPath
 	t.Cleanup(func() {

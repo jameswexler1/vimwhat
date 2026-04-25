@@ -446,8 +446,12 @@ const (
 	mediaDownloadTimeout       = 5 * time.Minute
 	avatarRefreshQueueSize     = 32
 	avatarRefreshTimeout       = 30 * time.Second
-	offlineSyncProgressEvery   = 150 * time.Millisecond
-	offlineSyncInactivity      = 15 * time.Second
+)
+
+var (
+	offlineSyncProgressEvery = 150 * time.Millisecond
+	offlineSyncInactivity    = 15 * time.Second
+	offlineSyncMaxDuration   = 60 * time.Second
 )
 
 type textSendRequest struct {
@@ -685,34 +689,74 @@ func runLiveWhatsApp(
 	online := true
 	pendingPreferredChatID := ""
 	offlineSync := offlineSyncState{}
-	var offlineSyncTimer *time.Timer
-	var offlineSyncTimerC <-chan time.Time
-	resetOfflineSyncTimer := func() {
-		if offlineSyncTimer == nil {
-			offlineSyncTimer = time.NewTimer(offlineSyncInactivity)
+	var offlineSyncIdleTimer *time.Timer
+	var offlineSyncIdleTimerC <-chan time.Time
+	var offlineSyncMaxTimer *time.Timer
+	var offlineSyncMaxTimerC <-chan time.Time
+	resetOfflineSyncIdleTimer := func() {
+		if offlineSyncIdleTimer == nil {
+			offlineSyncIdleTimer = time.NewTimer(offlineSyncInactivity)
 		} else {
-			if !offlineSyncTimer.Stop() {
+			if !offlineSyncIdleTimer.Stop() {
 				select {
-				case <-offlineSyncTimer.C:
+				case <-offlineSyncIdleTimer.C:
 				default:
 				}
 			}
-			offlineSyncTimer.Reset(offlineSyncInactivity)
+			offlineSyncIdleTimer.Reset(offlineSyncInactivity)
 		}
-		offlineSyncTimerC = offlineSyncTimer.C
+		offlineSyncIdleTimerC = offlineSyncIdleTimer.C
 	}
-	clearOfflineSyncTimer := func() {
-		if offlineSyncTimer != nil {
-			if !offlineSyncTimer.Stop() {
+	startOfflineSyncMaxTimer := func() {
+		if offlineSyncMaxTimer == nil {
+			offlineSyncMaxTimer = time.NewTimer(offlineSyncMaxDuration)
+		} else {
+			if !offlineSyncMaxTimer.Stop() {
 				select {
-				case <-offlineSyncTimer.C:
+				case <-offlineSyncMaxTimer.C:
+				default:
+				}
+			}
+			offlineSyncMaxTimer.Reset(offlineSyncMaxDuration)
+		}
+		offlineSyncMaxTimerC = offlineSyncMaxTimer.C
+	}
+	clearOfflineSyncTimers := func() {
+		if offlineSyncIdleTimer != nil {
+			if !offlineSyncIdleTimer.Stop() {
+				select {
+				case <-offlineSyncIdleTimer.C:
 				default:
 				}
 			}
 		}
-		offlineSyncTimerC = nil
+		if offlineSyncMaxTimer != nil {
+			if !offlineSyncMaxTimer.Stop() {
+				select {
+				case <-offlineSyncMaxTimer.C:
+				default:
+				}
+			}
+		}
+		offlineSyncIdleTimerC = nil
+		offlineSyncMaxTimerC = nil
 	}
-	defer clearOfflineSyncTimer()
+	finishOfflineSync := func(status string, event whatsapp.OfflineSyncEvent) {
+		if !offlineSync.active {
+			clearOfflineSyncTimers()
+			return
+		}
+		syncUpdate, dirty := offlineSync.finish(event)
+		clearOfflineSyncTimers()
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh:         dirty,
+			Status:          status,
+			PreferredChatID: pendingPreferredChatID,
+			Sync:            &syncUpdate,
+		})
+		pendingPreferredChatID = ""
+	}
+	defer clearOfflineSyncTimers()
 	for {
 		select {
 		case event, ok := <-events:
@@ -730,7 +774,8 @@ func runLiveWhatsApp(
 				now := time.Now()
 				if event.Offline.Active {
 					syncUpdate := offlineSync.start(event.Offline, now)
-					resetOfflineSyncTimer()
+					resetOfflineSyncIdleTimer()
+					startOfflineSyncMaxTimer()
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 						Status: "syncing WhatsApp updates",
 						Sync:   &syncUpdate,
@@ -738,15 +783,7 @@ func runLiveWhatsApp(
 					continue
 				}
 				if event.Offline.Completed {
-					syncUpdate, dirty := offlineSync.finish(event.Offline)
-					clearOfflineSyncTimer()
-					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-						Refresh:         dirty,
-						Status:          "sync complete",
-						PreferredChatID: pendingPreferredChatID,
-						Sync:            &syncUpdate,
-					})
-					pendingPreferredChatID = ""
+					finishOfflineSync("sync complete", event.Offline)
 					continue
 				}
 			}
@@ -797,7 +834,7 @@ func runLiveWhatsApp(
 					if syncUpdate, ok := offlineSync.markProcessed(time.Now()); ok {
 						sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 					}
-					resetOfflineSyncTimer()
+					resetOfflineSyncIdleTimer()
 					continue
 				}
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
@@ -812,7 +849,7 @@ func runLiveWhatsApp(
 			}
 			if offlineSync.active {
 				syncUpdate, shouldSend := offlineSync.markProcessed(time.Now())
-				resetOfflineSyncTimer()
+				resetOfflineSyncIdleTimer()
 				if shouldSend {
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 				}
@@ -942,22 +979,18 @@ func runLiveWhatsApp(
 					Status:  result.Status,
 				})
 			}
-		case <-offlineSyncTimerC:
-			if offlineSync.active {
-				syncUpdate, dirty := offlineSync.finish(whatsapp.OfflineSyncEvent{
-					Completed: true,
-					Total:     offlineSync.total,
-					Processed: offlineSync.processed,
-				})
-				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-					Refresh:         dirty,
-					Status:          "sync stalled; refreshed latest data",
-					PreferredChatID: pendingPreferredChatID,
-					Sync:            &syncUpdate,
-				})
-				pendingPreferredChatID = ""
-			}
-			clearOfflineSyncTimer()
+		case <-offlineSyncIdleTimerC:
+			finishOfflineSync("sync stalled; refreshed latest data", whatsapp.OfflineSyncEvent{
+				Completed: true,
+				Total:     offlineSync.total,
+				Processed: offlineSync.processed,
+			})
+		case <-offlineSyncMaxTimerC:
+			finishOfflineSync("sync timed out; refreshed latest data", whatsapp.OfflineSyncEvent{
+				Completed: true,
+				Total:     offlineSync.total,
+				Processed: offlineSync.processed,
+			})
 		case <-ctx.Done():
 			return
 		}

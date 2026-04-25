@@ -261,7 +261,7 @@ func detectLinuxDBus() (bool, string) {
 	if !hasSessionBus() {
 		return false, "session D-Bus not detected"
 	}
-	for _, helper := range []string{"gdbus", "dbus-send", "notify-send"} {
+	for _, helper := range linuxNotificationHelpers() {
 		if _, err := lookPath(helper); err == nil {
 			return true, fmt.Sprintf("available via %s", helper)
 		}
@@ -295,13 +295,15 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 	}
 	title := sanitizeNotificationText(note.Title, 96, "vimwhat")
 	body := sanitizeNotificationText(note.Body, 220, "")
-	for _, helper := range []string{"gdbus", "dbus-send", "notify-send"} {
+	var failures []string
+	for _, helper := range linuxNotificationHelpers() {
 		if _, err := lookPath(helper); err != nil {
 			continue
 		}
+		var err error
 		switch helper {
 		case "gdbus":
-			return runCommand(ctx, helper, []string{
+			err = runCommand(ctx, helper, []string{
 				"call",
 				"--session",
 				"--dest", "org.freedesktop.Notifications",
@@ -317,7 +319,7 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 				"-1",
 			})
 		case "dbus-send":
-			return runCommand(ctx, helper, []string{
+			err = runCommand(ctx, helper, []string{
 				"--session",
 				"--dest=org.freedesktop.Notifications",
 				"--type=method_call",
@@ -337,10 +339,23 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 			if body != "" {
 				args = append(args, body)
 			}
-			return runCommand(ctx, helper, args)
+			err = runCommand(ctx, helper, args)
+		default:
+			continue
 		}
+		if err == nil {
+			return nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", helper, err))
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("notification delivery failed: %s", strings.Join(failures, "; "))
 	}
 	return fmt.Errorf("no D-Bus notification helper found")
+}
+
+func linuxNotificationHelpers() []string {
+	return []string{"notify-send", "gdbus", "dbus-send"}
 }
 
 func sendMacOSNotification(ctx context.Context, note Notification) error {
