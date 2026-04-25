@@ -67,7 +67,8 @@ func (m Model) renderBody(height int) string {
 		return m.renderSyncOverlay(m.width, height)
 	}
 	if m.helpVisible {
-		return m.renderPanel(FocusMessages, m.width, height, m.renderHelp(panelContentWidth(m.panelStyle(FocusMessages), m.width)))
+		style := m.panelStyle(m.focus)
+		return m.renderPanel(m.focus, m.width, height, m.renderHelp(panelContentWidth(style, m.width)))
 	}
 
 	chatWidth := max(24, m.width/4)
@@ -2157,75 +2158,209 @@ func (m Model) composerHeight() int {
 func (m Model) renderHelp(width int) string {
 	keys := m.config.Keymap
 	leader := m.config.LeaderKey
+
+	key := func(binding string) string {
+		return displayBinding(binding, leader)
+	}
+	keysFor := func(bindings ...string) string {
+		return displayUniqueBindings(leader, bindings...)
+	}
+
+	quick := []helpRow{
+		{Key: keysFor(keys.NormalMoveDown, keys.NormalMoveUp), Action: "move"},
+		{Key: key(keys.NormalOpen), Action: "open/preview"},
+		{Key: key(keys.NormalReply), Action: "reply"},
+		{Key: key(keys.NormalSearch), Action: "search"},
+		{Key: key(keys.NormalCommand), Action: "command"},
+		{Key: keysFor(keys.HelpClose, keys.HelpCloseAlt), Action: "close help"},
+	}
+
+	navigation := helpSection{
+		Title: "Navigation",
+		Rows: []helpRow{
+			{Key: keysFor(keys.NormalMoveDown, keys.NormalMoveUp), Action: "move selection; count like 5" + key(keys.NormalMoveDown)},
+			{Key: keysFor(keys.NormalGoTop, keys.NormalGoBottom), Action: "jump top / bottom"},
+			{Key: keysFor(keys.NormalFocusLeft, keys.NormalFocusRightOrReply), Action: "switch pane / edge reply"},
+			{Key: keysFor(keys.NormalFocusNext, keys.NormalFocusPrevious), Action: "cycle focus"},
+			{Key: keysFor(keys.NormalSearchNext, keys.NormalSearchPrevious), Action: "next / previous search match"},
+			{Key: keysFor(keys.NormalToggleUnread, keys.NormalTogglePinned), Action: "unread filter / pinned sort"},
+		},
+	}
+	mediaActions := helpSection{
+		Title: "Messages and Media",
+		Rows: []helpRow{
+			{Key: key(keys.NormalOpen), Action: "preview or open selected row"},
+			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
+			{Key: keysFor(keys.NormalSaveMedia, keys.NormalUnloadPreviews), Action: "save media / hide previews"},
+			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
+			{Key: key(keys.NormalRetryFailedMedia), Action: "retry failed media"},
+			{Key: key(keys.NormalDeleteForEverybody), Action: "delete for everyone"},
+		},
+	}
+	modes := helpSection{
+		Title: "Modes",
+		Rows: []helpRow{
+			{Key: key(keys.NormalInsert), Action: "compose in insert mode"},
+			{Key: keysFor(keys.InsertSend, keys.CommandRun, keys.SearchRun), Action: "send or run current prompt"},
+			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
+			{Key: keysFor(keys.InsertAttach, keys.InsertRemoveAttachment), Action: "attach / remove file"},
+			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
+			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
+		},
+	}
+	commands := helpSection{
+		Title: "Commands",
+		Rows: []helpRow{
+			{Key: "filter", Action: "unread/all/messages, clear-search"},
+			{Key: "sort", Action: "pinned/recent"},
+			{Key: "media", Action: "preview/open/save/hide"},
+			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
+			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
+			{Key: "more", Action: "preview-backend, attach, delete-message-everybody"},
+		},
+	}
+
 	lines := []string{
 		lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render("vimwhat help"),
-		"",
-		fmt.Sprintf("normal:  %s/%s move    5%s count    %s/%s top/bottom    %s pane    %s right/edge-reply    %s cycle",
-			displayBinding(keys.NormalMoveDown, leader),
-			displayBinding(keys.NormalMoveUp, leader),
-			displayBinding(keys.NormalMoveDown, leader),
-			displayBinding(keys.NormalGoTop, leader),
-			displayBinding(keys.NormalGoBottom, leader),
-			displayBinding(keys.NormalFocusLeft, leader),
-			displayBinding(keys.NormalFocusRightOrReply, leader),
-			displayBinding(keys.NormalFocusNext, leader),
-		),
-		fmt.Sprintf("         %s preview/open  %s open media  %s save  %s unload previews  %s delete everybody",
-			displayBinding(keys.NormalOpen, leader),
-			displayBinding(keys.NormalOpenMedia, leader),
-			displayBinding(keys.NormalSaveMedia, leader),
-			displayBinding(keys.NormalUnloadPreviews, leader),
-			displayBinding(keys.NormalDeleteForEverybody, leader),
-		),
-		fmt.Sprintf("         %s insert    %s reply    %s retry failed media    %s visual    %s search    %s command    %s unread    %s sort",
-			displayBinding(keys.NormalInsert, leader),
-			displayBinding(keys.NormalReply, leader),
-			displayBinding(keys.NormalRetryFailedMedia, leader),
-			displayBinding(keys.NormalVisual, leader),
-			displayBinding(keys.NormalSearch, leader),
-			displayBinding(keys.NormalCommand, leader),
-			displayBinding(keys.NormalToggleUnread, leader),
-			displayBinding(keys.NormalTogglePinned, leader),
-		),
-		fmt.Sprintf("         %s/%s next search   %s help      %s quit",
-			displayBinding(keys.NormalSearchNext, leader),
-			displayBinding(keys.NormalSearchPrevious, leader),
-			displayBinding(keys.NormalHelp, leader),
-			displayBinding(keys.NormalQuit, leader),
-		),
-		fmt.Sprintf("insert:  %s send  %s newline  %s attach  %s remove attachment  %s save draft",
-			displayBinding(keys.InsertSend, leader),
-			displayBindings(leader, keys.InsertNewline, keys.InsertNewlineAlt),
-			displayBinding(keys.InsertAttach, leader),
-			displayBinding(keys.InsertRemoveAttachment, leader),
-			displayBinding(keys.InsertCancel, leader),
-		),
-		fmt.Sprintf("visual:  %s/%s extend  %s yank clipboard  %s normal",
-			displayBinding(keys.VisualMoveDown, leader),
-			displayBinding(keys.VisualMoveUp, leader),
-			displayBinding(keys.VisualYank, leader),
-			displayBinding(keys.VisualCancel, leader),
-		),
-		"command: clear-search  filter unread/all  filter messages <text>  filter clear",
-		"         sort pinned/recent  preview  media-preview  media-open  media-save  media-hide",
-		"         history fetch  mark-read  quote-jump  react <emoji>|clear  retry-message|retry",
-		"         preview-backend <name>  clear-preview-cache  attach <path>  delete-message  delete-message-everybody",
-		"confirm: type uppercase Y then enter; anything else cancels",
-		"",
-		"state:",
-		fmt.Sprintf("mode=%s focus=%s filter=%s sort=%s search=%q",
-			m.mode,
-			m.focus,
-			boolLabel(m.unreadOnly, "unread", "all"),
-			boolLabel(m.pinnedFirst, "pinned", "recent"),
-			m.activeSearch,
-		),
+		lipgloss.NewStyle().Foreground(softFG).Render("Key labels follow your config. Commands are typed after " + key(keys.NormalCommand) + "."),
 	}
+	lines = append(lines, renderHelpInlineRows(quick, width)...)
+	lines = append(lines, "")
+	if width >= 84 {
+		lines = append(lines, renderHelpColumns(width, navigation, mediaActions)...)
+		lines = append(lines, "")
+		lines = append(lines, renderHelpColumns(width, modes, commands)...)
+	} else {
+		for _, section := range []helpSection{navigation, mediaActions, modes, commands} {
+			lines = append(lines, strings.Split(renderHelpSection(section, width), "\n")...)
+			lines = append(lines, "")
+		}
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+	}
+	lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Render(fmt.Sprintf(
+		"state: mode=%s focus=%s filter=%s sort=%s search=%q",
+		m.mode,
+		m.focus,
+		boolLabel(m.unreadOnly, "unread", "all"),
+		boolLabel(m.pinnedFirst, "pinned", "recent"),
+		m.activeSearch,
+	)))
 
 	for i, line := range lines {
 		lines[i] = truncateDisplay(line, width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+type helpRow struct {
+	Key    string
+	Action string
+}
+
+type helpSection struct {
+	Title string
+	Rows  []helpRow
+}
+
+func renderHelpColumns(width int, left, right helpSection) []string {
+	gap := 2
+	leftWidth := (width - gap) / 2
+	rightWidth := width - gap - leftWidth
+	joined := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		renderHelpSection(left, leftWidth),
+		strings.Repeat(" ", gap),
+		renderHelpSection(right, rightWidth),
+	)
+	return strings.Split(joined, "\n")
+}
+
+func renderHelpSection(section helpSection, width int) string {
+	width = max(1, width)
+	lines := []string{
+		truncateDisplay(lipgloss.NewStyle().Bold(true).Foreground(accentFG).Render(section.Title), width),
+	}
+	keyWidth := helpKeyWidth(section.Rows, width)
+	for _, row := range section.Rows {
+		lines = append(lines, renderHelpRow(row, keyWidth, width)...)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderHelpRow(row helpRow, keyWidth, width int) []string {
+	width = max(1, width)
+	keyWidth = min(keyWidth, max(1, width-2))
+	actionWidth := max(1, width-keyWidth-2)
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(warnFG)
+	actionStyle := lipgloss.NewStyle().Foreground(primaryFG)
+	softStyle := lipgloss.NewStyle().Foreground(softFG)
+
+	actionLines := strings.Split(wrapPlainText(row.Action, actionWidth), "\n")
+	lines := make([]string, 0, len(actionLines))
+	for i, action := range actionLines {
+		keyLabel := strings.Repeat(" ", keyWidth)
+		if i == 0 {
+			keyLabel = padDisplay(truncateDisplay(row.Key, keyWidth), keyWidth)
+			keyLabel = keyStyle.Render(keyLabel)
+		}
+		lines = append(lines, truncateDisplay(
+			keyLabel+softStyle.Render("  ")+actionStyle.Render(action),
+			width,
+		))
+	}
+	return lines
+}
+
+func renderHelpInlineRows(rows []helpRow, width int) []string {
+	width = max(1, width)
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(warnFG)
+	actionStyle := lipgloss.NewStyle().Foreground(primaryFG)
+	softStyle := lipgloss.NewStyle().Foreground(softFG)
+	separator := softStyle.Render("   ")
+
+	var lines []string
+	line := ""
+	for _, row := range rows {
+		segment := keyStyle.Render(row.Key) + softStyle.Render(" ") + actionStyle.Render(row.Action)
+		if line == "" {
+			line = segment
+			continue
+		}
+		if displayWidth(line)+displayWidth(separator)+displayWidth(segment) <= width {
+			line += separator + segment
+			continue
+		}
+		lines = append(lines, truncateDisplay(line, width))
+		line = segment
+	}
+	if line != "" {
+		lines = append(lines, truncateDisplay(line, width))
+	}
+	return lines
+}
+
+func displayUniqueBindings(leader string, bindings ...string) string {
+	seen := map[string]bool{}
+	var labels []string
+	for _, binding := range bindings {
+		label := displayBinding(binding, leader)
+		if label == "" || seen[label] {
+			continue
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, "/")
+}
+
+func helpKeyWidth(rows []helpRow, width int) int {
+	keyWidth := 1
+	for _, row := range rows {
+		keyWidth = max(keyWidth, displayWidth(row.Key))
+	}
+	return min(keyWidth, max(6, width/3))
 }
 
 func boolLabel(value bool, yes, no string) string {

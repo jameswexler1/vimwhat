@@ -1635,18 +1635,86 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 			ActiveChatID:   "chat-1",
 		},
 	})
-	model.width = 100
-	model.height = 24
+	model.width = 110
+	model.height = 32
 
 	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	got := helped.(Model)
 	if !got.helpVisible {
 		t.Fatal("helpVisible = false, want true")
 	}
-	view := got.View()
-	for _, want := range []string{"vimwhat help", "normal:", "l right/edge-reply", "r reply", "command:", "R retry failed media", "retry-message|retry"} {
+	view := stripANSI(got.View())
+	for _, want := range []string{
+		"vimwhat help",
+		"Key labels follow your config",
+		"Navigation",
+		"Messages and Media",
+		"Modes",
+		"Commands",
+		"j/k",
+		"r/l",
+		"retry failed media",
+		"retry-message|retry",
+		"delete-message-everybody",
+		"state: mode=normal focus=chats",
+	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing %q\n%s", want, view)
+		}
+	}
+}
+
+func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.HelpClose = "ctrl+g"
+	keymap.NormalReply = "leader r"
+	keymap.NormalOpenMedia = "m"
+	keymap.NormalSaveMedia = "leader m"
+	model := NewModel(Options{
+		Config: config.Config{
+			LeaderKey: ",",
+			Keymap:    keymap,
+		},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 110
+	model.height = 32
+
+	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	got := helped.(Model)
+	view := stripANSI(got.View())
+	for _, want := range []string{",r", "m", ",m", "ctrl+g/?"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("help view missing configured binding %q\n%s", want, view)
+		}
+	}
+}
+
+func TestHelpOverlayFitsNarrowWidth(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 42
+	model.height = 16
+
+	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	got := helped.(Model)
+	assertViewWithinBounds(t, got)
+
+	view := stripANSI(got.View())
+	for _, want := range []string{"vimwhat help", "close help"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("narrow help view missing %q\n%s", want, view)
 		}
 	}
 }
