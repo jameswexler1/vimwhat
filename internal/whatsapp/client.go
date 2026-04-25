@@ -922,10 +922,7 @@ func (c *Client) GetChatAvatar(ctx context.Context, chatJID, existingID string) 
 		return ChatAvatarResult{}, fmt.Errorf("unsupported avatar chat jid %s", chatJID)
 	}
 
-	info, err := c.client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
-		Preview:    true,
-		ExistingID: strings.TrimSpace(existingID),
-	})
+	info, err := c.client.GetProfilePictureInfo(ctx, jid, chatAvatarProfilePictureParams(existingID))
 	switch {
 	case err == nil:
 	case errors.Is(err, whatsmeow.ErrProfilePictureNotSet), errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized):
@@ -951,6 +948,13 @@ func (c *Client) GetChatAvatar(ctx context.Context, chatJID, existingID string) 
 		Changed:   true,
 		UpdatedAt: time.Now(),
 	}, nil
+}
+
+func chatAvatarProfilePictureParams(existingID string) *whatsmeow.GetProfilePictureParams {
+	return &whatsmeow.GetProfilePictureParams{
+		Preview:    false,
+		ExistingID: strings.TrimSpace(existingID),
+	}
 }
 
 func mediaTypeForDownloadKind(kind string) (whatsmeow.MediaType, error) {

@@ -2493,6 +2493,102 @@ func TestChatAvatarOverlayPlacementsSkipHiddenCompactChatPane(t *testing.T) {
 	}
 }
 
+func TestChatAvatarOverlayStaysActiveWhenFocusMovesWithinVisibleChats(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", AvatarPath: avatarPath},
+				{ID: "chat-2", Title: "Bob"},
+				{ID: "chat-3", Title: "Carol"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": nil,
+				"chat-2": nil,
+				"chat-3": nil,
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+	cacheChatAvatarOverlayPreview(t, &model, model.chats[0], avatarPath, "low-avatar-1", "low-avatar-2")
+
+	if cmd := model.syncOverlayCmd(); cmd == nil || model.overlaySignature == "" {
+		t.Fatal("syncOverlayCmd() did not mark avatar overlay as active")
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = updated.(Model)
+	if model.avatarOverlayPaused {
+		t.Fatal("avatarOverlayPaused = true, want avatar overlay kept while visible chat window is unchanged")
+	}
+	if model.overlaySignature == "" {
+		t.Fatal("overlaySignature is empty after moving within visible chat list")
+	}
+	view := stripANSI(model.View())
+	if strings.Contains(view, "low-avatar") {
+		t.Fatalf("View() rendered low-resolution avatar fallback while overlay remained active\n%s", view)
+	}
+}
+
+func TestChatAvatarOverlayPausesBlankWhenChatListScrolls(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	chats := make([]store.Chat, 0, 8)
+	messages := map[string][]store.Message{}
+	for i := 0; i < 8; i++ {
+		id := fmt.Sprintf("chat-%d", i)
+		chat := store.Chat{ID: id, Title: fmt.Sprintf("Chat %d", i)}
+		if i == 4 {
+			chat.AvatarPath = avatarPath
+		}
+		chats = append(chats, chat)
+		messages[id] = nil
+	}
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats:          chats,
+			MessagesByChat: messages,
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-3",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+	model.activeChat = 3
+	cacheChatAvatarOverlayPreview(t, &model, model.chats[4], avatarPath, "low-avatar-1", "low-avatar-2")
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("scroll command = nil, want clear/resume overlay commands")
+	}
+	if !model.avatarOverlayPaused {
+		t.Fatal("avatarOverlayPaused = false, want paused after chat list scroll")
+	}
+	view := stripANSI(model.View())
+	if strings.Contains(view, "low-avatar") {
+		t.Fatalf("View() rendered low-resolution avatar fallback while avatar overlay was paused\n%s", view)
+	}
+}
+
 func TestMessageSearchHighlightsBodiesOnlyAndHoveredMessage(t *testing.T) {
 	withANSIStyles(t)
 
@@ -4760,6 +4856,51 @@ func TestSyncOverlayCmdSkipsUnchangedPlacements(t *testing.T) {
 	}
 }
 
+func TestPausedOverlayClearDoesNotRaceAfterResume(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+
+	initial := model.syncOverlayCmd()
+	if initial == nil {
+		t.Fatal("initial syncOverlayCmd() = nil, want add command")
+	}
+	if msg := initial(); msg == nil {
+		t.Fatal("initial overlay command returned nil message")
+	}
+	overlay.Reset()
+
+	model.pauseOverlays(true, false)
+	staleClear := model.syncOverlayCmd()
+	if staleClear == nil {
+		t.Fatal("paused syncOverlayCmd() = nil, want epoch-scoped clear command")
+	}
+	resumed, resumeCmd := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
+	model = resumed.(Model)
+	if model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = true after resume")
+	}
+	if resumeCmd == nil {
+		t.Fatal("resume command = nil, want overlay re-sync")
+	}
+	if msg := resumeCmd(); msg == nil {
+		t.Fatal("resume overlay command returned nil message")
+	}
+	overlay.Reset()
+
+	if msg := staleClear(); msg == nil {
+		t.Fatal("stale clear command returned nil message")
+	}
+	if overlay.Len() != 0 {
+		t.Fatalf("stale pause clear wrote overlay commands after resume:\n%s", overlay.String())
+	}
+}
+
 func TestSyncOverlayCmdSkipsEmptyPlacementsWithoutManager(t *testing.T) {
 	model := mediaTestModel(filepath.Join(t.TempDir(), "photo.jpg"), media.BackendUeberzugPP)
 
@@ -5188,14 +5329,12 @@ func TestLoadedOverlayPreviewsStayVisibleWhenFocusMoves(t *testing.T) {
 	}
 }
 
-func TestScrollingClearedOverlayShowsInlineFallback(t *testing.T) {
+func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	model := mediaTestModel(localPath, media.BackendUeberzugPP)
-	model.chats = []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}}
-	model.allChats = []store.Chat{{ID: "chat-1", JID: "group@g.us", Title: "Group", Kind: "group"}}
 	model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
 		ID:        "m-2",
 		ChatID:    "chat-1",
@@ -5204,8 +5343,8 @@ func TestScrollingClearedOverlayShowsInlineFallback(t *testing.T) {
 		SenderJID: "member@s.whatsapp.net",
 		Body:      "newer text",
 	})
-	model.messageCursor = 1
-	model.messageScrollTop = 1
+	model.messageCursor = 0
+	model.messageScrollTop = 0
 	cacheOverlayPreview(t, &model, localPath)
 	message := model.messagesByChat["chat-1"][0]
 	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
@@ -5220,15 +5359,69 @@ func TestScrollingClearedOverlayShowsInlineFallback(t *testing.T) {
 		t.Fatal("syncOverlayCmd() did not mark overlay as active")
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	model = updated.(Model)
-	if model.overlaySignature != "" {
-		t.Fatalf("overlaySignature = %q, want cleared after movement", model.overlaySignature)
+	if cmd == nil {
+		t.Fatal("movement command = nil, want clear/resume overlay commands")
+	}
+	if !model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = false, want paused after scrolling")
 	}
 
 	view := stripANSI(model.View())
-	if !strings.Contains(view, "fallback-overlay-line") {
-		t.Fatalf("View() hid inline fallback after clearing overlay\n%s", view)
+	if strings.Contains(view, "fallback-overlay-line") {
+		t.Fatalf("View() rendered low-resolution fallback while overlay was paused\n%s", view)
+	}
+
+	resumed, _ := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
+	model = resumed.(Model)
+	if model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = true, want resumed")
+	}
+	if model.overlaySignature == "" {
+		t.Fatal("overlaySignature is empty after resume, want overlay sync scheduled")
+	}
+	view = stripANSI(model.View())
+	if strings.Contains(view, "fallback-overlay-line") {
+		t.Fatalf("View() rendered low-resolution fallback after overlay resume\n%s", view)
+	}
+}
+
+func TestStickerOverlayPauseDoesNotRenderLowResolutionFallback(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "sticker.webp")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	model.messagesByChat["chat-1"][0].Media[0].Kind = "sticker"
+	model.messagesByChat["chat-1"][0].Media[0].FileName = "sticker.webp"
+	model.messagesByChat["chat-1"][0].Media[0].MIMEType = "image/webp"
+	model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+		ID:     "m-2",
+		ChatID: "chat-1",
+		Sender: "Alice",
+		Body:   "after sticker",
+	})
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	preview := model.previewCache[media.PreviewKey(request)]
+	preview.Lines = []string{"low-sticker-line"}
+	model.previewCache[media.PreviewKey(request)] = preview
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	model = updated.(Model)
+	if !model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = false, want paused after sticker scroll")
+	}
+	view := stripANSI(model.View())
+	if strings.Contains(view, "low-sticker-line") {
+		t.Fatalf("View() rendered low-resolution sticker fallback while overlay was paused\n%s", view)
 	}
 }
 
@@ -6304,5 +6497,26 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 		SourcePath:      sourcePath,
 		Width:           request.Width,
 		Height:          request.Height,
+	}
+}
+
+func cacheChatAvatarOverlayPreview(t *testing.T, model *Model, chat store.Chat, sourcePath string, lines ...string) {
+	t.Helper()
+	request, ok := model.chatAvatarPreviewRequest(chat)
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendUeberzugPP,
+		RenderedBackend: media.BackendUeberzugPP,
+		Display:         media.PreviewDisplayOverlay,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      sourcePath,
+		Width:           request.Width,
+		Height:          request.Height,
+		Lines:           lines,
 	}
 }

@@ -59,6 +59,16 @@ func TestHistoryAnchorMessageInfo(t *testing.T) {
 	}
 }
 
+func TestChatAvatarProfilePictureParamsRequestsFullImage(t *testing.T) {
+	params := chatAvatarProfilePictureParams(" avatar-1 ")
+	if params.Preview {
+		t.Fatal("chatAvatarProfilePictureParams() requested preview image, want full image")
+	}
+	if params.ExistingID != "avatar-1" {
+		t.Fatalf("ExistingID = %q, want trimmed avatar id", params.ExistingID)
+	}
+}
+
 func TestCheckSessionStatusMissingDoesNotCreateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sqlite3")
 

@@ -163,6 +163,10 @@ type mediaOverlayMsg struct {
 	Err error
 }
 
+type overlayResumeMsg struct {
+	Generation int
+}
+
 type MediaOpenFinishedMsg struct {
 	MessageID string
 	Media     store.MediaMetadata
@@ -237,8 +241,11 @@ type Model struct {
 	previewGeneration          int
 	overlay                    *media.OverlayManager
 	overlaySignature           string
+	mediaOverlayPaused         bool
+	avatarOverlayPaused        bool
+	overlayPauseGeneration     int
+	overlayResumeQueued        int
 	mediaDownloadInflight      map[string]bool
-	suppressOverlay            bool
 	audioProcess               AudioProcess
 	audioSession               int
 	audioMessageID             string
@@ -327,6 +334,7 @@ const messageLoadLimit = 200
 const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
 const syncOverlayCompleteDelay = 600 * time.Millisecond
+const overlayResumeDelay = 80 * time.Millisecond
 
 type syncOverlayState struct {
 	Visible        bool
@@ -610,6 +618,12 @@ func refreshDebounceCmd() tea.Cmd {
 	})
 }
 
+func overlayResumeCmd(generation int) tea.Cmd {
+	return tea.Tick(overlayResumeDelay, func(time.Time) tea.Msg {
+		return overlayResumeMsg{Generation: generation}
+	})
+}
+
 func (m Model) handleRefreshDebounced() (Model, tea.Cmd) {
 	m.refreshDebouncePending = false
 	if m.reloadSnapshot == nil {
@@ -770,6 +784,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("overlay failed: %s", shortError(msg.Err))
 		}
 		return m, nil
+	case overlayResumeMsg:
+		if msg.Generation != m.overlayPauseGeneration {
+			return m, nil
+		}
+		if m.overlay != nil {
+			m.overlay.Invalidate()
+		}
+		m.mediaOverlayPaused = false
+		m.avatarOverlayPaused = false
+		m.overlayResumeQueued = 0
+		return m.withPreviewCmd(nil)
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
 		if next, ok := updated.(Model); ok {
@@ -1035,8 +1060,10 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		if m.focus == FocusMessages {
 			m.messageCursor = 0
 			m.messageScrollTop = 0
-			m.suppressOverlay = true
+			m.pauseOverlays(true, false)
 		} else {
+			previousChat := m.activeChat
+			previousScrollTop := m.chatScrollTop
 			m.activeChat = 0
 			m.chatScrollTop = 0
 			if err := m.ensureCurrentMessagesLoaded(); err != nil {
@@ -1044,6 +1071,9 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.showCurrentChatLatest()
+			if m.activeChat != previousChat {
+				m.pauseOverlays(true, m.chatScrollTop != previousScrollTop)
+			}
 		}
 	case normalActionGoBottom:
 		if m.focus == FocusMessages {
@@ -1054,10 +1084,12 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 				}
 				m.messageCursor = clamp(target, 0, messageCount-1)
 				m.messageScrollTop = m.messageCursor
-				m.suppressOverlay = true
+				m.pauseOverlays(true, false)
 			}
 		} else {
 			if chatCount := len(m.chats); chatCount > 0 {
+				previousChat := m.activeChat
+				previousScrollTop := m.chatScrollTop
 				target := chatCount - 1
 				if count > 1 {
 					target = count - 1
@@ -1069,6 +1101,9 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.showCurrentChatLatest()
+				if m.activeChat != previousChat {
+					m.pauseOverlays(true, m.chatScrollTop != previousScrollTop)
+				}
 			}
 		}
 	case normalActionOpen:
@@ -1611,6 +1646,7 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		previousChat := m.activeChat
+		previousScrollTop := m.chatScrollTop
 		m.activeChat = clamp(m.activeChat+delta, 0, len(m.chats)-1)
 		m.keepActiveChatVisible()
 		if err := m.ensureCurrentMessagesLoaded(); err != nil {
@@ -1619,7 +1655,7 @@ func (m *Model) moveCursor(delta int) {
 		}
 		m.showCurrentChatLatest()
 		if m.activeChat != previousChat {
-			m.suppressOverlay = true
+			m.pauseOverlays(true, m.chatScrollTop != previousScrollTop)
 		}
 	case FocusMessages:
 		if len(m.currentMessages()) == 0 {
@@ -1630,10 +1666,11 @@ func (m *Model) moveCursor(delta int) {
 			return
 		}
 		previous := m.messageCursor
+		previousScrollTop := m.messageScrollTop
 		m.messageCursor = clamp(m.messageCursor+delta, 0, len(m.currentMessages())-1)
 		m.keepMessageCursorNearViewport()
-		if m.messageCursor != previous {
-			m.suppressOverlay = true
+		if m.messageCursor != previous && m.messageScrollTop != previousScrollTop {
+			m.pauseOverlays(true, false)
 		}
 	}
 }
@@ -1695,6 +1732,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.previewInflight = map[string]bool{}
 		m.previewRequested = map[string]bool{}
 		m.previewGeneration++
+		m.clearOverlayPause()
 		if m.previewReport.Selected == media.BackendUeberzugPP && m.overlay == nil {
 			m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 		}
@@ -1978,7 +2016,7 @@ func (m *Model) loadOlderOrRequestHistory() {
 			m.addMessageLimit(chatID, len(older))
 			m.messageCursor = len(older) - 1
 			m.messageScrollTop = m.messageCursor
-			m.suppressOverlay = true
+			m.pauseOverlays(true, false)
 			m.status = fmt.Sprintf("loaded %d older local message(s)", len(older))
 			return
 		}
@@ -2080,7 +2118,7 @@ func (m *Model) focusMessageByID(messageID string) bool {
 		m.messageCursor = i
 		m.messageScrollTop = i
 		m.focus = FocusMessages
-		m.suppressOverlay = true
+		m.pauseOverlays(true, false)
 		return true
 	}
 	return false
@@ -2514,12 +2552,47 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	next.reportVisibleChatsChanged()
 	next, stickerCmd := next.ensureVisibleStickerMedia()
 	next, previewCmd := next.queueRequestedPreviewCmd()
-	if next.suppressOverlay {
-		next.suppressOverlay = false
-		return next, batchCmds(cmd, stickerCmd, previewCmd, next.clearOverlayCmd())
-	}
+	resumeCmd := next.queueOverlayResumeCmd()
 	overlayCmd := next.syncOverlayCmd()
-	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd)
+	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd, resumeCmd)
+}
+
+func (m *Model) pauseOverlays(mediaPreview, chatAvatars bool) {
+	if !mediaPreview && !chatAvatars {
+		return
+	}
+	if mediaPreview {
+		m.mediaOverlayPaused = true
+	}
+	if chatAvatars {
+		m.avatarOverlayPaused = true
+	}
+	m.overlayPauseGeneration++
+	m.overlayResumeQueued = 0
+	if m.overlay != nil {
+		m.overlay.Invalidate()
+	}
+}
+
+func (m *Model) queueOverlayResumeCmd() tea.Cmd {
+	if !m.mediaOverlayPaused && !m.avatarOverlayPaused {
+		return nil
+	}
+	if m.overlayResumeQueued == m.overlayPauseGeneration {
+		return nil
+	}
+	m.overlayResumeQueued = m.overlayPauseGeneration
+	return overlayResumeCmd(m.overlayPauseGeneration)
+}
+
+func (m *Model) clearOverlayPause() {
+	if !m.mediaOverlayPaused && !m.avatarOverlayPaused && m.overlayResumeQueued == 0 {
+		return
+	}
+	m.mediaOverlayPaused = false
+	m.avatarOverlayPaused = false
+	m.overlayPauseGeneration++
+	m.overlayResumeQueued = 0
 }
 
 func batchCmds(cmds ...tea.Cmd) tea.Cmd {
@@ -2631,13 +2704,13 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.helpVisible || m.syncOverlay.Visible {
 		return m.clearOverlayCmd()
 	}
-	placements := m.visibleOverlayPlacements()
+	placements := m.syncableOverlayPlacements()
 	signature := overlayPlacementsSignature(placements)
 	if signature == m.overlaySignature {
 		return nil
 	}
 	if signature == "" {
-		return m.clearOverlayCmd()
+		return m.syncEmptyOverlayCmd()
 	}
 	if m.overlay == nil {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
@@ -2648,6 +2721,29 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	return func() tea.Msg {
 		return mediaOverlayMsg{Err: manager.SyncEpoch(context.Background(), epoch, placements)}
 	}
+}
+
+func (m *Model) syncEmptyOverlayCmd() tea.Cmd {
+	m.overlaySignature = ""
+	if m.overlay == nil {
+		return nil
+	}
+	manager := m.overlay
+	epoch := manager.Epoch()
+	return func() tea.Msg {
+		return mediaOverlayMsg{Err: manager.SyncEpoch(context.Background(), epoch, nil)}
+	}
+}
+
+func (m Model) syncableOverlayPlacements() []media.Placement {
+	var placements []media.Placement
+	if !m.mediaOverlayPaused {
+		placements = append(placements, m.visibleMediaPlacements()...)
+	}
+	if !m.avatarOverlayPaused {
+		placements = append(placements, m.visibleChatAvatarPlacements()...)
+	}
+	return placements
 }
 
 func (m *Model) clearOverlayCmd() tea.Cmd {
@@ -2963,8 +3059,8 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.status = fmt.Sprintf("opening media: %s", m.mediaDisplayName(item))
-	m.suppressOverlay = true
-	return m, batchCmds(m.clearOverlayCmd(), m.openMedia(item))
+	m.pauseOverlays(true, false)
+	return m, m.openMedia(item)
 }
 
 func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
@@ -3203,6 +3299,7 @@ func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {
 	m.previewInflight = map[string]bool{}
 	m.previewRequested = map[string]bool{}
 	m.previewGeneration++
+	m.clearOverlayPause()
 	if m.overlay != nil {
 		m.overlay.Invalidate()
 	}

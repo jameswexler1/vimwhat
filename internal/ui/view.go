@@ -855,10 +855,22 @@ func blankChatAvatarLines(width int) []string {
 }
 
 func (m Model) chatAvatarOverlayVisible(preview media.Preview) bool {
-	if preview.Display != media.PreviewDisplayOverlay || strings.TrimSpace(m.overlaySignature) == "" {
+	if preview.Display != media.PreviewDisplayOverlay {
 		return false
 	}
-	return overlaySignatureContainsIdentifier(m.overlaySignature, overlayIdentifier(preview.Key))
+	identifier := overlayIdentifier(preview.Key)
+	if strings.TrimSpace(m.overlaySignature) != "" && overlaySignatureContainsIdentifier(m.overlaySignature, identifier) {
+		return true
+	}
+	if !m.avatarOverlayPaused {
+		return false
+	}
+	for _, placement := range m.visibleChatAvatarPlacements() {
+		if placement.Identifier == identifier {
+			return true
+		}
+	}
+	return false
 }
 
 func renderChatTitleLine(title, suffix string, width int, query string, current bool) string {
