@@ -2252,6 +2252,92 @@ func TestActiveChatCellUsesStrongerCursorBorder(t *testing.T) {
 	}
 }
 
+func TestChatAvatarPreviewRequestsUseInlineBackendWhenOverlayIsSelected(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+				media.BackendChafa:      "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:              "chat-1",
+				Title:           "Alice",
+				AvatarPath:      avatarPath,
+				AvatarThumbPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+
+	requests := model.requestedAvatarPreviewRequests()
+	if len(requests) != 1 {
+		t.Fatalf("requestedAvatarPreviewRequests() = %+v, want one request", requests)
+	}
+	if requests[0].Backend != media.BackendChafa || requests[0].Width != 4 || requests[0].Height != 2 {
+		t.Fatalf("avatar request = %+v, want chafa 4x2", requests[0])
+	}
+}
+
+func TestChatAvatarPreviewRendersCachedInlinePreview(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+				media.BackendChafa:      "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       request.MessageID,
+		Kind:            media.KindImage,
+		Backend:         media.BackendChafa,
+		RenderedBackend: media.BackendChafa,
+		Display:         media.PreviewDisplayText,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      avatarPath,
+		Width:           request.Width,
+		Height:          request.Height,
+		Lines:           []string{"@@", "##"},
+	}
+
+	view := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if !strings.Contains(view, "@@") || !strings.Contains(view, "##") {
+		t.Fatalf("renderChatCell() missing cached avatar preview\n%s", view)
+	}
+	if strings.Contains(view, "[A]") {
+		t.Fatalf("renderChatCell() used initials despite cached avatar preview\n%s", view)
+	}
+	if countLines(view) != chatCellHeight {
+		t.Fatalf("renderChatCell() line count = %d, want %d\n%s", countLines(view), chatCellHeight, view)
+	}
+}
+
 func TestMessageSearchHighlightsBodiesOnlyAndHoveredMessage(t *testing.T) {
 	withANSIStyles(t)
 
@@ -3938,6 +4024,57 @@ func TestFailedMediaPreviewRendersInlineStateAndInfo(t *testing.T) {
 	info := stripANSI(model.renderInfo(80))
 	if !strings.Contains(info, "error: chafa failed") {
 		t.Fatalf("renderInfo missing preview error\n%s", info)
+	}
+}
+
+func TestFailedChatAvatarPreviewDoesNotOverwriteStatus(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+				media.BackendChafa:      "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.status = "keep this status"
+	request, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest() returned false")
+	}
+	key := media.PreviewKey(request)
+	model.previewInflight[key] = true
+
+	updated, _ := model.handleMediaPreviewReady(mediaPreviewReadyMsg{
+		Key:        key,
+		Generation: model.previewGeneration,
+		Request:    request,
+		Preview: media.Preview{
+			Key:       key,
+			MessageID: request.MessageID,
+			Kind:      media.KindImage,
+			Backend:   media.BackendChafa,
+			Err:       fmt.Errorf("chafa failed"),
+		},
+	})
+	got := updated.(Model)
+	if got.status != "keep this status" {
+		t.Fatalf("status = %q, want unchanged", got.status)
+	}
+	if got.previewInflight[key] {
+		t.Fatalf("previewInflight[%q] remained set", key)
 	}
 }
 

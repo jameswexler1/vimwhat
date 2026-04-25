@@ -111,6 +111,52 @@ func TestDetectReportsNoneWhenNoBackendIsAvailable(t *testing.T) {
 	}
 }
 
+func TestAvatarPreviewBackendPrefersChafaWhenOverlayIsSelected(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{
+		Selected: BackendUeberzugPP,
+		Reasons: map[Backend]string{
+			BackendUeberzugPP: "available",
+			BackendChafa:      "available",
+		},
+	})
+	if !ok || backend != BackendChafa {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want %q, true", backend, ok, BackendChafa)
+	}
+}
+
+func TestAvatarPreviewBackendAllowsSelectedSixel(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{Selected: BackendSixel})
+	if !ok || backend != BackendSixel {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want %q, true", backend, ok, BackendSixel)
+	}
+}
+
+func TestAvatarPreviewBackendUnavailableWhenOnlyOverlayIsAvailable(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{
+		Selected: BackendUeberzugPP,
+		Reasons: map[Backend]string{
+			BackendUeberzugPP: "available",
+			BackendChafa:      "chafa not found in PATH",
+		},
+	})
+	if ok || backend != "" {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want unavailable", backend, ok)
+	}
+}
+
+func TestAvatarPreviewBackendHonorsPreviewNone(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{
+		Requested: BackendNone,
+		Selected:  BackendNone,
+		Reasons: map[Backend]string{
+			BackendChafa: "available",
+		},
+	})
+	if ok || backend != "" {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want unavailable", backend, ok)
+	}
+}
+
 func TestPreviewerRendersImageWithChafaSymbols(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {

@@ -124,6 +124,8 @@ type mediaPreviewReadyMsg struct {
 	Preview    media.Preview
 }
 
+const chatAvatarPreviewMessagePrefix = "chat-avatar:"
+
 type mediaDownloadedMsg struct {
 	MessageID string
 	Media     store.MediaMetadata
@@ -2727,7 +2729,8 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 	if m.width <= 0 || m.height <= 0 {
 		return nil
 	}
-	if m.previewReport.Selected == media.BackendNone || m.previewReport.Selected == media.BackendExternal || m.previewReport.Selected == media.BackendUeberzugPP {
+	backend, ok := media.AvatarPreviewBackend(m.previewReport)
+	if !ok {
 		return nil
 	}
 	chatIDs := m.visibleChatIDs()
@@ -2738,7 +2741,7 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 	requests := make([]media.PreviewRequest, 0, len(chatIDs))
 	for _, chatID := range chatIDs {
 		chat := m.chatByID(chatID)
-		request, ok := m.chatAvatarPreviewRequest(chat)
+		request, ok := m.chatAvatarPreviewRequestWithBackend(chat, backend)
 		if !ok {
 			continue
 		}
@@ -2795,19 +2798,27 @@ func (m Model) previewRequestForMedia(message store.Message, item store.MediaMet
 }
 
 func (m Model) chatAvatarPreviewRequest(chat store.Chat) (media.PreviewRequest, bool) {
+	backend, ok := media.AvatarPreviewBackend(m.previewReport)
+	if !ok {
+		return media.PreviewRequest{}, false
+	}
+	return m.chatAvatarPreviewRequestWithBackend(chat, backend)
+}
+
+func (m Model) chatAvatarPreviewRequestWithBackend(chat store.Chat, backend media.Backend) (media.PreviewRequest, bool) {
 	avatarPath := strings.TrimSpace(chat.AvatarPath)
 	avatarThumbPath := strings.TrimSpace(chat.AvatarThumbPath)
 	if avatarPath == "" && avatarThumbPath == "" {
 		return media.PreviewRequest{}, false
 	}
 	return media.PreviewRequest{
-		MessageID:     "chat-avatar:" + chat.ID,
+		MessageID:     chatAvatarPreviewMessagePrefix + chat.ID,
 		MIMEType:      "image/png",
 		FileName:      "avatar.png",
 		LocalPath:     avatarPath,
 		ThumbnailPath: avatarThumbPath,
 		CacheDir:      m.paths.PreviewCacheDir,
-		Backend:       m.previewReport.Selected,
+		Backend:       backend,
 		Width:         4,
 		Height:        2,
 	}, true
@@ -3278,6 +3289,9 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 	}
 	m.previewCache[msg.Key] = msg.Preview
 	if msg.Preview.Err != nil {
+		if isChatAvatarPreviewRequest(msg.Request) {
+			return m, nil
+		}
 		m.status = fmt.Sprintf("preview failed: %s", shortError(msg.Preview.Err))
 		return m, nil
 	}
@@ -3289,10 +3303,14 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		updatedRequest.ThumbnailPath = msg.Preview.ThumbnailPath
 		m.previewCache[media.PreviewKey(updatedRequest)] = msg.Preview
 	}
-	if msg.Preview.Ready() {
+	if msg.Preview.Ready() && !isChatAvatarPreviewRequest(msg.Request) {
 		m.status = fmt.Sprintf("preview ready: %s (%s %s %dx%d)", previewRequestName(msg.Request), msg.Preview.RenderedBackend, msg.Preview.SourceKind, msg.Preview.Width, msg.Preview.Height)
 	}
 	return m, nil
+}
+
+func isChatAvatarPreviewRequest(request media.PreviewRequest) bool {
+	return strings.HasPrefix(request.MessageID, chatAvatarPreviewMessagePrefix)
 }
 
 func (m Model) handleMediaDownloaded(msg mediaDownloadedMsg) (tea.Model, tea.Cmd) {

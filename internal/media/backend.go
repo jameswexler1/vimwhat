@@ -144,6 +144,23 @@ func normalize(input string) Backend {
 	}
 }
 
+func AvatarPreviewBackend(report Report) (Backend, bool) {
+	if report.Requested == BackendNone || report.Selected == BackendNone {
+		return "", false
+	}
+	if report.backendAvailable(BackendChafa) {
+		return BackendChafa, true
+	}
+	if report.backendAvailable(BackendSixel) {
+		return BackendSixel, true
+	}
+	return "", false
+}
+
+func (r Report) backendAvailable(backend Backend) bool {
+	return r.Selected == backend || r.Reasons[backend] == "available"
+}
+
 func (r Report) Lines() []string {
 	lines := []string{
 		fmt.Sprintf("requested preview backend: %s", r.Requested),
