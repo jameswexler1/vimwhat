@@ -26,7 +26,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Direct-chat identity hardening for WhatsApp PN/LID aliases: canonicalize mapped 1:1 chats onto a single chat ID, merge already-split alias rows/messages/drafts/history cursors in SQLite, and preserve the active conversation when a live merge remaps the selected chat.
 - Large-history TUI guardrails: historical imports avoid refresh storms, reconnect catch-up sync shows a blocking progress overlay and batches snapshot refreshes until completion, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` media/avatar/sticker overlays pause into blank reserved space while scrolling before resyncing.
-- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, focused-pane borders that distinguish chat-list vs message-pane input focus, a structured keymap-driven help screen, non-redundant mode prompts, configurable help/prompt key hints, search match counts in the status bar, and configurable cancellation/search-clear bindings.
+- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, focused-pane borders that distinguish chat-list vs message-pane input focus, highlighted unread-count badges in the chat list, a structured keymap-driven help screen, non-redundant mode prompts, configurable help/prompt key hints, search match counts in the status bar, and configurable cancellation/search-clear bindings.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
@@ -237,8 +237,9 @@ The TUI stability and modal polish milestone is implemented:
 - The status bar has a single authoritative mode indicator, keeps pywal colors by default, and supports per-mode hex overrides.
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - The current chat/message cursor items and visual-mode selected message ranges use stronger terminal-safe border/shadow treatments so the hovered row, bubble, or range is easier to spot.
+- Unread chat counters render as compact highlighted badges capped at `99+`, while thick borders remain reserved for cursor/focus state.
 - The help overlay is structured into quick actions, navigation, media, mode, command, and state sections while preserving configured key labels.
-- Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, current-item cursor styling, visual-mode selection styling, and help overlay rendering.
+- Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, current-item cursor styling, visual-mode selection styling, unread badge rendering, and help overlay rendering.
 
 The desktop notification milestone is implemented:
 

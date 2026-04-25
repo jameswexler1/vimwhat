@@ -2186,13 +2186,112 @@ func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 	})
 
 	view := stripANSI(model.renderChats(40, 12))
-	for _, want := range []string{"Project", "[PMDG] 3", "draft: draft reply"} {
+	for _, want := range []string{"Project", "[PMDG]", "3", "draft: draft reply"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("chat list missing %q\n%s", want, view)
 		}
 	}
 	if !strings.Contains(view, "┏") || !strings.Contains(view, "┗") {
 		t.Fatalf("chat list did not render bordered cells\n%s", view)
+	}
+}
+
+func TestUnreadChatBadgeUsesHighlightStyle(t *testing.T) {
+	withANSIStyles(t)
+
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Unread: 3},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	view := model.renderChatCell(model.chats[0], false, 40)
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "Alice") || !strings.Contains(plain, "3") {
+		t.Fatalf("chat cell missing title or unread count\n%s", plain)
+	}
+	if strings.Contains(plain, "┏") || strings.Contains(plain, "┗") {
+		t.Fatalf("inactive unread chat used thick cursor border\n%s", plain)
+	}
+	codes := sgrCodesBeforeNth(view, "3", 0)
+	if !hasSGRCode(codes, "1") || !hasSGRCode(codes, "48") {
+		t.Fatalf("unread badge codes = %v, want bold background style", codes)
+	}
+}
+
+func TestUnreadChatBadgeCapsLargeCounts(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Unread: 100},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	view := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if !strings.Contains(view, "99+") || strings.Contains(view, "100") {
+		t.Fatalf("chat cell unread cap rendered incorrectly\n%s", view)
+	}
+}
+
+func TestActiveUnreadChatKeepsCursorBorderAndBadge(t *testing.T) {
+	withANSIStyles(t)
+
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Unread: 4},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	view := model.renderChatCell(model.chats[0], true, 40)
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "┏") || !strings.Contains(plain, "┗") {
+		t.Fatalf("active unread chat did not keep thick cursor border\n%s", plain)
+	}
+	codes := sgrCodesBeforeNth(view, "4", 0)
+	if !hasSGRCode(codes, "1") || !hasSGRCode(codes, "48") {
+		t.Fatalf("active unread badge codes = %v, want bold background style", codes)
+	}
+}
+
+func TestUnreadChatBadgeDoesNotOverflowNarrowCell(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{
+					ID:       "chat-1",
+					Title:    "Very Long Chat Title",
+					Kind:     "group",
+					Unread:   250,
+					Pinned:   true,
+					Muted:    true,
+					HasDraft: true,
+				},
+			},
+			DraftsByChat: map[string]string{"chat-1": "draft reply"},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	const width = 22
+	view := stripANSI(model.renderChatCell(model.chats[0], false, width))
+	for i, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, width, view)
+		}
+	}
+	if !strings.Contains(view, "99+") {
+		t.Fatalf("narrow unread chat missing capped badge\n%s", view)
 	}
 }
 

@@ -795,7 +795,7 @@ func (m Model) renderChatCell(chat store.Chat, active bool, width int) string {
 	avatarWidth := displayWidth(avatarLines[0])
 	textWidth := max(1, contentWidth-avatarWidth-1)
 	chatSearchQuery := m.chatSearchQuery()
-	titleLine := renderChatTitleLine(title, chatSuffix(chat), textWidth, chatSearchQuery, active)
+	titleLine := renderChatTitleLine(title, chatFlagSuffix(chat), unreadBadgeText(chat.Unread), textWidth, chatSearchQuery, active)
 	previewLine := truncateDisplay(m.chatPreview(chat), textWidth)
 
 	previewStyle := lipgloss.NewStyle().Foreground(previewFG)
@@ -874,27 +874,68 @@ func (m Model) chatAvatarOverlayVisible(preview media.Preview) bool {
 	return false
 }
 
-func renderChatTitleLine(title, suffix string, width int, query string, current bool) string {
+func renderChatTitleLine(title, flagSuffix, unreadBadge string, width int, query string, current bool) string {
 	width = max(1, width)
 	titleStyle := lipgloss.NewStyle().Foreground(softFG)
 	if current {
 		titleStyle = titleStyle.Foreground(primaryFG).Bold(true)
 	}
-	suffixStyle := titleStyle
-	if suffix == "" {
+	if flagSuffix == "" && unreadBadge == "" {
 		title = truncateDisplay(title, width)
 		return renderSearchHighlightedText(title, query, titleStyle, current && containsSearchMatch(title, query))
 	}
 
-	suffixWidth := lipgloss.Width(suffix)
-	if suffixWidth >= width {
-		return suffixStyle.Render(truncateDisplay(suffix, width))
+	right := renderChatTitleSuffix(flagSuffix, unreadBadge, titleStyle)
+	rightWidth := displayWidth(right)
+	if rightWidth >= width {
+		if unreadBadge != "" {
+			return renderUnreadBadgeCompact(unreadBadge, width)
+		}
+		return titleStyle.Render(truncateDisplay(flagSuffix, width))
 	}
 
-	title = truncateDisplay(title, max(1, width-suffixWidth-1))
-	gap := max(1, width-lipgloss.Width(title)-suffixWidth)
+	title = truncateDisplay(title, max(1, width-rightWidth-1))
+	gap := max(1, width-lipgloss.Width(title)-rightWidth)
 	highlightedTitle := renderSearchHighlightedText(title, query, titleStyle, current && containsSearchMatch(title, query))
-	return highlightedTitle + strings.Repeat(" ", gap) + suffixStyle.Render(suffix)
+	return highlightedTitle + strings.Repeat(" ", gap) + right
+}
+
+func renderChatTitleSuffix(flagSuffix, unreadBadge string, titleStyle lipgloss.Style) string {
+	flagSuffix = strings.TrimSpace(flagSuffix)
+	unreadBadge = strings.TrimSpace(unreadBadge)
+	switch {
+	case flagSuffix == "" && unreadBadge == "":
+		return ""
+	case flagSuffix == "":
+		return renderUnreadBadge(unreadBadge)
+	case unreadBadge == "":
+		return titleStyle.Render(flagSuffix)
+	default:
+		return titleStyle.Render(flagSuffix) + " " + renderUnreadBadge(unreadBadge)
+	}
+}
+
+func renderUnreadBadge(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	return unreadBadgeStyle().Render(" " + label + " ")
+}
+
+func renderUnreadBadgeCompact(label string, width int) string {
+	label = truncateDisplay(strings.TrimSpace(label), max(1, width))
+	if label == "" {
+		return ""
+	}
+	return unreadBadgeStyle().Render(label)
+}
+
+func unreadBadgeStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(uiTheme.BarBG).
+		Background(accentFG).
+		Bold(true)
 }
 
 func chatAvatarBadge(title, kind string) string {
@@ -954,7 +995,7 @@ func (m Model) chatPreview(chat store.Chat) string {
 	return m.sanitizeDisplayLine(firstLine(preview))
 }
 
-func chatSuffix(chat store.Chat) string {
+func chatFlagSuffix(chat store.Chat) string {
 	flags := make([]string, 0, 4)
 	if chat.Pinned {
 		flags = append(flags, "P")
@@ -969,17 +1010,20 @@ func chatSuffix(chat store.Chat) string {
 		flags = append(flags, "G")
 	}
 
-	suffix := ""
 	if len(flags) > 0 {
-		suffix = "[" + strings.Join(flags, "") + "]"
+		return "[" + strings.Join(flags, "") + "]"
 	}
-	if chat.Unread > 0 {
-		if suffix != "" {
-			suffix += " "
-		}
-		suffix += fmt.Sprintf("%d", chat.Unread)
+	return ""
+}
+
+func unreadBadgeText(unread int) string {
+	if unread <= 0 {
+		return ""
 	}
-	return suffix
+	if unread > 99 {
+		return "99+"
+	}
+	return fmt.Sprintf("%d", unread)
 }
 
 func chatTitleLine(title, suffix string, width int) string {
