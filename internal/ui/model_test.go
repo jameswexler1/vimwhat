@@ -931,6 +931,148 @@ func TestLiveUpdateRefreshesSnapshotAndStatusLine(t *testing.T) {
 	}
 }
 
+func TestSnapshotAppendScrollsWhenFocusedMessageWasTail(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+
+	err := model.applySnapshot(store.Snapshot{
+		Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+		MessagesByChat: map[string][]store.Message{"chat-1": {
+			{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			{ID: "m-3", ChatID: "chat-1", Body: "three"},
+		}},
+		DraftsByChat: map[string]string{},
+		ActiveChatID: "chat-1",
+	}, "chat-1", "")
+	if err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if model.messageCursor != 2 || model.messageScrollTop != 2 {
+		t.Fatalf("cursor/scroll = %d/%d, want 2/2", model.messageCursor, model.messageScrollTop)
+	}
+	if model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("new-messages indicator remained set after auto-follow")
+	}
+}
+
+func TestSnapshotAppendPreservesHistoryPositionAndShowsNewMessagesIndicator(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+
+	err := model.applySnapshot(store.Snapshot{
+		Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+		MessagesByChat: map[string][]store.Message{"chat-1": {
+			{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			{ID: "m-3", ChatID: "chat-1", Body: "three"},
+		}},
+		DraftsByChat: map[string]string{},
+		ActiveChatID: "chat-1",
+	}, "chat-1", "")
+	if err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if model.messageCursor != 0 || model.messageScrollTop != 0 {
+		t.Fatalf("cursor/scroll = %d/%d, want 0/0", model.messageCursor, model.messageScrollTop)
+	}
+	if !model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("new-messages indicator was not set")
+	}
+	if footer := stripANSI(model.renderMessageFooter(60)); !strings.Contains(footer, "↓ new messages below") {
+		t.Fatalf("footer missing new-messages indicator:\n%s", footer)
+	}
+}
+
+func TestMovingToLatestMessageClearsNewMessagesIndicator(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+				{ID: "m-3", ChatID: "chat-1", Body: "three"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+	model.setNewMessagesBelow("chat-1")
+
+	model.moveCursor(2)
+	if model.messageCursor != 2 {
+		t.Fatalf("messageCursor = %d, want 2", model.messageCursor)
+	}
+	if model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("new-messages indicator remained set at latest message")
+	}
+}
+
+func TestSnapshotPrependDoesNotSetNewMessagesIndicator(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-3", ChatID: "chat-1", Body: "three"},
+				{ID: "m-4", ChatID: "chat-1", Body: "four"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+
+	err := model.applySnapshot(store.Snapshot{
+		Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+		MessagesByChat: map[string][]store.Message{"chat-1": {
+			{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			{ID: "m-3", ChatID: "chat-1", Body: "three"},
+			{ID: "m-4", ChatID: "chat-1", Body: "four"},
+		}},
+		DraftsByChat: map[string]string{},
+		ActiveChatID: "chat-1",
+	}, "chat-1", "")
+	if err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+	if got := model.currentMessages()[model.messageCursor].ID; got != "m-3" {
+		t.Fatalf("focused message = %q, want m-3", got)
+	}
+	if model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("history prepend set new-messages indicator")
+	}
+}
+
 func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
 	reloads := 0
 	model := NewModel(Options{

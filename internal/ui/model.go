@@ -284,6 +284,7 @@ type Model struct {
 	searchIndex                int
 	messageFilter              string
 	unfilteredByChat           map[string][]store.Message
+	newMessagesBelowByChat     map[string]bool
 	pendingCount               int
 	leaderPending              bool
 	leaderSequence             string
@@ -438,6 +439,7 @@ func NewModel(opts Options) Model {
 		blockAttachments:         opts.BlockAttachments,
 		requireOnlineForSend:     opts.RequireOnlineForSend,
 		unfilteredByChat:         map[string][]store.Message{},
+		newMessagesBelowByChat:   map[string]bool{},
 		presenceByChat:           map[string]PresenceUpdate{},
 		readReceiptInflight:      map[string]bool{},
 		presenceSubscribed:       map[string]bool{},
@@ -1124,6 +1126,9 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 				}
 				m.messageCursor = clamp(target, 0, messageCount-1)
 				m.messageScrollTop = m.messageCursor
+				if m.messageCursor == messageCount-1 {
+					m.clearNewMessagesBelow(m.currentChat().ID)
+				}
 				m.pauseOverlays(true, false)
 			}
 		} else {
@@ -2293,9 +2298,17 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 	oldChatID := m.currentChat().ID
 	oldCursor := m.messageCursor
 	oldScrollTop := m.messageScrollTop
+	oldMessages := m.currentMessages()
+	oldMessageCount := len(oldMessages)
+	oldTailID := ""
+	if oldMessageCount > 0 {
+		oldTailID = oldMessages[oldMessageCount-1].ID
+	}
+	oldWasAtTail := oldMessageCount > 0 && oldCursor == oldMessageCount-1 && (m.focus == FocusMessages || m.focus == FocusPreview)
+	messageViewNarrowed := m.messageViewNarrowed(messageFilter)
 	oldFocusedID := ""
-	if messages := m.currentMessages(); oldCursor >= 0 && oldCursor < len(messages) {
-		oldFocusedID = messages[oldCursor].ID
+	if oldCursor >= 0 && oldCursor < oldMessageCount {
+		oldFocusedID = oldMessages[oldCursor].ID
 	}
 
 	m.allChats = slices.Clone(snapshot.Chats)
@@ -2334,6 +2347,13 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 			m.messageCursor = clamp(oldCursor, 0, max(0, messageCount-1))
 			m.messageScrollTop = clamp(oldScrollTop, 0, max(0, messageCount-1))
 		}
+		if !messageViewNarrowed && m.activeChatTailAdvanced(oldTailID) {
+			if oldWasAtTail {
+				m.showCurrentChatLatest()
+			} else {
+				m.setNewMessagesBelow(oldChatID)
+			}
+		}
 	}
 
 	if strings.TrimSpace(messageFilter) != "" {
@@ -2351,6 +2371,56 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 		}
 	}
 	return nil
+}
+
+func (m Model) messageViewNarrowed(messageFilter string) bool {
+	if strings.TrimSpace(messageFilter) != "" || strings.TrimSpace(m.messageFilter) != "" {
+		return true
+	}
+	return strings.TrimSpace(m.activeSearch) != "" && (m.lastSearchFocus == FocusMessages || m.lastSearchFocus == FocusPreview)
+}
+
+func (m Model) activeChatTailAdvanced(oldTailID string) bool {
+	if strings.TrimSpace(oldTailID) == "" {
+		return false
+	}
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return false
+	}
+	newTailID := strings.TrimSpace(messages[len(messages)-1].ID)
+	if newTailID == "" || newTailID == oldTailID {
+		return false
+	}
+	return indexOfMessage(messages, oldTailID) >= 0
+}
+
+func (m *Model) setNewMessagesBelow(chatID string) {
+	if strings.TrimSpace(chatID) == "" {
+		return
+	}
+	if m.newMessagesBelowByChat == nil {
+		m.newMessagesBelowByChat = map[string]bool{}
+	}
+	m.newMessagesBelowByChat[chatID] = true
+}
+
+func (m *Model) clearNewMessagesBelow(chatID string) {
+	if strings.TrimSpace(chatID) == "" || m.newMessagesBelowByChat == nil {
+		return
+	}
+	delete(m.newMessagesBelowByChat, chatID)
+}
+
+func (m Model) hasNewMessagesBelow(chatID string) bool {
+	if strings.TrimSpace(chatID) == "" || m.newMessagesBelowByChat == nil || !m.newMessagesBelowByChat[chatID] {
+		return false
+	}
+	if chatID != m.currentChat().ID {
+		return false
+	}
+	messages := m.currentMessages()
+	return len(messages) > 0 && m.messageCursor < len(messages)-1
 }
 
 func (m *Model) clearSearch() {
@@ -2552,12 +2622,14 @@ func (m *Model) keepMessageCursorNearViewport() {
 	messageCount := len(m.currentMessages())
 	if messageCount == 0 {
 		m.messageScrollTop = 0
+		m.clearNewMessagesBelow(m.currentChat().ID)
 		return
 	}
 	m.messageCursor = clamp(m.messageCursor, 0, messageCount-1)
 	m.messageScrollTop = clamp(m.messageScrollTop, 0, messageCount-1)
 	if m.messageCursor == messageCount-1 {
 		m.messageScrollTop = m.messageCursor
+		m.clearNewMessagesBelow(m.currentChat().ID)
 		return
 	}
 	if scrollTop, ok := m.messageScrollTopWithCursorVisible(); ok {
@@ -2602,13 +2674,16 @@ func (m Model) messageScrollTopWithCursorVisible() (int, bool) {
 
 func (m *Model) showCurrentChatLatest() {
 	messageCount := len(m.currentMessages())
+	chatID := m.currentChat().ID
 	if messageCount == 0 {
 		m.messageCursor = 0
 		m.messageScrollTop = 0
+		m.clearNewMessagesBelow(chatID)
 		return
 	}
 	m.messageCursor = messageCount - 1
 	m.messageScrollTop = m.messageCursor
+	m.clearNewMessagesBelow(chatID)
 }
 
 func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {

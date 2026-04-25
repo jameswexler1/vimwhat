@@ -239,6 +239,7 @@ The TUI stability and modal polish milestone is implemented:
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - The current chat/message cursor items and visual-mode selected message ranges use stronger terminal-safe border/shadow treatments so the hovered row, bubble, or range is easier to spot.
 - Normal mode can yank the focused message body directly, while visual mode continues to yank selected message ranges through the same register/clipboard path.
+- Active-chat refreshes auto-follow newly appended messages only when the cursor was already on the previous latest message; otherwise the viewport stays anchored and the footer shows a down-arrow new-message indicator.
 - Unread chat counters render as compact highlighted badges capped at `99+`, while thick borders remain reserved for cursor/focus state.
 - The help overlay is structured into quick actions, navigation, media, mode, command, and state sections while preserving configured key labels.
 - Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, current-item cursor styling, visual-mode selection styling, unread badge rendering, and help overlay rendering.

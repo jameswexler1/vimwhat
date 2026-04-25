@@ -2062,7 +2062,7 @@ func (m Model) renderPrompt(content, hint string) string {
 }
 
 func (m Model) renderComposer(width int) string {
-	lines := []string{renderFooterHelpLine(width)}
+	lines := []string{m.renderFooterHelpLine(width)}
 
 	if quote := m.replyPreviewLine(width); quote != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(quote))
@@ -2146,7 +2146,7 @@ func (m Model) renderMessageFooter(width int) string {
 	draft = firstLine(draft)
 	input := "> " + draft
 	lines := []string{
-		renderFooterHelpLine(width),
+		m.renderFooterHelpLine(width),
 		truncateDisplay(input, width),
 	}
 	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
@@ -2156,11 +2156,32 @@ func (m Model) renderMessageFooter(width int) string {
 	return style.Render(strings.Join(lines, "\n"))
 }
 
-func renderFooterHelpLine(width int) string {
+func (m Model) renderFooterHelpLine(width int) string {
+	notice := ""
+	chatID := m.currentChat().ID
+	if m.hasNewMessagesBelow(chatID) {
+		notice = "↓ new messages below"
+	}
+	return renderFooterHelpLine(width, notice)
+}
+
+func renderFooterHelpLine(width int, notice string) string {
 	width = max(1, width)
 	hint := "? help"
-	if width <= lipgloss.Width(hint) {
+	notice = strings.TrimSpace(notice)
+	if notice == "" && width <= lipgloss.Width(hint) {
 		return lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay(hint, width))
+	}
+	if notice != "" {
+		noticeWidth := lipgloss.Width(notice)
+		hintWidth := lipgloss.Width(hint)
+		if width <= noticeWidth+hintWidth+1 {
+			return lipgloss.NewStyle().Foreground(warnFG).Render(truncateDisplay(notice, width))
+		}
+		fill := strings.Repeat("-", max(0, width-noticeWidth-hintWidth-2))
+		return lipgloss.NewStyle().Foreground(warnFG).Render(notice) +
+			lipgloss.NewStyle().Foreground(borderColor).Render(" "+fill+" ") +
+			lipgloss.NewStyle().Foreground(accentFG).Render(hint)
 	}
 
 	fill := strings.Repeat("-", max(0, width-lipgloss.Width(hint)-1))
