@@ -10,7 +10,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - XDG config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
-- Local draft persistence, local outgoing message persistence, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.
+- Local draft persistence, local outgoing message persistence, normal/visual message yanking, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, first-use-state local reset on logout, and `doctor` session status reporting.
 - Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
@@ -238,6 +238,7 @@ The TUI stability and modal polish milestone is implemented:
 - The status bar has a single authoritative mode indicator, keeps pywal colors by default, and supports per-mode hex overrides.
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
 - The current chat/message cursor items and visual-mode selected message ranges use stronger terminal-safe border/shadow treatments so the hovered row, bubble, or range is easier to spot.
+- Normal mode can yank the focused message body directly, while visual mode continues to yank selected message ranges through the same register/clipboard path.
 - Unread chat counters render as compact highlighted badges capped at `99+`, while thick borders remain reserved for cursor/focus state.
 - The help overlay is structured into quick actions, navigation, media, mode, command, and state sections while preserving configured key labels.
 - Tests cover large-chat/message viewport behavior, emoji compatibility, indicator config parsing, status color resolution, search counts, search clearing, current-item cursor styling, visual-mode selection styling, unread badge rendering, and help overlay rendering.

@@ -2235,6 +2235,7 @@ func (m Model) renderHelp(width int) string {
 		Rows: []helpRow{
 			{Key: key(keys.NormalOpen), Action: "preview or open selected row"},
 			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
+			{Key: key(keys.NormalYankMessage), Action: "yank selected message"},
 			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},

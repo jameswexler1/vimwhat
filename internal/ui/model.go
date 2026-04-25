@@ -926,6 +926,7 @@ const (
 	normalActionGoBottom          = "go_bottom"
 	normalActionOpen              = "open"
 	normalActionOpenMedia         = "open_media"
+	normalActionYankMessage       = "yank_message"
 	normalActionSearchNext        = "search_next"
 	normalActionSearchPrevious    = "search_previous"
 	normalActionToggleUnread      = "toggle_unread"
@@ -975,6 +976,8 @@ func (m Model) normalActionForKey(msg tea.KeyMsg) string {
 		return normalActionOpen
 	case m.keyMatches(msg, keys.NormalOpenMedia):
 		return normalActionOpenMedia
+	case m.keyMatches(msg, keys.NormalYankMessage):
+		return normalActionYankMessage
 	case m.keyMatches(msg, keys.NormalSearchNext):
 		return normalActionSearchNext
 	case m.keyMatches(msg, keys.NormalSearchPrevious):
@@ -1034,6 +1037,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalGoBottom, action: normalActionGoBottom},
 		{binding: keys.NormalOpen, action: normalActionOpen},
 		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
+		{binding: keys.NormalYankMessage, action: normalActionYankMessage},
 		{binding: keys.NormalSearchNext, action: normalActionSearchNext},
 		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
 		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
@@ -1161,6 +1165,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		}
 	case normalActionOpenMedia:
 		return m.openFocusedMedia()
+	case normalActionYankMessage:
+		return m.yankFocusedMessage()
 	case normalActionSearchNext:
 		m.advanceSearch(1)
 	case normalActionSearchPrevious:
@@ -1607,26 +1613,42 @@ func (m Model) updateVisual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.keyMatches(msg, keys.VisualMoveUp):
 		m.moveCursor(-1)
 	case m.keyMatches(msg, keys.VisualYank):
-		selected := m.selectedMessages()
-		var parts []string
-		for _, message := range selected {
-			parts = append(parts, message.Body)
-		}
-		m.yankRegister = strings.Join(parts, "\n")
-		m.mode = ModeNormal
-		if m.copyToClipboard == nil {
-			m.status = fmt.Sprintf("yanked %d message(s) to register", len(selected))
-			return m, nil
-		}
-		count := len(selected)
-		text := m.yankRegister
-		m.status = fmt.Sprintf("yanked %d message(s); copying clipboard", count)
-		return m, func() tea.Msg {
-			return clipboardCopiedMsg{Count: count, Err: m.copyToClipboard(text)}
-		}
+		return m.yankMessages(m.selectedMessages())
 	}
 
 	return m, nil
+}
+
+func (m Model) yankFocusedMessage() (tea.Model, tea.Cmd) {
+	if m.focus != FocusMessages && m.focus != FocusPreview {
+		m.status = "no message selected"
+		return m, nil
+	}
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	return m.yankMessages([]store.Message{message})
+}
+
+func (m Model) yankMessages(messages []store.Message) (tea.Model, tea.Cmd) {
+	var parts []string
+	for _, message := range messages {
+		parts = append(parts, message.Body)
+	}
+	m.yankRegister = strings.Join(parts, "\n")
+	m.mode = ModeNormal
+	if m.copyToClipboard == nil {
+		m.status = fmt.Sprintf("yanked %d message(s) to register", len(messages))
+		return m, nil
+	}
+	count := len(messages)
+	text := m.yankRegister
+	m.status = fmt.Sprintf("yanked %d message(s); copying clipboard", count)
+	return m, func() tea.Msg {
+		return clipboardCopiedMsg{Count: count, Err: m.copyToClipboard(text)}
+	}
 }
 
 func (m *Model) cycleFocus(delta int) {

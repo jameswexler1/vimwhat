@@ -3773,6 +3773,100 @@ func TestVisualYankCopiesSelectionToClipboard(t *testing.T) {
 	}
 }
 
+func TestNormalYankCopiesFocusedMessageToRegister(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.mode = ModeNormal
+	model.focus = FocusMessages
+	model.messageCursor = 1
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("normal yank returned clipboard command without CopyToClipboard")
+	}
+	if got.yankRegister != "second" {
+		t.Fatalf("yankRegister = %q, want second", got.yankRegister)
+	}
+	if !strings.Contains(got.status, "register") {
+		t.Fatalf("status = %q, want register yank status", got.status)
+	}
+}
+
+func TestNormalYankCopiesFocusedMessageToClipboard(t *testing.T) {
+	var copied string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "first"},
+					{ID: "m-2", ChatID: "chat-1", Sender: "Alice", Body: "second"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		CopyToClipboard: func(text string) error {
+			copied = text
+			return nil
+		},
+	})
+	model.mode = ModeNormal
+	model.focus = FocusPreview
+	model.messageCursor = 1
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := updated.(Model)
+	if got.yankRegister != "second" {
+		t.Fatalf("yankRegister = %q, want second", got.yankRegister)
+	}
+	if cmd == nil {
+		t.Fatal("normal yank did not return clipboard command")
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if copied != "second" {
+		t.Fatalf("copied = %q, want second", copied)
+	}
+	if !strings.Contains(got.status, "clipboard") {
+		t.Fatalf("status = %q, want clipboard copy result", got.status)
+	}
+}
+
+func TestNormalYankReportsNoMessage(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeNormal
+	model.focus = FocusMessages
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("normal yank returned command without a focused message")
+	}
+	if !strings.Contains(got.status, "no message selected") {
+		t.Fatalf("status = %q, want no message selected", got.status)
+	}
+}
+
 func TestAttachmentPickerStagesAttachmentInComposer(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

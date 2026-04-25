@@ -42,6 +42,7 @@ type Keymap struct {
 	NormalGoBottom           string
 	NormalOpen               string
 	NormalOpenMedia          string
+	NormalYankMessage        string
 	NormalSearchNext         string
 	NormalSearchPrevious     string
 	NormalToggleUnread       string
@@ -114,6 +115,7 @@ func DefaultKeymap() Keymap {
 		NormalGoBottom:           "G",
 		NormalOpen:               "enter",
 		NormalOpenMedia:          "o",
+		NormalYankMessage:        "y",
 		NormalSearchNext:         "n",
 		NormalSearchPrevious:     "N",
 		NormalToggleUnread:       "u",
@@ -223,6 +225,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalOpenMedia == "" {
 		input.NormalOpenMedia = defaults.NormalOpenMedia
+	}
+	if input.NormalYankMessage == "" {
+		input.NormalYankMessage = defaults.NormalYankMessage
 	}
 	if input.NormalSearchNext == "" {
 		input.NormalSearchNext = defaults.NormalSearchNext
@@ -351,6 +356,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_go_bottom", Mode: KeyModeNormal, Value: k.NormalGoBottom},
 		{Name: "key_normal_open", Mode: KeyModeNormal, Value: k.NormalOpen},
 		{Name: "key_normal_open_media", Mode: KeyModeNormal, Value: k.NormalOpenMedia},
+		{Name: "key_normal_yank_message", Mode: KeyModeNormal, Value: k.NormalYankMessage},
 		{Name: "key_normal_search_next", Mode: KeyModeNormal, Value: k.NormalSearchNext},
 		{Name: "key_normal_search_previous", Mode: KeyModeNormal, Value: k.NormalSearchPrevious},
 		{Name: "key_normal_toggle_unread", Mode: KeyModeNormal, Value: k.NormalToggleUnread},
@@ -438,6 +444,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalOpen = normalized
 	case "key_normal_open_media":
 		k.NormalOpenMedia = normalized
+	case "key_normal_yank_message":
+		k.NormalYankMessage = normalized
 	case "key_normal_search_next":
 		k.NormalSearchNext = normalized
 	case "key_normal_search_previous":
