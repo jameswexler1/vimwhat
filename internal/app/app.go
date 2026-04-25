@@ -859,6 +859,9 @@ func runLiveWhatsApp(
 				continue
 			}
 			if note, ok := buildNotification(context.Background(), env.Store, viewState, result); ok {
+				if strings.TrimSpace(note.IconPath) == "" {
+					enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, result.Message.ChatID)
+				}
 				queueNotification(notificationJobs, note)
 			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{

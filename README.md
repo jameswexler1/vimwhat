@@ -209,11 +209,11 @@ Replace any value with a hex color such as `"#7ED7C1"` or `"#f0a"` to override o
 
 ## Notifications
 
-Desktop notifications default to `notification_backend = "auto"` and notify only for new incoming messages from unmuted chats. The selected chat is suppressed only while the app window is known to be focused. If the app window is blurred, or the terminal never reports focus, the selected chat still notifies rather than risking missed messages.
+Desktop notifications default to `notification_backend = "auto"` and notify only for new incoming messages from unmuted chats. The selected chat is suppressed only while the app window is known to be focused. If the app window is blurred, or the terminal never reports focus, the selected chat still notifies rather than risking missed messages. When a cached chat avatar or group picture is available, Linux desktop notifications include it as the notification icon.
 
 ```toml
 notification_backend = "auto"
 notification_command = ""
 ```
 
-Supported built-in backend values are `auto`, `none`, `command`, `linux-dbus`, `macos-osascript`, and `windows-powershell`. If `notification_command` is set while `notification_backend = "auto"`, the configured command wins. `notification_command` is treated as an argv template, not as a shell snippet. `vimwhat doctor` reports the selected notification path and backend availability.
+Supported built-in backend values are `auto`, `none`, `command`, `linux-dbus`, `macos-osascript`, and `windows-powershell`. If `notification_command` is set while `notification_backend = "auto"`, the configured command wins. `notification_command` is treated as an argv template, not as a shell snippet, and supports `{title}`, `{body}`, `{chat}`, `{sender}`, and `{icon}` placeholders. `vimwhat doctor` reports the selected notification path and backend availability.

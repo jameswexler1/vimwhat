@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -111,7 +112,22 @@ func buildNotification(ctx context.Context, db *store.Store, view notificationCo
 		ChatKind:  chat.Kind,
 		Sender:    message.Sender,
 		Preview:   message.NotificationPreview,
+		IconPath:  notificationIconPath(chat),
 	}), true
+}
+
+func notificationIconPath(chat store.Chat) string {
+	for _, candidate := range []string{chat.AvatarThumbPath, chat.AvatarPath} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func suppressActiveChatNotification(chatID string, view notificationContext) bool {

@@ -26,10 +26,11 @@ const (
 )
 
 type Notification struct {
-	Title  string
-	Body   string
-	Chat   string
-	Sender string
+	Title    string
+	Body     string
+	Chat     string
+	Sender   string
+	IconPath string
 }
 
 type MessagePayload struct {
@@ -37,6 +38,7 @@ type MessagePayload struct {
 	ChatKind  string
 	Sender    string
 	Preview   string
+	IconPath  string
 }
 
 type Report struct {
@@ -104,10 +106,11 @@ func FormatChatMessage(payload MessagePayload) Notification {
 		}
 	}
 	return Notification{
-		Title:  title,
-		Body:   body,
-		Chat:   sanitizeNotificationText(payload.ChatTitle, 96, ""),
-		Sender: sanitizeNotificationText(payload.Sender, 48, ""),
+		Title:    title,
+		Body:     body,
+		Chat:     sanitizeNotificationText(payload.ChatTitle, 96, ""),
+		Sender:   sanitizeNotificationText(payload.Sender, 48, ""),
+		IconPath: strings.TrimSpace(payload.IconPath),
 	}
 }
 
@@ -295,6 +298,7 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 	}
 	title := sanitizeNotificationText(note.Title, 96, "vimwhat")
 	body := sanitizeNotificationText(note.Body, 220, "")
+	iconPath := strings.TrimSpace(note.IconPath)
 	var failures []string
 	for _, helper := range linuxNotificationHelpers() {
 		if _, err := lookPath(helper); err != nil {
@@ -311,7 +315,7 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 				"--method", "org.freedesktop.Notifications.Notify",
 				"vimwhat",
 				"0",
-				"",
+				iconPath,
 				title,
 				body,
 				"[]",
@@ -327,7 +331,7 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 				"org.freedesktop.Notifications.Notify",
 				"string:vimwhat",
 				"uint32:0",
-				"string:",
+				"string:" + iconPath,
 				"string:" + title,
 				"string:" + body,
 				"array:string:",
@@ -335,7 +339,11 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 				"int32:-1",
 			})
 		case "notify-send":
-			args := []string{title}
+			args := []string{}
+			if iconPath != "" {
+				args = append(args, "-i", iconPath)
+			}
+			args = append(args, title)
 			if body != "" {
 				args = append(args, body)
 			}
@@ -423,11 +431,13 @@ func configuredCommandCandidate(template string, note Notification) (commandCand
 	body := sanitizeNotificationText(note.Body, 220, "")
 	chat := sanitizeNotificationText(note.Chat, 96, "")
 	sender := sanitizeNotificationText(note.Sender, 48, "")
+	iconPath := strings.TrimSpace(note.IconPath)
 	placeholders := map[string]string{
 		"{title}":  title,
 		"{body}":   body,
 		"{chat}":   chat,
 		"{sender}": sender,
+		"{icon}":   iconPath,
 	}
 
 	hasTitle := false

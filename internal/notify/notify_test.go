@@ -162,6 +162,76 @@ func TestSendLinuxDBusFallsBackAcrossHelpers(t *testing.T) {
 	}
 }
 
+func TestSendLinuxDBusIncludesIconPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		helper     string
+		wantInArgs string
+	}{
+		{
+			name:       "notify-send",
+			helper:     "notify-send",
+			wantInArgs: "-i\x00/tmp/avatar.png\x00Alice\x00hello",
+		},
+		{
+			name:       "gdbus",
+			helper:     "gdbus",
+			wantInArgs: "vimwhat\x000\x00/tmp/avatar.png\x00Alice\x00hello",
+		},
+		{
+			name:       "dbus-send",
+			helper:     "dbus-send",
+			wantInArgs: "string:vimwhat\x00uint32:0\x00string:/tmp/avatar.png\x00string:Alice\x00string:hello",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prevGOOS := runtimeGOOS
+			prevLookPath := lookPath
+			prevRunCommand := runCommand
+			prevGetEnv := getEnv
+			t.Cleanup(func() {
+				runtimeGOOS = prevGOOS
+				lookPath = prevLookPath
+				runCommand = prevRunCommand
+				getEnv = prevGetEnv
+			})
+
+			runtimeGOOS = "linux"
+			lookPath = func(name string) (string, error) {
+				if name == test.helper {
+					return "/usr/bin/" + name, nil
+				}
+				return "", context.DeadlineExceeded
+			}
+			getEnv = func(key string) string {
+				if key == "DBUS_SESSION_BUS_ADDRESS" {
+					return "unix:path=/tmp/fake-bus"
+				}
+				return ""
+			}
+			var gotArgs []string
+			runCommand = func(_ context.Context, _ string, args []string) error {
+				gotArgs = append([]string{}, args...)
+				return nil
+			}
+
+			err := sendLinuxDBus(context.Background(), Notification{
+				Title:    "Alice",
+				Body:     "hello",
+				IconPath: "/tmp/avatar.png",
+			})
+			if err != nil {
+				t.Fatalf("sendLinuxDBus() error = %v", err)
+			}
+			if got := strings.Join(gotArgs, "\x00"); !strings.Contains(got, test.wantInArgs) {
+				t.Fatalf("args = %#v, want sequence %q", gotArgs, test.wantInArgs)
+			}
+		})
+	}
+}
+
 func TestConfiguredCommandCandidateAppendsTitleAndBody(t *testing.T) {
 	prevLookPath := lookPath
 	t.Cleanup(func() {
@@ -207,17 +277,43 @@ func TestConfiguredCommandCandidateReplacesPlaceholders(t *testing.T) {
 	}
 }
 
+func TestConfiguredCommandCandidateReplacesIconPlaceholder(t *testing.T) {
+	prevLookPath := lookPath
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+	lookPath = func(name string) (string, error) {
+		return "/usr/bin/" + name, nil
+	}
+
+	candidate, err := configuredCommandCandidate("notify-send -i {icon}", Notification{
+		Title:    "Alice",
+		Body:     "hello there",
+		IconPath: "/tmp/avatar.png",
+	})
+	if err != nil {
+		t.Fatalf("configuredCommandCandidate() error = %v", err)
+	}
+	if got := strings.Join(candidate.args, "\x00"); got != "-i\x00/tmp/avatar.png\x00Alice\x00hello there" {
+		t.Fatalf("candidate.args = %#v", candidate.args)
+	}
+}
+
 func TestFormatChatMessagePrefixesGroupSender(t *testing.T) {
 	note := FormatChatMessage(MessagePayload{
 		ChatTitle: "Project Group",
 		ChatKind:  "group",
 		Sender:    "Alice",
 		Preview:   "image.png",
+		IconPath:  " /tmp/group.png ",
 	})
 	if note.Title != "Project Group" {
 		t.Fatalf("Title = %q, want Project Group", note.Title)
 	}
 	if note.Body != "Alice: image.png" {
 		t.Fatalf("Body = %q, want sender-prefixed preview", note.Body)
+	}
+	if note.IconPath != "/tmp/group.png" {
+		t.Fatalf("IconPath = %q, want trimmed path", note.IconPath)
 	}
 }
