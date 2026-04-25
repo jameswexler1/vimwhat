@@ -2242,12 +2242,14 @@ func firstLine(value string) string {
 
 func (m Model) panelStyle(focus Focus) lipgloss.Style {
 	border := borderColor
+	borderShape := lipgloss.NormalBorder()
 	if m.focus == focus {
 		border = activeBorder
+		borderShape = lipgloss.ThickBorder()
 	}
 
 	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
+		Border(borderShape).
 		BorderForeground(border).
 		Padding(0, 1)
 }

@@ -2038,6 +2038,64 @@ func TestPanelSizingDoesNotWrapExactWidthContent(t *testing.T) {
 	}
 }
 
+func TestPanelStyleUsesStrongBorderOnlyForFocusedPane(t *testing.T) {
+	model := NewModel(Options{})
+
+	model.focus = FocusChats
+	chatPanel := stripANSI(model.renderPanel(FocusChats, 30, 5, "chats"))
+	messagePanel := stripANSI(model.renderPanel(FocusMessages, 30, 5, "messages"))
+	if !strings.Contains(chatPanel, "┏") || !strings.Contains(chatPanel, "┗") {
+		t.Fatalf("focused chat panel did not use strong border\n%s", chatPanel)
+	}
+	if strings.Contains(messagePanel, "┏") || strings.Contains(messagePanel, "┗") {
+		t.Fatalf("unfocused message panel used strong border\n%s", messagePanel)
+	}
+
+	model.focus = FocusMessages
+	chatPanel = stripANSI(model.renderPanel(FocusChats, 30, 5, "chats"))
+	messagePanel = stripANSI(model.renderPanel(FocusMessages, 30, 5, "messages"))
+	if strings.Contains(chatPanel, "┏") || strings.Contains(chatPanel, "┗") {
+		t.Fatalf("unfocused chat panel used strong border\n%s", chatPanel)
+	}
+	if !strings.Contains(messagePanel, "┏") || !strings.Contains(messagePanel, "┗") {
+		t.Fatalf("focused message panel did not use strong border\n%s", messagePanel)
+	}
+}
+
+func TestWideViewHighlightsOnlyFocusedPanelBorder(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Body: "hello"}},
+				"chat-2": nil,
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.compactLayout = false
+
+	model.focus = FocusChats
+	chatsBody := stripANSI(model.renderBody(12))
+	chatsTop := strings.Split(chatsBody, "\n")[0]
+	if !strings.HasPrefix(chatsTop, "┏") || strings.Count(chatsTop, "┏") != 1 {
+		t.Fatalf("chat-focused top border = %q, want only chat pane strong", chatsTop)
+	}
+
+	model.focus = FocusMessages
+	messagesBody := stripANSI(model.renderBody(12))
+	messagesTop := strings.Split(messagesBody, "\n")[0]
+	if strings.HasPrefix(messagesTop, "┏") || strings.Count(messagesTop, "┏") != 1 {
+		t.Fatalf("message-focused top border = %q, want only message pane strong", messagesTop)
+	}
+}
+
 func TestChatRowsShowPreviewAndIndicators(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
