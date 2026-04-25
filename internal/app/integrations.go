@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,6 +88,313 @@ func clipboardCommands(configuredCommand string) [][]string {
 	}
 	commands = append(commands, []string{"pbcopy"}, []string{"termux-clipboard-set"})
 	return commands
+}
+
+type imageClipboardCommand struct {
+	argv     []string
+	pathMode bool
+	path     string
+}
+
+func pasteImageFromClipboard(paths config.Paths, commandTemplate string) tea.Cmd {
+	return func() tea.Msg {
+		attachment, err := readImageFromClipboard(context.Background(), paths, commandTemplate)
+		return ui.ClipboardImagePastedMsg{Attachment: attachment, Err: err}
+	}
+}
+
+func copyImageToClipboard(commandTemplate string, item store.MediaMetadata) tea.Cmd {
+	return func() tea.Msg {
+		err := writeImageToClipboard(context.Background(), commandTemplate, item)
+		return ui.ClipboardImageCopiedMsg{Media: item, Err: err}
+	}
+}
+
+func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemplate string) (ui.Attachment, error) {
+	if strings.TrimSpace(paths.MediaDir) == "" {
+		return ui.Attachment{}, fmt.Errorf("media cache dir is required")
+	}
+	if err := os.MkdirAll(paths.MediaDir, 0o700); err != nil {
+		return ui.Attachment{}, fmt.Errorf("create media cache dir: %w", err)
+	}
+
+	commands := imagePasteCommands(commandTemplate, paths.MediaDir)
+	if len(commands) == 0 {
+		return ui.Attachment{}, fmt.Errorf("no image clipboard paste command found")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for _, candidate := range commands {
+		if len(candidate.argv) == 0 {
+			continue
+		}
+		if strings.TrimSpace(commandTemplate) == "" {
+			if _, err := exec.LookPath(candidate.argv[0]); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+		var attachment ui.Attachment
+		var err error
+		if candidate.pathMode {
+			attachment, err = readImageFromClipboardPathMode(ctx, candidate)
+		} else {
+			attachment, err = readImageFromClipboardStdout(ctx, paths.MediaDir, candidate.argv)
+		}
+		if err == nil {
+			return attachment, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return ui.Attachment{}, lastErr
+	}
+	return ui.Attachment{}, fmt.Errorf("no image clipboard paste command found")
+}
+
+func readImageFromClipboardPathMode(ctx context.Context, candidate imageClipboardCommand) (ui.Attachment, error) {
+	target := strings.TrimSpace(candidate.path)
+	if target == "" {
+		return ui.Attachment{}, fmt.Errorf("clipboard image path is empty")
+	}
+	if err := runClipboardCommand(ctx, candidate.argv, nil, nil); err != nil {
+		_ = os.Remove(target)
+		return ui.Attachment{}, err
+	}
+	return attachmentFromClipboardImagePath(target)
+}
+
+func readImageFromClipboardStdout(ctx context.Context, mediaDir string, argv []string) (ui.Attachment, error) {
+	var stdout bytes.Buffer
+	if err := runClipboardCommand(ctx, argv, nil, &stdout); err != nil {
+		return ui.Attachment{}, err
+	}
+	data := stdout.Bytes()
+	mimeType := http.DetectContentType(data)
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return ui.Attachment{}, fmt.Errorf("clipboard does not contain an image")
+	}
+	target := clipboardImagePath(mediaDir, imageExtensionForMIME(mimeType))
+	tmp, err := os.CreateTemp(mediaDir, "clipboard-*.tmp")
+	if err != nil {
+		return ui.Attachment{}, fmt.Errorf("create clipboard image temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return ui.Attachment{}, fmt.Errorf("write clipboard image: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return ui.Attachment{}, fmt.Errorf("close clipboard image: %w", err)
+	}
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return ui.Attachment{}, fmt.Errorf("store clipboard image: %w", err)
+	}
+	return attachmentFromClipboardImagePath(target)
+}
+
+func attachmentFromClipboardImagePath(path string) (ui.Attachment, error) {
+	attachment, err := ui.AttachmentFromPath(path)
+	if err != nil {
+		return ui.Attachment{}, err
+	}
+	if media.MediaKind(attachment.MIMEType, attachment.FileName) != media.KindImage {
+		_ = os.Remove(path)
+		return ui.Attachment{}, fmt.Errorf("clipboard does not contain an image")
+	}
+	return attachment, nil
+}
+
+func writeImageToClipboard(ctx context.Context, commandTemplate string, item store.MediaMetadata) error {
+	if media.MediaKind(item.MIMEType, item.FileName) != media.KindImage {
+		return fmt.Errorf("focused media is not an image")
+	}
+	path := strings.TrimSpace(item.LocalPath)
+	if path == "" {
+		return fmt.Errorf("image is not downloaded")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat image: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("image path is a directory")
+	}
+
+	mimeType := imageClipboardMIME(item, path)
+	commands := imageCopyCommands(commandTemplate, path, mimeType)
+	if len(commands) == 0 {
+		return fmt.Errorf("no image clipboard copy command found")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var input []byte
+	var lastErr error
+	for _, candidate := range commands {
+		if len(candidate.argv) == 0 {
+			continue
+		}
+		if strings.TrimSpace(commandTemplate) == "" {
+			if _, err := exec.LookPath(candidate.argv[0]); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+		var stdin io.Reader
+		if !candidate.pathMode {
+			if input == nil {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return fmt.Errorf("read image: %w", err)
+				}
+				input = data
+			}
+			stdin = bytes.NewReader(input)
+		}
+		if err := runClipboardCommand(ctx, candidate.argv, stdin, nil); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("no image clipboard copy command found")
+}
+
+func imagePasteCommands(commandTemplate, mediaDir string) []imageClipboardCommand {
+	commandTemplate = strings.TrimSpace(commandTemplate)
+	if commandTemplate != "" {
+		pathMode := strings.Contains(commandTemplate, "{path}")
+		path := ""
+		if pathMode {
+			path = clipboardImagePath(mediaDir, ".png")
+			commandTemplate = strings.ReplaceAll(commandTemplate, "{path}", path)
+		}
+		argv, err := splitCommandLine(commandTemplate)
+		if err != nil || len(argv) == 0 {
+			if path != "" {
+				_ = os.Remove(path)
+			}
+			return nil
+		}
+		return []imageClipboardCommand{{argv: argv, pathMode: pathMode, path: path}}
+	}
+
+	var commands []imageClipboardCommand
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		commands = append(commands, imageClipboardCommand{argv: []string{"wl-paste", "--type", "image/png"}})
+	}
+	if os.Getenv("DISPLAY") != "" {
+		commands = append(commands, imageClipboardCommand{argv: []string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"}})
+	}
+	if _, err := exec.LookPath("pngpaste"); err == nil {
+		target := clipboardImagePath(mediaDir, ".png")
+		commands = append(commands, imageClipboardCommand{argv: []string{"pngpaste", target}, pathMode: true, path: target})
+	}
+	return commands
+}
+
+func imageCopyCommands(commandTemplate, path, mimeType string) []imageClipboardCommand {
+	commandTemplate = strings.TrimSpace(commandTemplate)
+	if commandTemplate != "" {
+		pathMode := strings.Contains(commandTemplate, "{path}")
+		commandTemplate = strings.ReplaceAll(commandTemplate, "{path}", path)
+		commandTemplate = strings.ReplaceAll(commandTemplate, "{mime}", mimeType)
+		argv, err := splitCommandLine(commandTemplate)
+		if err != nil || len(argv) == 0 {
+			return nil
+		}
+		return []imageClipboardCommand{{argv: argv, pathMode: pathMode}}
+	}
+
+	var commands []imageClipboardCommand
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		commands = append(commands, imageClipboardCommand{argv: []string{"wl-copy", "--type", mimeType}})
+	}
+	if os.Getenv("DISPLAY") != "" {
+		commands = append(commands, imageClipboardCommand{argv: []string{"xclip", "-selection", "clipboard", "-t", mimeType}})
+	}
+	return commands
+}
+
+func runClipboardCommand(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("clipboard command is empty")
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	if stdout != nil {
+		cmd.Stdout = stdout
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("%s: %w", msg, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func clipboardImagePath(dir, ext string) string {
+	ext = strings.TrimSpace(ext)
+	if ext == "" {
+		ext = ".png"
+	}
+	return filepath.Join(dir, fmt.Sprintf("clipboard-%d%s", time.Now().UnixNano(), ext))
+}
+
+func imageExtensionForMIME(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch mimeType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	}
+	if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {
+		return exts[0]
+	}
+	return ".png"
+}
+
+func imageClipboardMIME(item store.MediaMetadata, path string) string {
+	mimeType := strings.ToLower(strings.TrimSpace(item.MIMEType))
+	if strings.HasPrefix(mimeType, "image/") {
+		return mimeType
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "image/png"
+	}
+	defer file.Close()
+	var buf [512]byte
+	n, err := file.Read(buf[:])
+	if err != nil && n == 0 {
+		return "image/png"
+	}
+	if detected := http.DetectContentType(buf[:n]); strings.HasPrefix(strings.ToLower(detected), "image/") {
+		return strings.ToLower(detected)
+	}
+	return "image/png"
 }
 
 func pickAttachment(commandTemplate string) tea.Cmd {

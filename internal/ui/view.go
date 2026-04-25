@@ -2235,7 +2235,8 @@ func (m Model) renderHelp(width int) string {
 		Rows: []helpRow{
 			{Key: key(keys.NormalOpen), Action: "preview or open selected row"},
 			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
-			{Key: keysFor(keys.NormalSaveMedia, keys.NormalUnloadPreviews), Action: "save media / hide previews"},
+			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
+			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
 			{Key: key(keys.NormalRetryFailedMedia), Action: "retry failed media"},
 			{Key: key(keys.NormalDeleteForEverybody), Action: "delete for everyone"},
@@ -2247,7 +2248,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalInsert), Action: "compose in insert mode"},
 			{Key: keysFor(keys.InsertSend, keys.CommandRun, keys.SearchRun), Action: "send or run current prompt"},
 			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
-			{Key: keysFor(keys.InsertAttach, keys.InsertRemoveAttachment), Action: "attach / remove file"},
+			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste image, remove"},
 			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
 			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
 		},
@@ -2257,10 +2258,10 @@ func (m Model) renderHelp(width int) string {
 		Rows: []helpRow{
 			{Key: "filter", Action: "unread/all/messages, clear-search"},
 			{Key: "sort", Action: "pinned/recent"},
-			{Key: "media", Action: "preview/open/save/hide"},
+			{Key: "media", Action: "preview/open/save/hide, copy-image"},
 			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
 			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
-			{Key: "more", Action: "preview-backend, attach, delete-message-everybody"},
+			{Key: "more", Action: "preview-backend, attach, paste-image, delete-message-everybody"},
 		},
 	}
 

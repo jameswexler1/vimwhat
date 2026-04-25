@@ -11,28 +11,30 @@ import (
 )
 
 type Config struct {
-	Editor              string
-	PreviewBackend      string
-	EmojiMode           string
-	IndicatorNormal     string
-	IndicatorInsert     string
-	IndicatorVisual     string
-	IndicatorCommand    string
-	IndicatorSearch     string
-	NotificationBackend string
-	NotificationCommand string
-	ClipboardCommand    string
-	FilePickerCommand   string
-	ImageViewerCommand  string
-	VideoPlayerCommand  string
-	AudioPlayerCommand  string
-	FileOpenerCommand   string
-	LeaderKey           string
-	Keymap              Keymap
-	PreviewMaxWidth     int
-	PreviewMaxHeight    int
-	PreviewDelayMS      int
-	DownloadsDir        string
+	Editor                     string
+	PreviewBackend             string
+	EmojiMode                  string
+	IndicatorNormal            string
+	IndicatorInsert            string
+	IndicatorVisual            string
+	IndicatorCommand           string
+	IndicatorSearch            string
+	NotificationBackend        string
+	NotificationCommand        string
+	ClipboardCommand           string
+	ClipboardImagePasteCommand string
+	ClipboardImageCopyCommand  string
+	FilePickerCommand          string
+	ImageViewerCommand         string
+	VideoPlayerCommand         string
+	AudioPlayerCommand         string
+	FileOpenerCommand          string
+	LeaderKey                  string
+	Keymap                     Keymap
+	PreviewMaxWidth            int
+	PreviewMaxHeight           int
+	PreviewDelayMS             int
+	DownloadsDir               string
 }
 
 const (
@@ -177,6 +179,10 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.NotificationCommand = parsed
 		case "clipboard_command":
 			cfg.ClipboardCommand = parsed
+		case "clipboard_image_paste_command":
+			cfg.ClipboardImagePasteCommand = parsed
+		case "clipboard_image_copy_command":
+			cfg.ClipboardImageCopyCommand = parsed
 		case "file_picker_command":
 			cfg.FilePickerCommand = parsed
 		case "image_viewer_command":

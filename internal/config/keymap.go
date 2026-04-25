@@ -46,11 +46,13 @@ type Keymap struct {
 	NormalSearchPrevious     string
 	NormalToggleUnread       string
 	NormalTogglePinned       string
+	NormalCopyImage          string
 	NormalSaveMedia          string
 	NormalUnloadPreviews     string
 	NormalDeleteForEverybody string
 
 	InsertAttach           string
+	InsertPasteImage       string
 	InsertRemoveAttachment string
 	InsertNewline          string
 	InsertNewlineAlt       string
@@ -116,11 +118,13 @@ func DefaultKeymap() Keymap {
 		NormalSearchPrevious:     "N",
 		NormalToggleUnread:       "u",
 		NormalTogglePinned:       "p",
+		NormalCopyImage:          "leader y",
 		NormalSaveMedia:          "leader s",
 		NormalUnloadPreviews:     "leader h f",
 		NormalDeleteForEverybody: "leader d e",
 
 		InsertAttach:           "ctrl+f",
+		InsertPasteImage:       "ctrl+v",
 		InsertRemoveAttachment: "ctrl+x",
 		InsertNewline:          "ctrl+j",
 		InsertNewlineAlt:       "alt+enter",
@@ -232,6 +236,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.NormalTogglePinned == "" {
 		input.NormalTogglePinned = defaults.NormalTogglePinned
 	}
+	if input.NormalCopyImage == "" {
+		input.NormalCopyImage = defaults.NormalCopyImage
+	}
 	if input.NormalSaveMedia == "" {
 		input.NormalSaveMedia = defaults.NormalSaveMedia
 	}
@@ -243,6 +250,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.InsertAttach == "" {
 		input.InsertAttach = defaults.InsertAttach
+	}
+	if input.InsertPasteImage == "" {
+		input.InsertPasteImage = defaults.InsertPasteImage
 	}
 	if input.InsertRemoveAttachment == "" {
 		input.InsertRemoveAttachment = defaults.InsertRemoveAttachment
@@ -345,10 +355,12 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_search_previous", Mode: KeyModeNormal, Value: k.NormalSearchPrevious},
 		{Name: "key_normal_toggle_unread", Mode: KeyModeNormal, Value: k.NormalToggleUnread},
 		{Name: "key_normal_toggle_pinned", Mode: KeyModeNormal, Value: k.NormalTogglePinned},
+		{Name: "key_normal_copy_image", Mode: KeyModeNormal, Value: k.NormalCopyImage},
 		{Name: "key_normal_save_media", Mode: KeyModeNormal, Value: k.NormalSaveMedia},
 		{Name: "key_normal_unload_previews", Mode: KeyModeNormal, Value: k.NormalUnloadPreviews},
 		{Name: "key_normal_delete_for_everybody", Mode: KeyModeNormal, Value: k.NormalDeleteForEverybody},
 		{Name: "key_insert_attach", Mode: KeyModeInsert, Value: k.InsertAttach},
+		{Name: "key_insert_paste_image", Mode: KeyModeInsert, Value: k.InsertPasteImage},
 		{Name: "key_insert_remove_attachment", Mode: KeyModeInsert, Value: k.InsertRemoveAttachment},
 		{Name: "key_insert_newline", Mode: KeyModeInsert, Value: k.InsertNewline},
 		{Name: "key_insert_newline_alt", Mode: KeyModeInsert, Value: k.InsertNewlineAlt},
@@ -434,6 +446,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalToggleUnread = normalized
 	case "key_normal_toggle_pinned":
 		k.NormalTogglePinned = normalized
+	case "key_normal_copy_image":
+		k.NormalCopyImage = normalized
 	case "key_normal_save_media":
 		k.NormalSaveMedia = normalized
 	case "key_normal_unload_previews":
@@ -442,6 +456,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalDeleteForEverybody = normalized
 	case "key_insert_attach":
 		k.InsertAttach = normalized
+	case "key_insert_paste_image":
+		k.InsertPasteImage = normalized
 	case "key_insert_remove_attachment":
 		k.InsertRemoveAttachment = normalized
 	case "key_insert_newline":

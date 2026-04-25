@@ -117,6 +117,17 @@ type clipboardCopiedMsg struct {
 	Err   error
 }
 
+type ClipboardImagePastedMsg struct {
+	Attachment Attachment
+	Err        error
+}
+
+type ClipboardImageCopiedMsg struct {
+	MessageID string
+	Media     store.MediaMetadata
+	Err       error
+}
+
 type mediaPreviewReadyMsg struct {
 	Key        string
 	Generation int
@@ -209,6 +220,8 @@ type Options struct {
 	SearchChats              func(query string) ([]store.Chat, error)
 	SearchMessages           func(chatID, query string, limit int) ([]store.Message, error)
 	CopyToClipboard          func(text string) error
+	PasteImageFromClipboard  func() tea.Cmd
+	CopyImageToClipboard     func(media store.MediaMetadata) tea.Cmd
 	PickAttachment           func() tea.Cmd
 	OpenMedia                func(media store.MediaMetadata) tea.Cmd
 	StartAudio               func(media store.MediaMetadata) (AudioProcess, error)
@@ -306,6 +319,8 @@ type Model struct {
 	searchChats                func(query string) ([]store.Chat, error)
 	searchMessages             func(chatID, query string, limit int) ([]store.Message, error)
 	copyToClipboard            func(text string) error
+	pasteImageFromClipboard    func() tea.Cmd
+	copyImageToClipboard       func(media store.MediaMetadata) tea.Cmd
 	pickAttachment             func() tea.Cmd
 	openMedia                  func(media store.MediaMetadata) tea.Cmd
 	startAudio                 func(media store.MediaMetadata) (AudioProcess, error)
@@ -402,6 +417,8 @@ func NewModel(opts Options) Model {
 		searchChats:              opts.SearchChats,
 		searchMessages:           opts.SearchMessages,
 		copyToClipboard:          opts.CopyToClipboard,
+		pasteImageFromClipboard:  opts.PasteImageFromClipboard,
+		copyImageToClipboard:     opts.CopyImageToClipboard,
 		pickAttachment:           opts.PickAttachment,
 		openMedia:                opts.OpenMedia,
 		startAudio:               opts.StartAudio,
@@ -742,6 +759,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("yanked %d message(s) to clipboard", msg.Count)
 		}
 		return m, nil
+	case ClipboardImagePastedMsg:
+		return m.handleClipboardImagePasted(msg)
+	case ClipboardImageCopiedMsg:
+		return m.handleClipboardImageCopied(msg)
 	case AttachmentPickedMsg:
 		return m.handlePickedAttachment(msg)
 	case mediaPreviewReadyMsg:
@@ -909,6 +930,7 @@ const (
 	normalActionSearchPrevious    = "search_previous"
 	normalActionToggleUnread      = "toggle_unread"
 	normalActionTogglePinned      = "toggle_pinned"
+	normalActionCopyImage         = "copy_image"
 	normalActionSaveMedia         = "save_media"
 	normalActionUnloadPreviews    = "unload_previews"
 	normalActionDeleteForEveryone = "delete_for_everyone"
@@ -961,6 +983,8 @@ func (m Model) normalActionForKey(msg tea.KeyMsg) string {
 		return normalActionToggleUnread
 	case m.keyMatches(msg, keys.NormalTogglePinned):
 		return normalActionTogglePinned
+	case m.keyMatches(msg, keys.NormalCopyImage):
+		return normalActionCopyImage
 	case m.keyMatches(msg, keys.NormalSaveMedia):
 		return normalActionSaveMedia
 	case m.keyMatches(msg, keys.NormalUnloadPreviews):
@@ -1014,6 +1038,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
 		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
 		{binding: keys.NormalTogglePinned, action: normalActionTogglePinned},
+		{binding: keys.NormalCopyImage, action: normalActionCopyImage},
 		{binding: keys.NormalSaveMedia, action: normalActionSaveMedia},
 		{binding: keys.NormalUnloadPreviews, action: normalActionUnloadPreviews},
 		{binding: keys.NormalDeleteForEverybody, action: normalActionDeleteForEveryone},
@@ -1150,6 +1175,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("sort failed: %v", err)
 			return m, nil
 		}
+	case normalActionCopyImage:
+		return m.copyFocusedImage()
 	case normalActionSaveMedia:
 		return m.saveFocusedMedia()
 	case normalActionUnloadPreviews:
@@ -1344,6 +1371,9 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
 	if m.keyMatches(msg, keys.InsertAttach) {
 		return m.startAttachmentPicker()
+	}
+	if m.keyMatches(msg, keys.InsertPasteImage) {
+		return m.startClipboardImagePaste()
 	}
 	if m.keyMatches(msg, keys.InsertRemoveAttachment) {
 		if len(m.attachments) == 0 {
@@ -1759,6 +1789,10 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.openFocusedMedia()
 	case cmd == "media-save" || cmd == "media save":
 		return m.saveFocusedMedia()
+	case cmd == "copy-image" || cmd == "copy image":
+		return m.copyFocusedImage()
+	case cmd == "paste-image" || cmd == "paste image":
+		return m.startClipboardImagePaste()
 	case cmd == "retry-message" || cmd == "retry message" || cmd == "retry":
 		m.retryFocusedMediaMessage()
 	case cmd == "history-fetch" || cmd == "history fetch":
@@ -3133,6 +3167,62 @@ func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) copyFocusedImage() (tea.Model, tea.Cmd) {
+	message, item, ok := m.focusedMedia()
+	if !ok {
+		m.status = "no media on focused message"
+		return m, nil
+	}
+	if media.MediaKind(item.MIMEType, item.FileName) != media.KindImage {
+		m.status = "focused media is not an image"
+		return m, nil
+	}
+	message, item, err := m.repairManagedMediaCache(message, item)
+	if err != nil {
+		m.status = fmt.Sprintf("repair media metadata failed: %v", err)
+		return m, nil
+	}
+	if m.copyImageToClipboard == nil {
+		m.status = "image clipboard copy unavailable"
+		return m, nil
+	}
+	if strings.TrimSpace(item.LocalPath) == "" {
+		if m.downloadMedia != nil {
+			if !m.startMediaDownload(message, item, "downloading image") {
+				return m, nil
+			}
+			return m, func() tea.Msg {
+				downloaded, err := m.downloadMedia(message, item)
+				if err != nil {
+					return ClipboardImageCopiedMsg{MessageID: message.ID, Media: downloaded, Err: err}
+				}
+				return clipboardImageCopiedFromCmd(m.copyImageToClipboard(downloaded), message.ID, downloaded)
+			}
+		}
+		m.status = mediaDownloadUnavailableStatus(item)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("copying image: %s", m.mediaDisplayName(item))
+	return m, func() tea.Msg {
+		return clipboardImageCopiedFromCmd(m.copyImageToClipboard(item), message.ID, item)
+	}
+}
+
+func clipboardImageCopiedFromCmd(cmd tea.Cmd, messageID string, item store.MediaMetadata) tea.Msg {
+	if cmd == nil {
+		return ClipboardImageCopiedMsg{MessageID: messageID, Media: item}
+	}
+	msg := cmd()
+	if copied, ok := msg.(ClipboardImageCopiedMsg); ok {
+		copied.MessageID = messageID
+		if strings.TrimSpace(copied.Media.MessageID) == "" {
+			copied.Media = item
+		}
+		return copied
+	}
+	return ClipboardImageCopiedMsg{MessageID: messageID, Media: item}
+}
+
 func (m Model) toggleFocusedAudio(message store.Message, item store.MediaMetadata) (tea.Model, tea.Cmd) {
 	message, item, err := m.repairManagedMediaCache(message, item)
 	if err != nil {
@@ -3606,6 +3696,35 @@ func (m Model) handlePickedAttachment(msg AttachmentPickedMsg) (tea.Model, tea.C
 	return m, nil
 }
 
+func (m Model) handleClipboardImagePasted(msg ClipboardImagePastedMsg) (tea.Model, tea.Cmd) {
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("paste image failed: %v", msg.Err)
+		return m, nil
+	}
+	m.stageAttachment(msg.Attachment)
+	return m, nil
+}
+
+func (m Model) handleClipboardImageCopied(msg ClipboardImageCopiedMsg) (tea.Model, tea.Cmd) {
+	m.clearMediaDownloadInFlight(msg.MessageID)
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("copy image failed: %v", msg.Err)
+		return m, nil
+	}
+	if msg.MessageID != "" && strings.TrimSpace(msg.Media.LocalPath) != "" {
+		if updated, _, _ := m.updateLoadedMedia(msg.MessageID, msg.Media); updated && m.saveMedia != nil {
+			if err := m.saveMedia(msg.Media); err != nil {
+				m.status = fmt.Sprintf("copy metadata failed: %v", err)
+				return m, nil
+			}
+		}
+	}
+	m.status = fmt.Sprintf("copied image: %s", m.mediaDisplayName(msg.Media))
+	return m, nil
+}
+
 func (m Model) startAttachmentPicker() (tea.Model, tea.Cmd) {
 	if len(m.chats) == 0 || m.currentChat().ID == "" {
 		m.status = "no chat selected"
@@ -3620,6 +3739,21 @@ func (m Model) startAttachmentPicker() (tea.Model, tea.Cmd) {
 
 	m.status = "opening attachment picker"
 	return m, m.pickAttachment()
+}
+
+func (m Model) startClipboardImagePaste() (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	if m.pasteImageFromClipboard == nil {
+		m.status = "image clipboard paste unavailable"
+		return m, nil
+	}
+	m.status = "pasting image from clipboard"
+	return m, m.pasteImageFromClipboard()
 }
 
 func (m *Model) stageAttachmentPath(path string) error {

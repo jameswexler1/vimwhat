@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -10,7 +10,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - XDG config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
-- Local draft persistence, local outgoing message persistence, clipboard integration, attachment staging, message delete flow, and search routing by pane.
+- Local draft persistence, local outgoing message persistence, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.
 - Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, first-use-state local reset on logout, and `doctor` session status reporting.
 - Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
@@ -214,6 +214,7 @@ The attachment upload/send milestone now has an implemented first pass:
 - Persist outgoing media messages locally before upload with `sending` / `sent` / `failed` status transitions and file-backed media rows so preview/open/save keep working on failures.
 - Use the composer body as the caption for image, video, and document sends; reject audio captions before queueing.
 - Reuse quoted reply metadata for outgoing media messages so replied-to media sends carry the same context shape as text replies.
+- Paste image data from the system clipboard into the composer as the same single staged attachment used by normal media sends, and copy the focused downloaded image back to the system clipboard through configurable or auto-detected Linux helper commands.
 
 The remaining CLI surface milestone is now implemented:
 

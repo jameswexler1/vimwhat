@@ -42,8 +42,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q unload %q delete-everybody %q attach %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.ConfirmRun)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -67,6 +67,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`notification_backend = "command"`,
 		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
+		`clipboard_image_paste_command = "wl-paste --type image/png"`,
+		`clipboard_image_copy_command = "wl-copy --type {mime}"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
 		`image_viewer_command = "imv {path}"`,
 		`video_player_command = "mpv --force-window {path}"`,
@@ -74,7 +76,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`file_opener_command = ""`,
 		`leader_key = ","`,
 		`key_normal_quit = "x"`,
+		`key_normal_copy_image = "leader c"`,
 		`key_normal_save_media = "leader y"`,
+		`key_insert_paste_image = "ctrl+p"`,
 		`key_insert_send = "ctrl+s"`,
 		`preview_max_width = 44`,
 		`preview_max_height = 10`,
@@ -112,6 +116,12 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.ClipboardCommand != "wl-copy" {
 		t.Fatalf("ClipboardCommand = %q", cfg.ClipboardCommand)
 	}
+	if cfg.ClipboardImagePasteCommand != "wl-paste --type image/png" {
+		t.Fatalf("ClipboardImagePasteCommand = %q", cfg.ClipboardImagePasteCommand)
+	}
+	if cfg.ClipboardImageCopyCommand != "wl-copy --type {mime}" {
+		t.Fatalf("ClipboardImageCopyCommand = %q", cfg.ClipboardImageCopyCommand)
+	}
 	if cfg.FilePickerCommand != "yazi --chooser-file {chooser}" {
 		t.Fatalf("FilePickerCommand = %q", cfg.FilePickerCommand)
 	}
@@ -130,8 +140,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertSend != "ctrl+s" {
-		t.Fatalf("keymap = quit %q save %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertSend)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
+		t.Fatalf("keymap = quit %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -306,9 +316,13 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 	content := string(data)
 	for _, want := range []string{
 		`leader_key = "space"`,
+		`clipboard_image_paste_command = ""`,
+		`clipboard_image_copy_command = ""`,
+		`key_normal_copy_image = "leader y"`,
 		`key_normal_unload_previews = "leader h f"`,
 		`key_normal_delete_for_everybody = "leader d e"`,
 		`key_insert_attach = "ctrl+f"`,
+		`key_insert_paste_image = "ctrl+v"`,
 		`key_confirm_run = "enter"`,
 		`downloads_dir = "~/Downloads"`,
 	} {
@@ -348,6 +362,12 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.NormalDeleteForEverybody != "leader d e" {
 		t.Fatalf("NormalDeleteForEverybody = %q, want leader d e", cfg.Keymap.NormalDeleteForEverybody)
+	}
+	if cfg.Keymap.NormalCopyImage != "leader y" {
+		t.Fatalf("NormalCopyImage = %q, want leader y", cfg.Keymap.NormalCopyImage)
+	}
+	if cfg.Keymap.InsertPasteImage != "ctrl+v" {
+		t.Fatalf("InsertPasteImage = %q, want ctrl+v", cfg.Keymap.InsertPasteImage)
 	}
 	if cfg.Keymap.ConfirmRun != "enter" {
 		t.Fatalf("ConfirmRun = %q, want enter", cfg.Keymap.ConfirmRun)

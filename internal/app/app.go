@@ -333,6 +333,12 @@ func runTUI(env Environment, stderr io.Writer) int {
 		CopyToClipboard: func(text string) error {
 			return copyToClipboard(context.Background(), env.Config.ClipboardCommand, text)
 		},
+		PasteImageFromClipboard: func() tea.Cmd {
+			return pasteImageFromClipboard(env.Paths, env.Config.ClipboardImagePasteCommand)
+		},
+		CopyImageToClipboard: func(media store.MediaMetadata) tea.Cmd {
+			return copyImageToClipboard(env.Config.ClipboardImageCopyCommand, media)
+		},
 		PickAttachment: func() tea.Cmd {
 			return pickAttachment(env.Config.FilePickerCommand)
 		},

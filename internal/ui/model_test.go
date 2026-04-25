@@ -3812,6 +3812,77 @@ func TestAttachmentPickerStagesAttachmentInComposer(t *testing.T) {
 	}
 }
 
+func TestInsertPasteImageStagesClipboardImageInComposer(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PasteImageFromClipboard: func() tea.Cmd {
+			return func() tea.Msg {
+				return ClipboardImagePastedMsg{Attachment: Attachment{
+					LocalPath:     "/tmp/clipboard.png",
+					FileName:      "clipboard.png",
+					MIMEType:      "image/png",
+					SizeBytes:     1024,
+					DownloadState: "local_pending",
+				}}
+			}
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "caption"
+
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlV})
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatal("ctrl+v did not start clipboard image paste")
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if got.mode != ModeInsert || got.composer != "caption" {
+		t.Fatalf("mode/composer = %s/%q, want insert/caption", got.mode, got.composer)
+	}
+	if len(got.attachments) != 1 || got.attachments[0].FileName != "clipboard.png" {
+		t.Fatalf("attachments = %+v", got.attachments)
+	}
+}
+
+func TestPasteImageCommandStagesClipboardImage(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PasteImageFromClipboard: func() tea.Cmd {
+			return func() tea.Msg {
+				return ClipboardImagePastedMsg{Attachment: Attachment{
+					LocalPath:     "/tmp/clipboard.png",
+					FileName:      "clipboard.png",
+					MIMEType:      "image/png",
+					DownloadState: "local_pending",
+				}}
+			}
+		},
+	})
+
+	updated, cmd := model.executeCommand("paste-image")
+	got := updated.(Model)
+	if got.mode != ModeInsert || cmd == nil {
+		t.Fatalf("mode=%s cmd nil=%v, want insert and paste command", got.mode, cmd == nil)
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if len(got.attachments) != 1 || got.attachments[0].MIMEType != "image/png" {
+		t.Fatalf("attachments = %+v", got.attachments)
+	}
+}
+
 func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
 	attachmentPath := filepath.Join(t.TempDir(), "report.pdf")
 	if err := os.WriteFile(attachmentPath, []byte("pdf-bytes"), 0o644); err != nil {
@@ -4709,6 +4780,110 @@ func TestEnterPreviewsThenOpensFocusedMedia(t *testing.T) {
 	}
 	if openedPath != localPath {
 		t.Fatalf("openedPath = %q, want %q", openedPath, localPath)
+	}
+}
+
+func TestCopyFocusedImageCopiesLocalMedia(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendChafa)
+	var copiedPath string
+	model.copyImageToClipboard = func(item store.MediaMetadata) tea.Cmd {
+		return func() tea.Msg {
+			copiedPath = item.LocalPath
+			return ClipboardImageCopiedMsg{Media: item}
+		}
+	}
+
+	updated, cmd := model.copyFocusedImage()
+	got := updated.(Model)
+	if cmd == nil {
+		t.Fatal("copyFocusedImage() cmd = nil, want clipboard copy command")
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if copiedPath != localPath {
+		t.Fatalf("copiedPath = %q, want %q", copiedPath, localPath)
+	}
+	if !strings.Contains(got.status, "copied image") {
+		t.Fatalf("status = %q, want copied image", got.status)
+	}
+}
+
+func TestCopyFocusedImageDownloadsRemoteMediaBeforeCopy(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel("", media.BackendChafa)
+	model.downloadMedia = func(message store.Message, item store.MediaMetadata) (store.MediaMetadata, error) {
+		item.LocalPath = localPath
+		item.DownloadState = "downloaded"
+		return item, nil
+	}
+	var copiedPath string
+	model.copyImageToClipboard = func(item store.MediaMetadata) tea.Cmd {
+		return func() tea.Msg {
+			copiedPath = item.LocalPath
+			return ClipboardImageCopiedMsg{Media: item}
+		}
+	}
+
+	updated, cmd := model.copyFocusedImage()
+	got := updated.(Model)
+	if cmd == nil || !got.mediaDownloadInflight["m-1"] {
+		t.Fatalf("cmd nil=%v inflight=%v, want download before copy", cmd == nil, got.mediaDownloadInflight)
+	}
+	final, _ := got.Update(cmd())
+	got = final.(Model)
+	if copiedPath != localPath {
+		t.Fatalf("copiedPath = %q, want %q", copiedPath, localPath)
+	}
+	if got.mediaDownloadInflight["m-1"] {
+		t.Fatalf("mediaDownloadInflight not cleared: %+v", got.mediaDownloadInflight)
+	}
+	if got.messagesByChat["chat-1"][0].Media[0].LocalPath != localPath {
+		t.Fatalf("downloaded local path not applied: %+v", got.messagesByChat["chat-1"][0].Media[0])
+	}
+}
+
+func TestCopyFocusedImageRejectsNonImageMedia(t *testing.T) {
+	model := mediaTestModel("/tmp/report.pdf", media.BackendChafa)
+	model.messagesByChat["chat-1"][0].Media[0].MIMEType = "application/pdf"
+	model.messagesByChat["chat-1"][0].Media[0].FileName = "report.pdf"
+
+	updated, cmd := model.copyFocusedImage()
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("copyFocusedImage() cmd != nil for non-image media")
+	}
+	if !strings.Contains(got.status, "not an image") {
+		t.Fatalf("status = %q, want non-image status", got.status)
+	}
+}
+
+func TestCopyFocusedImageReportsNoMedia(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Body: "hello"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+
+	updated, cmd := model.copyFocusedImage()
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("copyFocusedImage() cmd != nil without media")
+	}
+	if !strings.Contains(got.status, "no media") {
+		t.Fatalf("status = %q, want no media status", got.status)
 	}
 }
 

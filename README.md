@@ -42,6 +42,7 @@ For more detailed stage notes and upcoming validation work, see `PLAN.md`.
   - `chafa`, `img2sixel`, or `ueberzug++` for inline media and avatar previews.
   - `ffmpeg` for generated video thumbnails.
   - `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands.
+  - `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste.
   - `notify-send`, `gdbus`, `dbus-send`, `osascript`, or `powershell.exe` for native notifications, depending on OS.
 
 ## Quick start
@@ -141,6 +142,7 @@ key_normal_move_down = "j"
 key_normal_move_up = "k"
 key_normal_open = "enter"
 key_normal_open_media = "o"
+key_normal_copy_image = "leader y"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
 key_normal_delete_for_everybody = "leader d e"
@@ -149,6 +151,7 @@ key_insert_send = "enter"
 key_insert_newline = "ctrl+j"
 key_insert_newline_alt = "alt+enter"
 key_insert_attach = "ctrl+f"
+key_insert_paste_image = "ctrl+v"
 key_insert_remove_attachment = "ctrl+x"
 
 key_visual_yank = "y"
@@ -168,6 +171,8 @@ Useful command-mode actions:
 :media preview
 :media open
 :media save
+:copy-image
+:paste-image
 :attach
 :attach <path>
 :delete-message
@@ -182,6 +187,8 @@ Useful command-mode actions:
 :clear-preview-cache
 :quit
 ```
+
+Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the current clipboard image as the composer attachment, preserving composer text as the caption. `key_normal_copy_image` copies the focused image message to the clipboard and auto-downloads remote image media first when possible. The default image clipboard commands auto-detect Wayland/X11 tools; set `clipboard_image_paste_command` or `clipboard_image_copy_command` to override them. Paste commands may write to `{path}` or stdout, and copy commands may use `{path}` and `{mime}` or receive image bytes on stdin.
 
 All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<action>` variables. Bindings accept printable single keys plus named tokens such as `space`, `enter`, `esc`, `tab`, `shift+tab`, `backspace`, `ctrl+x`, `alt+x`, `alt+enter`, and leader sequences. Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.
 
