@@ -2523,9 +2523,11 @@ func TestChatAvatarOverlayStaysActiveWhenFocusMovesWithinVisibleChats(t *testing
 	model.focus = FocusChats
 	cacheChatAvatarOverlayPreview(t, &model, model.chats[0], avatarPath, "low-avatar-1", "low-avatar-2")
 
-	if cmd := model.syncOverlayCmd(); cmd == nil || model.overlaySignature == "" {
-		t.Fatal("syncOverlayCmd() did not mark avatar overlay as active")
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want avatar overlay command")
 	}
+	model = applyOverlayCmd(t, model, cmd)
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	model = updated.(Model)
@@ -2538,6 +2540,47 @@ func TestChatAvatarOverlayStaysActiveWhenFocusMovesWithinVisibleChats(t *testing
 	view := stripANSI(model.View())
 	if strings.Contains(view, "low-avatar") {
 		t.Fatalf("View() rendered low-resolution avatar fallback while overlay remained active\n%s", view)
+	}
+}
+
+func TestPendingChatAvatarOverlayDoesNotBlankFallback(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+	cacheChatAvatarOverlayPreview(t, &model, model.chats[0], avatarPath, "low-avatar-1", "low-avatar-2")
+
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want avatar overlay command")
+	}
+	pendingView := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if !strings.Contains(pendingView, "low-avatar-1") {
+		t.Fatalf("pending avatar overlay blanked fallback before command applied\n%s", pendingView)
+	}
+
+	model = applyOverlayCmd(t, model, cmd)
+	appliedView := stripANSI(model.renderChatCell(model.chats[0], false, 40))
+	if strings.Contains(appliedView, "low-avatar") {
+		t.Fatalf("applied avatar overlay still rendered low-resolution fallback\n%s", appliedView)
 	}
 }
 
@@ -4832,17 +4875,15 @@ func TestSyncOverlayCmdSkipsUnchangedPlacements(t *testing.T) {
 	if first == nil {
 		t.Fatal("first syncOverlayCmd() = nil, want overlay add command")
 	}
-	if model.overlaySignature == "" {
-		t.Fatal("overlaySignature is empty after first syncOverlayCmd()")
+	if !model.overlaySyncPending || model.overlayPendingSignature == "" {
+		t.Fatal("overlay sync was not marked pending after first syncOverlayCmd()")
 	}
 	second := model.syncOverlayCmd()
 	if second != nil {
 		t.Fatal("second syncOverlayCmd() returned a command for unchanged placements")
 	}
 
-	if msg := first(); msg == nil {
-		t.Fatal("first overlay command returned nil message")
-	}
+	model = applyOverlayCmd(t, model, first)
 	if !strings.Contains(overlay.String(), `"action":"add"`) {
 		t.Fatalf("first overlay command did not add preview:\n%s", overlay.String())
 	}
@@ -4870,9 +4911,7 @@ func TestPausedOverlayClearDoesNotRaceAfterResume(t *testing.T) {
 	if initial == nil {
 		t.Fatal("initial syncOverlayCmd() = nil, want add command")
 	}
-	if msg := initial(); msg == nil {
-		t.Fatal("initial overlay command returned nil message")
-	}
+	model = applyOverlayCmd(t, model, initial)
 	overlay.Reset()
 
 	model.pauseOverlays(true, false)
@@ -4885,11 +4924,8 @@ func TestPausedOverlayClearDoesNotRaceAfterResume(t *testing.T) {
 	if model.mediaOverlayPaused {
 		t.Fatal("mediaOverlayPaused = true after resume")
 	}
-	if resumeCmd == nil {
-		t.Fatal("resume command = nil, want overlay re-sync")
-	}
-	if msg := resumeCmd(); msg == nil {
-		t.Fatal("resume overlay command returned nil message")
+	if resumeCmd != nil {
+		model = applyOverlayCmd(t, model, resumeCmd)
 	}
 	overlay.Reset()
 
@@ -4898,6 +4934,51 @@ func TestPausedOverlayClearDoesNotRaceAfterResume(t *testing.T) {
 	}
 	if overlay.Len() != 0 {
 		t.Fatalf("stale pause clear wrote overlay commands after resume:\n%s", overlay.String())
+	}
+}
+
+func TestOverlayResumeResyncsWhenPauseClearAppliedFirst(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+
+	initial := model.syncOverlayCmd()
+	if initial == nil {
+		t.Fatal("initial syncOverlayCmd() = nil, want add command")
+	}
+	model = applyOverlayCmd(t, model, initial)
+	overlay.Reset()
+
+	model.pauseOverlays(true, false)
+	clearCmd := model.syncOverlayCmd()
+	if clearCmd == nil {
+		t.Fatal("paused syncOverlayCmd() = nil, want clear command")
+	}
+	model = applyOverlayCmd(t, model, clearCmd)
+	if !strings.Contains(overlay.String(), `"action":"remove"`) {
+		t.Fatalf("pause clear did not remove overlay:\n%s", overlay.String())
+	}
+	if model.overlaySignature != "" {
+		t.Fatalf("overlaySignature = %q, want cleared after applied pause clear", model.overlaySignature)
+	}
+	overlay.Reset()
+
+	resumed, resumeCmd := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
+	model = resumed.(Model)
+	if resumeCmd == nil {
+		t.Fatal("resume command = nil, want overlay add after applied pause clear")
+	}
+	model = applyOverlayCmd(t, model, resumeCmd)
+	if !strings.Contains(overlay.String(), `"action":"add"`) {
+		t.Fatalf("resume did not re-add overlay:\n%s", overlay.String())
+	}
+	if model.overlaySignature == "" {
+		t.Fatal("overlaySignature is empty after applied resume")
 	}
 }
 
@@ -4982,9 +5063,7 @@ func TestSyncOverlayCmdClearsWhileSyncOverlayVisible(t *testing.T) {
 	if first == nil {
 		t.Fatal("syncOverlayCmd() = nil, want initial add command")
 	}
-	if msg := first(); msg == nil {
-		t.Fatal("initial overlay command returned nil message")
-	}
+	model = applyOverlayCmd(t, model, first)
 	overlay.Reset()
 	model.syncOverlay.Visible = true
 
@@ -4992,14 +5071,12 @@ func TestSyncOverlayCmdClearsWhileSyncOverlayVisible(t *testing.T) {
 	if clearCmd == nil {
 		t.Fatal("syncOverlayCmd() = nil, want clear command while sync overlay is visible")
 	}
-	if model.overlaySignature != "" {
-		t.Fatalf("overlaySignature = %q, want empty", model.overlaySignature)
-	}
-	if msg := clearCmd(); msg == nil {
-		t.Fatal("clear overlay command returned nil message")
-	}
+	model = applyOverlayCmd(t, model, clearCmd)
 	if !strings.Contains(overlay.String(), `"action":"remove"`) {
 		t.Fatalf("clear overlay command did not remove overlays:\n%s", overlay.String())
+	}
+	if model.overlaySignature != "" {
+		t.Fatalf("overlaySignature = %q, want empty", model.overlaySignature)
 	}
 }
 
@@ -5355,9 +5432,11 @@ func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 	preview.Lines = []string{"fallback-overlay-line"}
 	model.previewCache[media.PreviewKey(request)] = preview
 
-	if cmd := model.syncOverlayCmd(); cmd == nil || model.overlaySignature == "" {
-		t.Fatal("syncOverlayCmd() did not mark overlay as active")
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want overlay command")
 	}
+	model = applyOverlayCmd(t, model, cmd)
 
 	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	model = updated.(Model)
@@ -5378,8 +5457,8 @@ func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 	if model.mediaOverlayPaused {
 		t.Fatal("mediaOverlayPaused = true, want resumed")
 	}
-	if model.overlaySignature == "" {
-		t.Fatal("overlaySignature is empty after resume, want overlay sync scheduled")
+	if model.overlaySignature == "" && !model.overlaySyncPending {
+		t.Fatal("overlay is neither active nor pending after resume")
 	}
 	view = stripANSI(model.View())
 	if strings.Contains(view, "fallback-overlay-line") {
@@ -6498,6 +6577,21 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 		Width:           request.Width,
 		Height:          request.Height,
 	}
+}
+
+func applyOverlayCmd(t *testing.T, model Model, cmd tea.Cmd) Model {
+	t.Helper()
+	msg := cmd()
+	overlayMsg, ok := msg.(mediaOverlayMsg)
+	if !ok {
+		t.Fatalf("overlay command message = %T, want mediaOverlayMsg", msg)
+	}
+	updated, _ := model.Update(overlayMsg)
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("updated model = %T, want Model", updated)
+	}
+	return next
 }
 
 func cacheChatAvatarOverlayPreview(t *testing.T, model *Model, chat store.Chat, sourcePath string, lines ...string) {

@@ -160,7 +160,8 @@ type audioFinishedMsg struct {
 }
 
 type mediaOverlayMsg struct {
-	Err error
+	Signature string
+	Err       error
 }
 
 type overlayResumeMsg struct {
@@ -241,6 +242,8 @@ type Model struct {
 	previewGeneration          int
 	overlay                    *media.OverlayManager
 	overlaySignature           string
+	overlaySyncPending         bool
+	overlayPendingSignature    string
 	mediaOverlayPaused         bool
 	avatarOverlayPaused        bool
 	overlayPauseGeneration     int
@@ -781,7 +784,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mediaOverlayMsg:
 		if msg.Err != nil {
 			m.overlaySignature = ""
+			m.overlaySyncPending = false
+			m.overlayPendingSignature = ""
 			m.status = fmt.Sprintf("overlay failed: %s", shortError(msg.Err))
+			return m, nil
+		}
+		if m.overlaySyncPending && msg.Signature == m.overlayPendingSignature {
+			m.overlaySignature = msg.Signature
+			m.overlaySyncPending = false
+			m.overlayPendingSignature = ""
 		}
 		return m, nil
 	case overlayResumeMsg:
@@ -2706,7 +2717,7 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	}
 	placements := m.syncableOverlayPlacements()
 	signature := overlayPlacementsSignature(placements)
-	if signature == m.overlaySignature {
+	if signature == m.overlaySignature || (m.overlaySyncPending && signature == m.overlayPendingSignature) {
 		return nil
 	}
 	if signature == "" {
@@ -2715,23 +2726,38 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.overlay == nil {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 	}
-	m.overlaySignature = signature
+	m.overlaySyncPending = true
+	m.overlayPendingSignature = signature
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
-		return mediaOverlayMsg{Err: manager.SyncEpoch(context.Background(), epoch, placements)}
+		return mediaOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(context.Background(), epoch, placements),
+		}
 	}
 }
 
 func (m *Model) syncEmptyOverlayCmd() tea.Cmd {
-	m.overlaySignature = ""
-	if m.overlay == nil {
+	signature := ""
+	if signature == m.overlaySignature || (m.overlaySyncPending && signature == m.overlayPendingSignature) {
 		return nil
 	}
+	if m.overlay == nil {
+		m.overlaySignature = ""
+		m.overlaySyncPending = false
+		m.overlayPendingSignature = ""
+		return nil
+	}
+	m.overlaySyncPending = true
+	m.overlayPendingSignature = signature
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
-		return mediaOverlayMsg{Err: manager.SyncEpoch(context.Background(), epoch, nil)}
+		return mediaOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+		}
 	}
 }
 
@@ -2747,13 +2773,22 @@ func (m Model) syncableOverlayPlacements() []media.Placement {
 }
 
 func (m *Model) clearOverlayCmd() tea.Cmd {
-	m.overlaySignature = ""
+	signature := ""
 	if m.overlay == nil {
+		m.overlaySignature = ""
+		m.overlaySyncPending = false
+		m.overlayPendingSignature = ""
 		return nil
 	}
+	m.overlaySyncPending = true
+	m.overlayPendingSignature = signature
 	manager := m.overlay
+	epoch := manager.Epoch()
 	return func() tea.Msg {
-		return mediaOverlayMsg{Err: manager.Remove(context.Background())}
+		return mediaOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+		}
 	}
 }
 
