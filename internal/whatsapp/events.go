@@ -62,6 +62,27 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return []Event{connectionEvent(ConnectionOffline, event.String())}
 	case *events.ManualLoginReconnect:
 		return []Event{connectionEvent(ConnectionReconnecting, "manual reconnect requested")}
+	case *events.OfflineSyncPreview:
+		return []Event{{
+			Kind: EventOfflineSync,
+			Offline: OfflineSyncEvent{
+				Active:         true,
+				Total:          event.Total,
+				AppDataChanges: event.AppDataChanges,
+				Messages:       event.Messages,
+				Notifications:  event.Notifications,
+				Receipts:       event.Receipts,
+			},
+		}}
+	case *events.OfflineSyncCompleted:
+		return []Event{{
+			Kind: EventOfflineSync,
+			Offline: OfflineSyncEvent{
+				Completed: true,
+				Total:     event.Count,
+				Processed: event.Count,
+			},
+		}}
 	case *events.Message:
 		return normalizeMessageEvent(event)
 	case *events.Receipt:

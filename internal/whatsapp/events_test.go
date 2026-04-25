@@ -84,6 +84,35 @@ func TestNormalizeMessageEventExtractsTextQuoteAndMedia(t *testing.T) {
 	}
 }
 
+func TestNormalizeOfflineSyncEvents(t *testing.T) {
+	preview := normalizeWhatsmeowEvent(&events.OfflineSyncPreview{
+		Total:          12,
+		AppDataChanges: 2,
+		Messages:       5,
+		Notifications:  1,
+		Receipts:       4,
+	})
+	if len(preview) != 1 || preview[0].Kind != EventOfflineSync {
+		t.Fatalf("preview normalized = %+v, want one offline sync event", preview)
+	}
+	if got := preview[0].Offline; !got.Active ||
+		got.Total != 12 ||
+		got.AppDataChanges != 2 ||
+		got.Messages != 5 ||
+		got.Notifications != 1 ||
+		got.Receipts != 4 {
+		t.Fatalf("preview offline sync = %+v", got)
+	}
+
+	completed := normalizeWhatsmeowEvent(&events.OfflineSyncCompleted{Count: 12})
+	if len(completed) != 1 || completed[0].Kind != EventOfflineSync {
+		t.Fatalf("completed normalized = %+v, want one offline sync event", completed)
+	}
+	if got := completed[0].Offline; !got.Completed || got.Total != 12 || got.Processed != 12 {
+		t.Fatalf("completed offline sync = %+v", got)
+	}
+}
+
 func TestNormalizeMessageEventUsesJIDTitleForOutgoingDirectMessages(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	chat := types.NewJID("12345", types.DefaultUserServer)

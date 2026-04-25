@@ -972,6 +972,61 @@ func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
 	}
 }
 
+func TestSyncOverlayRendersAndBlocksInput(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 96
+	model.height = 24
+
+	updated, _ := model.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
+		Active:    true,
+		Total:     4,
+		Processed: 2,
+		Messages:  3,
+		Receipts:  1,
+	}})
+	view := stripANSI(updated.View())
+	for _, want := range []string{"Syncing WhatsApp updates", "2/4 events (50%)", "3 messages", "Input is paused"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("sync overlay missing %q\n%s", want, view)
+		}
+	}
+
+	blocked, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if blocked.(Model).activeChat != 0 {
+		t.Fatalf("activeChat = %d, want input blocked at 0", blocked.(Model).activeChat)
+	}
+}
+
+func TestSyncOverlayCompletesAndClears(t *testing.T) {
+	model := NewModel(Options{})
+	model.width = 80
+	model.height = 20
+
+	updated, _ := model.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
+		Completed: true,
+		Total:     8,
+		Processed: 8,
+	}})
+	if view := stripANSI(updated.View()); !strings.Contains(view, "Sync complete") {
+		t.Fatalf("completed overlay missing\n%s", view)
+	}
+
+	cleared, _ := updated.Update(syncOverlayDoneMsg{Generation: updated.syncOverlay.Generation})
+	if view := stripANSI(cleared.(Model).View()); strings.Contains(view, "Sync complete") {
+		t.Fatalf("completed overlay did not clear\n%s", view)
+	}
+}
+
 func TestSnapshotReloadKeepsCurrentChatWhenRequestWasStale(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

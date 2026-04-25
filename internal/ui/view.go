@@ -63,6 +63,9 @@ func (m Model) View() string {
 }
 
 func (m Model) renderBody(height int) string {
+	if m.syncOverlay.Visible {
+		return m.renderSyncOverlay(m.width, height)
+	}
 	if m.helpVisible {
 		return m.renderPanel(FocusMessages, m.width, height, m.renderHelp(panelContentWidth(m.panelStyle(FocusMessages), m.width)))
 	}
@@ -97,6 +100,102 @@ func (m Model) renderBody(height int) string {
 
 	info := m.renderPanel(FocusPreview, previewWidth, height, m.renderInfo(panelContentWidth(m.panelStyle(FocusPreview), previewWidth)))
 	return lipgloss.JoinHorizontal(lipgloss.Top, chats, messages, info)
+}
+
+func (m Model) renderSyncOverlay(width, height int) string {
+	panelWidth := min(max(44, width*2/3), max(1, width-4))
+	if width < 48 {
+		panelWidth = max(1, width)
+	}
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeBorder).
+		Padding(1, 2).
+		Width(max(1, panelWidth-2))
+
+	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
+	title := "Syncing WhatsApp updates"
+	subtitle := "New chats and messages are being applied locally."
+	if m.syncOverlay.Completed {
+		title = "Sync complete"
+		subtitle = "Latest WhatsApp data was applied."
+	}
+
+	lines := []string{
+		lipgloss.NewStyle().Foreground(accentFG).Bold(true).Render(truncateDisplay(title, contentWidth)),
+		lipgloss.NewStyle().Foreground(softFG).Render(wrapPlainText(subtitle, contentWidth)),
+		"",
+		m.renderSyncProgressBar(contentWidth),
+		m.renderSyncProgressText(contentWidth),
+	}
+	if counts := m.renderSyncCounts(contentWidth); counts != "" {
+		lines = append(lines, "", counts)
+	}
+	if m.syncOverlay.Active {
+		lines = append(lines, "", lipgloss.NewStyle().Foreground(warnFG).Render(truncateDisplay("Input is paused while sync finishes.", contentWidth)))
+	}
+
+	panel := style.Render(strings.Join(lines, "\n"))
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		panel,
+		lipgloss.WithWhitespaceChars(" "),
+	)
+}
+
+func (m Model) renderSyncProgressBar(width int) string {
+	width = max(1, width)
+	barWidth := min(40, max(10, width-2))
+	processed := max(0, m.syncOverlay.Processed)
+	total := max(0, m.syncOverlay.Total)
+	filled := 0
+	if total > 0 {
+		filled = processed * barWidth / total
+		if processed > 0 && filled == 0 {
+			filled = 1
+		}
+		filled = clamp(filled, 0, barWidth)
+	} else if m.syncOverlay.Active {
+		filled = min(3, barWidth)
+	}
+	bar := "[" + strings.Repeat("#", filled) + strings.Repeat("-", max(0, barWidth-filled)) + "]"
+	return lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay(bar, width))
+}
+
+func (m Model) renderSyncProgressText(width int) string {
+	processed := max(0, m.syncOverlay.Processed)
+	total := max(0, m.syncOverlay.Total)
+	if total > 0 {
+		percent := processed * 100 / total
+		return lipgloss.NewStyle().Foreground(primaryFG).Render(truncateDisplay(fmt.Sprintf("%d/%d events (%d%%)", processed, total, percent), width))
+	}
+	if processed > 0 {
+		return lipgloss.NewStyle().Foreground(primaryFG).Render(truncateDisplay(fmt.Sprintf("%d events processed", processed), width))
+	}
+	return lipgloss.NewStyle().Foreground(primaryFG).Render(truncateDisplay("Waiting for sync details", width))
+}
+
+func (m Model) renderSyncCounts(width int) string {
+	var parts []string
+	if m.syncOverlay.Messages > 0 {
+		parts = append(parts, fmt.Sprintf("%d messages", m.syncOverlay.Messages))
+	}
+	if m.syncOverlay.Receipts > 0 {
+		parts = append(parts, fmt.Sprintf("%d receipts", m.syncOverlay.Receipts))
+	}
+	if m.syncOverlay.Notifications > 0 {
+		parts = append(parts, fmt.Sprintf("%d notifications", m.syncOverlay.Notifications))
+	}
+	if m.syncOverlay.AppDataChanges > 0 {
+		parts = append(parts, fmt.Sprintf("%d app updates", m.syncOverlay.AppDataChanges))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay(strings.Join(parts, " | "), width))
 }
 
 func (m Model) renderPanel(focus Focus, width, height int, content string) string {
@@ -1997,6 +2096,9 @@ func (m Model) footerChatTitle() string {
 }
 
 func (m Model) inputHeight() int {
+	if m.syncOverlay.Visible {
+		return 0
+	}
 	switch m.mode {
 	case ModeCommand, ModeSearch, ModeConfirm:
 		return 1

@@ -399,6 +399,122 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	}
 }
 
+func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 8),
+	}
+	notifier := &fakeNotifier{
+		notifications: make(chan notify.Notification, 4),
+		report:        notify.Report{Selected: notify.BackendCommand},
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		OpenNotifier: func(config.Config) notify.Notifier {
+			return notifier
+		},
+	}
+
+	updates := make(chan ui.LiveUpdate, 16)
+	activeChat := make(chan string, 1)
+	appFocus := make(chan bool, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+	activeChat <- "other-chat"
+	appFocus <- true
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventOfflineSync,
+		Offline: whatsapp.OfflineSyncEvent{
+			Active:   true,
+			Total:    2,
+			Messages: 1,
+			Receipts: 1,
+		},
+	}
+	start := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Active
+	})
+	if start.Sync.Total != 2 || start.Sync.Messages != 1 || start.Refresh {
+		t.Fatalf("offline sync start update = %+v", start)
+	}
+
+	when := time.Unix(1_700_000_000, 0)
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "missed message",
+			NotificationPreview: "missed message",
+			Timestamp:           when,
+			Status:              "received",
+		},
+	}
+	_ = waitForStoredMessages(t, db, "chat-1", 1)
+	assertNoLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh
+	})
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventOfflineSync,
+		Offline: whatsapp.OfflineSyncEvent{
+			Completed: true,
+			Total:     2,
+			Processed: 2,
+		},
+	}
+	completed := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Completed
+	})
+	if !completed.Refresh || completed.Sync.Processed != 2 || completed.Sync.Total != 2 {
+		t.Fatalf("offline sync completed update = %+v", completed)
+	}
+	assertNotificationCount(t, notifier.notifications, 0)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
 func TestHandleDeleteEveryoneRequestSendsRemoteRevokeBeforeLocalDelete(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
@@ -1867,6 +1983,21 @@ func waitForLiveUpdate(t *testing.T, updates <-chan ui.LiveUpdate, match func(ui
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for live update")
+		}
+	}
+}
+
+func assertNoLiveUpdate(t *testing.T, updates <-chan ui.LiveUpdate, match func(ui.LiveUpdate) bool) {
+	t.Helper()
+	deadline := time.After(150 * time.Millisecond)
+	for {
+		select {
+		case update := <-updates:
+			if match(update) {
+				t.Fatalf("unexpected live update = %+v", update)
+			}
+		case <-deadline:
+			return
 		}
 	}
 }

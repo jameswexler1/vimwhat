@@ -446,6 +446,8 @@ const (
 	mediaDownloadTimeout       = 5 * time.Minute
 	avatarRefreshQueueSize     = 32
 	avatarRefreshTimeout       = 30 * time.Second
+	offlineSyncProgressEvery   = 150 * time.Millisecond
+	offlineSyncInactivity      = 15 * time.Second
 )
 
 type textSendRequest struct {
@@ -682,6 +684,35 @@ func runLiveWhatsApp(
 	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
+	offlineSync := offlineSyncState{}
+	var offlineSyncTimer *time.Timer
+	var offlineSyncTimerC <-chan time.Time
+	resetOfflineSyncTimer := func() {
+		if offlineSyncTimer == nil {
+			offlineSyncTimer = time.NewTimer(offlineSyncInactivity)
+		} else {
+			if !offlineSyncTimer.Stop() {
+				select {
+				case <-offlineSyncTimer.C:
+				default:
+				}
+			}
+			offlineSyncTimer.Reset(offlineSyncInactivity)
+		}
+		offlineSyncTimerC = offlineSyncTimer.C
+	}
+	clearOfflineSyncTimer := func() {
+		if offlineSyncTimer != nil {
+			if !offlineSyncTimer.Stop() {
+				select {
+				case <-offlineSyncTimer.C:
+				default:
+				}
+			}
+		}
+		offlineSyncTimerC = nil
+	}
+	defer clearOfflineSyncTimer()
 	for {
 		select {
 		case event, ok := <-events:
@@ -694,6 +725,30 @@ func runLiveWhatsApp(
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
 				continue
+			}
+			if event.Kind == whatsapp.EventOfflineSync {
+				now := time.Now()
+				if event.Offline.Active {
+					syncUpdate := offlineSync.start(event.Offline, now)
+					resetOfflineSyncTimer()
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Status: "syncing WhatsApp updates",
+						Sync:   &syncUpdate,
+					})
+					continue
+				}
+				if event.Offline.Completed {
+					syncUpdate, dirty := offlineSync.finish(event.Offline)
+					clearOfflineSyncTimer()
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Refresh:         dirty,
+						Status:          "sync complete",
+						PreferredChatID: pendingPreferredChatID,
+						Sync:            &syncUpdate,
+					})
+					pendingPreferredChatID = ""
+					continue
+				}
 			}
 			if event.Kind == whatsapp.EventChatUpsert {
 				mergedAliases, err := mergeEventChatAliases(ctx, env.Store, event.Chat)
@@ -738,6 +793,13 @@ func runLiveWhatsApp(
 			}
 			if event.Kind == whatsapp.EventHistoryStatus {
 				delete(historyInflight, event.History.ChatID)
+				if offlineSync.active {
+					if syncUpdate, ok := offlineSync.markProcessed(time.Now()); ok {
+						sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+					}
+					resetOfflineSyncTimer()
+					continue
+				}
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 					Refresh:         true,
 					Status:          historyStatusLine(event.History),
@@ -746,6 +808,14 @@ func runLiveWhatsApp(
 					PreferredChatID: pendingPreferredChatID,
 				})
 				pendingPreferredChatID = ""
+				continue
+			}
+			if offlineSync.active {
+				syncUpdate, shouldSend := offlineSync.markProcessed(time.Now())
+				resetOfflineSyncTimer()
+				if shouldSend {
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+				}
 				continue
 			}
 			if isHistoricalImportEvent(event) {
@@ -812,6 +882,10 @@ func runLiveWhatsApp(
 					ingested++
 				}
 				update := ui.LiveUpdate{Refresh: ingested > 0}
+				if offlineSync.active && update.Refresh {
+					offlineSync.dirty = true
+					update.Refresh = false
+				}
 				if result.Err != nil {
 					update.Status = fmt.Sprintf("metadata refresh failed: %s", shortStatusError(result.Err))
 				}
@@ -868,9 +942,95 @@ func runLiveWhatsApp(
 					Status:  result.Status,
 				})
 			}
+		case <-offlineSyncTimerC:
+			if offlineSync.active {
+				syncUpdate, dirty := offlineSync.finish(whatsapp.OfflineSyncEvent{
+					Completed: true,
+					Total:     offlineSync.total,
+					Processed: offlineSync.processed,
+				})
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Refresh:         dirty,
+					Status:          "sync stalled; refreshed latest data",
+					PreferredChatID: pendingPreferredChatID,
+					Sync:            &syncUpdate,
+				})
+				pendingPreferredChatID = ""
+			}
+			clearOfflineSyncTimer()
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+type offlineSyncState struct {
+	active         bool
+	dirty          bool
+	total          int
+	processed      int
+	appDataChanges int
+	messages       int
+	notifications  int
+	receipts       int
+	lastProgress   time.Time
+}
+
+func (s *offlineSyncState) start(event whatsapp.OfflineSyncEvent, now time.Time) ui.SyncProgressUpdate {
+	*s = offlineSyncState{
+		active:         true,
+		total:          max(0, event.Total),
+		appDataChanges: max(0, event.AppDataChanges),
+		messages:       max(0, event.Messages),
+		notifications:  max(0, event.Notifications),
+		receipts:       max(0, event.Receipts),
+		lastProgress:   now,
+	}
+	return s.liveUpdate(true, false)
+}
+
+func (s *offlineSyncState) markProcessed(now time.Time) (ui.SyncProgressUpdate, bool) {
+	if !s.active {
+		return ui.SyncProgressUpdate{}, false
+	}
+	s.dirty = true
+	s.processed++
+	if s.total > 0 && s.processed > s.total {
+		s.processed = s.total
+	}
+	if !s.lastProgress.IsZero() && now.Sub(s.lastProgress) < offlineSyncProgressEvery && (s.total == 0 || s.processed < s.total) {
+		return ui.SyncProgressUpdate{}, false
+	}
+	s.lastProgress = now
+	return s.liveUpdate(true, false), true
+}
+
+func (s *offlineSyncState) finish(event whatsapp.OfflineSyncEvent) (ui.SyncProgressUpdate, bool) {
+	if event.Total > s.total {
+		s.total = event.Total
+	}
+	if event.Processed > s.processed {
+		s.processed = event.Processed
+	}
+	if s.total > 0 {
+		s.processed = s.total
+	}
+	dirty := s.dirty
+	update := s.liveUpdate(false, true)
+	*s = offlineSyncState{}
+	return update, dirty
+}
+
+func (s offlineSyncState) liveUpdate(active, completed bool) ui.SyncProgressUpdate {
+	return ui.SyncProgressUpdate{
+		Active:         active,
+		Completed:      completed,
+		Total:          s.total,
+		Processed:      s.processed,
+		AppDataChanges: s.appDataChanges,
+		Messages:       s.messages,
+		Notifications:  s.notifications,
+		Receipts:       s.receipts,
 	}
 }
 

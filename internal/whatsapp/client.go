@@ -1047,6 +1047,7 @@ const (
 	EventMediaMetadata    EventKind = "media_metadata"
 	EventConnectionState  EventKind = "connection_state"
 	EventHistoryStatus    EventKind = "history_status"
+	EventOfflineSync      EventKind = "offline_sync"
 	EventContactUpsert    EventKind = "contact_upsert"
 	EventChatAvatarUpdate EventKind = "chat_avatar_update"
 )
@@ -1073,6 +1074,7 @@ type Event struct {
 	Media      MediaEvent
 	Connection ConnectionEvent
 	History    HistoryEvent
+	Offline    OfflineSyncEvent
 	Contact    ContactEvent
 	Avatar     AvatarEvent
 }
@@ -1145,6 +1147,17 @@ type HistoryEvent struct {
 	Messages       int
 	Exhausted      bool
 	TerminalReason string
+}
+
+type OfflineSyncEvent struct {
+	Active         bool
+	Completed      bool
+	Total          int
+	Processed      int
+	AppDataChanges int
+	Messages       int
+	Notifications  int
+	Receipts       int
 }
 
 type ReceiptEvent struct {

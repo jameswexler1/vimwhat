@@ -56,6 +56,18 @@ type LiveUpdate struct {
 	ReadChatID      string
 	PreferredChatID string
 	Presence        PresenceUpdate
+	Sync            *SyncProgressUpdate
+}
+
+type SyncProgressUpdate struct {
+	Active         bool
+	Completed      bool
+	Total          int
+	Processed      int
+	AppDataChanges int
+	Messages       int
+	Notifications  int
+	Receipts       int
 }
 
 type PresenceUpdate struct {
@@ -85,6 +97,10 @@ type snapshotReloadedMsg struct {
 }
 
 type refreshDebouncedMsg struct{}
+
+type syncOverlayDoneMsg struct {
+	Generation int
+}
 
 type presenceExpiredMsg struct {
 	ChatID string
@@ -298,11 +314,26 @@ type Model struct {
 	requireOnlineForSend       bool
 	messageLimitsByChat        map[string]int
 	historyRequestedByChat     map[string]bool
+	syncOverlay                syncOverlayState
 }
 
 const messageLoadLimit = 200
 const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
+const syncOverlayCompleteDelay = 600 * time.Millisecond
+
+type syncOverlayState struct {
+	Visible        bool
+	Active         bool
+	Completed      bool
+	Generation     int
+	Total          int
+	Processed      int
+	AppDataChanges int
+	Messages       int
+	Notifications  int
+	Receipts       int
+}
 
 func Run(opts Options) error {
 	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen(), tea.WithReportFocus())
@@ -470,6 +501,11 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	if strings.TrimSpace(update.Status) != "" {
 		m.status = update.Status
 	}
+	if update.Sync != nil {
+		var syncCmd tea.Cmd
+		m, syncCmd = m.handleSyncProgress(*update.Sync)
+		cmds = append(cmds, syncCmd)
+	}
 	if update.HistoryChatID != "" && update.HistoryMessages > 0 {
 		m.addMessageLimit(update.HistoryChatID, update.HistoryMessages)
 	}
@@ -508,6 +544,45 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	}
 	cmds = append(cmds, m.waitForLiveUpdateCmd())
 	return m, batchCmds(cmds...)
+}
+
+func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
+	m.syncOverlay.Generation++
+	m.syncOverlay.Visible = update.Active || update.Completed
+	m.syncOverlay.Active = update.Active
+	m.syncOverlay.Completed = update.Completed
+	m.syncOverlay.Total = max(0, update.Total)
+	m.syncOverlay.Processed = max(0, update.Processed)
+	m.syncOverlay.AppDataChanges = max(0, update.AppDataChanges)
+	m.syncOverlay.Messages = max(0, update.Messages)
+	m.syncOverlay.Notifications = max(0, update.Notifications)
+	m.syncOverlay.Receipts = max(0, update.Receipts)
+	if m.syncOverlay.Total > 0 && m.syncOverlay.Processed > m.syncOverlay.Total {
+		m.syncOverlay.Processed = m.syncOverlay.Total
+	}
+	if update.Active {
+		m.leaderPending = false
+		m.leaderSequence = ""
+		if strings.TrimSpace(m.status) == "" || m.status == "ready" {
+			m.status = "syncing WhatsApp updates"
+		}
+		return m, nil
+	}
+	if update.Completed {
+		if strings.TrimSpace(m.status) == "" || strings.Contains(strings.ToLower(m.status), "syncing") {
+			m.status = "sync complete"
+		}
+		generation := m.syncOverlay.Generation
+		return m, syncOverlayDoneCmd(generation)
+	}
+	m.syncOverlay = syncOverlayState{}
+	return m, nil
+}
+
+func syncOverlayDoneCmd(generation int) tea.Cmd {
+	return tea.Tick(syncOverlayCompleteDelay, func(time.Time) tea.Msg {
+		return syncOverlayDoneMsg{Generation: generation}
+	})
 }
 
 const presenceTTL = 6 * time.Second
@@ -607,6 +682,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshDebouncedMsg:
 		next, cmd := m.handleRefreshDebounced()
 		return next.withPreviewCmd(cmd)
+	case syncOverlayDoneMsg:
+		if msg.Generation == m.syncOverlay.Generation && m.syncOverlay.Completed {
+			m.syncOverlay = syncOverlayState{}
+		}
+		return m, nil
 	case presenceExpiredMsg:
 		if presence, ok := m.presenceByChat[msg.ChatID]; ok && !presence.ExpiresAt.After(msg.At) {
 			delete(m.presenceByChat, msg.ChatID)
@@ -698,6 +778,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.keyMatches(msg, m.config.Keymap.GlobalQuit) {
 		m.quitting = true
 		return m, tea.Quit
+	}
+	if m.syncOverlay.Visible {
+		return m, nil
 	}
 	if m.leaderPending {
 		return m.handleLeaderKey(msg)
