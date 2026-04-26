@@ -16,5 +16,5 @@ func platformPrefersCompatEmoji(term string) bool {
 	if strings.Contains(program, "wezterm") {
 		return false
 	}
-	return strings.TrimSpace(os.Getenv("WT_SESSION")) == ""
+	return true
 }

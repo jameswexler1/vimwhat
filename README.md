@@ -217,7 +217,7 @@ Remote media starts as metadata in SQLite. Opening, previewing, saving, or runni
 
 ## Emoji and theming
 
-Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` and classic Windows console hosts that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
+Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` and Windows Terminal/classic Windows console hosts that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
 
 On Windows, run `vimwhat doctor` if the TUI looks wrong. It reports the terminal environment variables used for media, emoji, and focus-reporting decisions. Older console hosts may not support all optional terminal features; Windows focus reporting is enabled only for known modern hosts or with `VIMWHAT_FORCE_REPORT_FOCUS=1`.
 
