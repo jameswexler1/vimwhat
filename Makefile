@@ -12,7 +12,7 @@ test:
 	GOCACHE=$(GOCACHE) go test ./...
 
 test-windows:
-	GOCACHE=$(GOCACHE) GOOS=windows GOARCH=amd64 go test ./... -run ^$ -exec=true
+	GOCACHE=$(GOCACHE) GOOS=windows GOARCH=amd64 go test ./... -run '^$$' -exec=true
 
 lint:
 	GOCACHE=$(GOCACHE) go vet ./...
