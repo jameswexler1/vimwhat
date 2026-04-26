@@ -8,6 +8,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 - Go CLI entrypoint with `vimwhat`, `doctor`, `demo seed`, and `demo clear`.
 - Native Linux and Windows config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
+- GitHub Actions CI validates Linux tests/vet, checks the Windows build graph, and uploads Windows amd64/arm64 binaries for machines where local Windows builds are not available.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, normal/visual message yanking, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.

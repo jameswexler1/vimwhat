@@ -110,6 +110,8 @@ go fmt ./...
 
 The `Makefile` defaults `GOCACHE` to `/tmp/vimwhat-go-build`, which keeps builds working in constrained environments where the normal Go cache path is read-only.
 
+GitHub Actions is configured in `.github/workflows/ci.yml` to run tests, vet, the Windows build-graph check, and to upload `vimwhat-windows-amd64.exe` and `vimwhat-windows-arm64.exe` artifacts from every run.
+
 ## Runtime state
 
 Runtime state is kept out of the repository:
