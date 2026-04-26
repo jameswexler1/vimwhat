@@ -7200,6 +7200,7 @@ func (p *fakeAudioProcess) Stop() error {
 
 func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 	t.Helper()
+	ensureTestOverlayManager(model)
 	message := model.messagesByChat["chat-1"][0]
 	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
 	if !ok {
@@ -7236,6 +7237,7 @@ func applyOverlayCmd(t *testing.T, model Model, cmd tea.Cmd) Model {
 
 func cacheChatAvatarOverlayPreview(t *testing.T, model *Model, chat store.Chat, sourcePath string, lines ...string) {
 	t.Helper()
+	ensureTestOverlayManager(model)
 	request, ok := model.chatAvatarPreviewRequest(chat)
 	if !ok {
 		t.Fatal("chatAvatarPreviewRequest() returned false")
@@ -7253,4 +7255,12 @@ func cacheChatAvatarOverlayPreview(t *testing.T, model *Model, chat store.Chat, 
 		Height:          request.Height,
 		Lines:           lines,
 	}
+}
+
+func ensureTestOverlayManager(model *Model) {
+	if model == nil || model.previewReport.Selected != media.BackendUeberzugPP || model.overlay != nil {
+		return
+	}
+	model.previewReport.UeberzugPPOutput = "test"
+	model.overlay = media.NewOverlayManagerForWriter(&bytes.Buffer{})
 }
