@@ -110,7 +110,20 @@ go fmt ./...
 
 The `Makefile` defaults `GOCACHE` to `/tmp/vimwhat-go-build`, which keeps builds working in constrained environments where the normal Go cache path is read-only.
 
-GitHub Actions is configured in `.github/workflows/ci.yml` to run tests, vet, the Windows build-graph check, and to upload `vimwhat-windows-amd64.exe` and `vimwhat-windows-arm64.exe` artifacts from every run.
+GitHub Actions is configured in `.github/workflows/ci.yml` to run tests, vet, the Windows build-graph check, and to upload `vimwhat-windows-amd64.exe` and `vimwhat-windows-arm64.exe` artifacts from every run. Pushes to `main`/`master`, or a manual workflow dispatch, also update the stable `windows-latest` GitHub release assets.
+
+For a Windows tester who already uses `C:\Users\Otavio\Zap\vimwhat\vimwhat.exe`, this PowerShell snippet updates the binary in place:
+
+```powershell
+$ErrorActionPreference = "Stop"
+$dir = "$env:USERPROFILE\Zap\vimwhat"
+$tmp = Join-Path $env:TEMP "vimwhat.exe"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest "https://github.com/jameswexler1/vimwhat/releases/download/windows-latest/vimwhat-windows-amd64.exe" -OutFile $tmp
+Move-Item -Force $tmp (Join-Path $dir "vimwhat.exe")
+Unblock-File (Join-Path $dir "vimwhat.exe") -ErrorAction SilentlyContinue
+& (Join-Path $dir "vimwhat.exe") doctor
+```
 
 ## Runtime state
 
