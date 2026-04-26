@@ -369,7 +369,7 @@ type syncOverlayState struct {
 }
 
 func Run(opts Options) error {
-	p := tea.NewProgram(NewModel(opts), tea.WithAltScreen(), tea.WithReportFocus())
+	p := tea.NewProgram(NewModel(opts), programOptions()...)
 	final, err := p.Run()
 	if closer, ok := final.(interface{ Close() error }); ok {
 		if closeErr := closer.Close(); err == nil {

@@ -211,13 +211,15 @@ All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<ac
 
 ## Media and previews
 
-`preview_backend = "auto"` chooses the best available inline renderer in this order: Sixel, `ueberzug++` where supported, `chafa`, external opener, none. Images, videos, stickers, and avatars can render inline when a capable backend is available. Videos use generated thumbnails when `ffmpeg` is available. Audio messages render as compact playback rows and use `audio_player_command`, which defaults to `mpv --no-video --no-terminal --really-quiet {path}` on Linux and the native Windows opener on Windows.
+`preview_backend = "auto"` chooses the best available renderer. On Linux the order is Sixel, `ueberzug++`, `chafa`, external opener, none. On Windows the order is Sixel, native external opener, `chafa`, none, so Windows does not default to low-resolution symbol previews when the native opener is available. Images, videos, stickers, and avatars can render inline when a capable backend is selected. Videos use generated thumbnails when `ffmpeg` is available. Audio messages render as compact playback rows and use `audio_player_command`, which defaults to `mpv --no-video --no-terminal --really-quiet {path}` on Linux and the native Windows opener on Windows.
 
 Remote media starts as metadata in SQLite. Opening, previewing, saving, or running `vimwhat media open <message-id>` can download it through the paired WhatsApp session when a download descriptor exists.
 
 ## Emoji and theming
 
-Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
+Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` and classic Windows console hosts that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
+
+On Windows, run `vimwhat doctor` if the TUI looks wrong. It reports the terminal environment variables used for media, emoji, and focus-reporting decisions. Older console hosts may not support all optional terminal features; Windows focus reporting is enabled only for known modern hosts or with `VIMWHAT_FORCE_REPORT_FOCUS=1`.
 
 Mode indicator colors default to pywal-derived theme colors:
 

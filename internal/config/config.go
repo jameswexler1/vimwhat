@@ -237,7 +237,7 @@ func ResolveEmojiModeForEnv(mode, term, lcAll, lcCtype, lang string) string {
 	case EmojiModeCompat:
 		return EmojiModeCompat
 	case "", EmojiModeAuto:
-		if terminalPrefersCompatEmoji(term) || !LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang) {
+		if terminalPrefersCompatEmoji(term) || platformPrefersCompatEmoji(term) || !LocaleLooksUTF8ForEnv(lcAll, lcCtype, lang) {
 			return EmojiModeCompat
 		}
 		return EmojiModeFull

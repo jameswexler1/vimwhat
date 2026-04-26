@@ -17,3 +17,7 @@ func platformExternalOpenerAvailable() bool {
 func platformExternalOpenerUnavailableReason() string {
 	return "rundll32.exe/explorer.exe not found in PATH"
 }
+
+func platformBackendOrder() []Backend {
+	return []Backend{BackendSixel, BackendExternal, BackendChafa, BackendUeberzugPP}
+}

@@ -2719,6 +2719,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("downloads dir: %s", env.Config.DownloadsDir),
 		fmt.Sprintf("leader key: %s", env.Config.LeaderKey),
 		fmt.Sprintf("emoji mode: %s -> %s (TERM=%s UTF-8=%s)", emojiMode, resolvedEmojiMode, emptyAsAuto(os.Getenv("TERM")), yesNo(config.LocaleLooksUTF8())),
+		fmt.Sprintf("terminal env: %s", terminalEnvSummary()),
 		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
 		fmt.Sprintf("video player command: %s", emptyAsAuto(env.Config.VideoPlayerCommand)),
 		fmt.Sprintf("audio player command: %s", emptyAsAuto(env.Config.AudioPlayerCommand)),
@@ -2753,6 +2754,15 @@ func emptyAsAuto(value string) string {
 		return "auto"
 	}
 	return value
+}
+
+func terminalEnvSummary() string {
+	keys := []string{"TERM", "TERM_PROGRAM", "COLORTERM", "WT_SESSION", "ConEmuANSI", "ANSICON", "VIMWHAT_FORCE_SIXEL", "VIMWHAT_FORCE_REPORT_FOCUS", "VIMWHAT_DISABLE_REPORT_FOCUS"}
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, emptyAsAuto(os.Getenv(key))))
+	}
+	return strings.Join(parts, " ")
 }
 
 func yesNo(value bool) string {

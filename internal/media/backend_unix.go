@@ -25,3 +25,7 @@ func platformExternalOpenerAvailable() bool {
 func platformExternalOpenerUnavailableReason() string {
 	return "xdg-open not found in PATH"
 }
+
+func platformBackendOrder() []Backend {
+	return []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal}
+}

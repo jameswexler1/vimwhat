@@ -40,7 +40,7 @@ func Detect(requested string) Report {
 	}
 
 	available := detectAvailable()
-	order := []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal}
+	order := platformBackendOrder()
 
 	for _, backend := range order {
 		if available[backend] {
