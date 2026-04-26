@@ -63,15 +63,10 @@ func Load(paths Paths) (Config, error) {
 }
 
 func Default(paths Paths) Config {
-	editor := strings.TrimSpace(os.Getenv("EDITOR"))
-	if editor == "" {
-		editor = "vi"
-	}
-
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:              editor,
+		Editor:              platformDefaultEditor(),
 		PreviewBackend:      "auto",
 		EmojiMode:           EmojiModeAuto,
 		IndicatorNormal:     IndicatorPywal,
@@ -80,11 +75,11 @@ func Default(paths Paths) Config {
 		IndicatorCommand:    IndicatorPywal,
 		IndicatorSearch:     IndicatorPywal,
 		NotificationBackend: "auto",
-		FilePickerCommand:   "yazi --chooser-file {chooser}",
-		ImageViewerCommand:  "nsxiv {path}",
-		VideoPlayerCommand:  "mpv {path}",
-		AudioPlayerCommand:  "mpv --no-video --no-terminal --really-quiet {path}",
-		FileOpenerCommand:   "xdg-open {path}",
+		FilePickerCommand:   platformDefaultFilePickerCommand(),
+		ImageViewerCommand:  platformDefaultImageViewerCommand(),
+		VideoPlayerCommand:  platformDefaultVideoPlayerCommand(),
+		AudioPlayerCommand:  platformDefaultAudioPlayerCommand(),
+		FileOpenerCommand:   platformDefaultFileOpenerCommand(),
 		LeaderKey:           "space",
 		Keymap:              DefaultKeymap(),
 		PreviewMaxWidth:     67,
@@ -383,7 +378,11 @@ func parseValue(value string) (string, error) {
 		if !strings.HasSuffix(value, "\"") || len(value) < 2 {
 			return "", fmt.Errorf("unterminated quoted string")
 		}
-		return strings.Trim(value, "\""), nil
+		parsed, err := strconv.Unquote(value)
+		if err != nil {
+			return "", err
+		}
+		return parsed, nil
 	}
 
 	return value, nil

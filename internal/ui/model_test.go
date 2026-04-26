@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -6716,6 +6717,9 @@ func TestDefaultRenderingAvoidsBackgroundFills(t *testing.T) {
 }
 
 func TestLoadThemeReadsPywalColors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pywal cache layout is Unix-specific")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	walDir := filepath.Join(home, ".cache", "wal")

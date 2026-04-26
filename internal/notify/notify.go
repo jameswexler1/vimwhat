@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"vimwhat/internal/commandline"
 	"vimwhat/internal/config"
 )
 
@@ -257,163 +257,6 @@ func detectConfiguredCommand(template string) (*commandCandidate, string) {
 	return &commandCandidate{name: argv[0], args: argv[1:]}, "configured override"
 }
 
-func detectLinuxDBus() (bool, string) {
-	if runtimeGOOS != "linux" {
-		return false, fmt.Sprintf("unsupported on %s", runtimeGOOS)
-	}
-	if !hasSessionBus() {
-		return false, "session D-Bus not detected"
-	}
-	for _, helper := range linuxNotificationHelpers() {
-		if _, err := lookPath(helper); err == nil {
-			return true, fmt.Sprintf("available via %s", helper)
-		}
-	}
-	return false, "no D-Bus notification helper found in PATH"
-}
-
-func detectMacOS() (bool, string) {
-	if runtimeGOOS != "darwin" {
-		return false, fmt.Sprintf("unsupported on %s", runtimeGOOS)
-	}
-	if _, err := lookPath("osascript"); err != nil {
-		return false, "osascript not found in PATH"
-	}
-	return true, "available via osascript"
-}
-
-func detectWindows() (bool, string) {
-	if runtimeGOOS != "windows" {
-		return false, fmt.Sprintf("unsupported on %s", runtimeGOOS)
-	}
-	if name := windowsPowerShellCommand(); name != "" {
-		return true, fmt.Sprintf("available via %s", name)
-	}
-	return false, "powershell.exe not found in PATH"
-}
-
-func sendLinuxDBus(ctx context.Context, note Notification) error {
-	if !hasSessionBus() {
-		return fmt.Errorf("session D-Bus not detected")
-	}
-	title := sanitizeNotificationText(note.Title, 96, "vimwhat")
-	body := sanitizeNotificationText(note.Body, 220, "")
-	iconPath := strings.TrimSpace(note.IconPath)
-	var failures []string
-	for _, helper := range linuxNotificationHelpers() {
-		if _, err := lookPath(helper); err != nil {
-			continue
-		}
-		var err error
-		switch helper {
-		case "gdbus":
-			err = runCommand(ctx, helper, []string{
-				"call",
-				"--session",
-				"--dest", "org.freedesktop.Notifications",
-				"--object-path", "/org/freedesktop/Notifications",
-				"--method", "org.freedesktop.Notifications.Notify",
-				"vimwhat",
-				"0",
-				iconPath,
-				title,
-				body,
-				"[]",
-				"{}",
-				"-1",
-			})
-		case "dbus-send":
-			err = runCommand(ctx, helper, []string{
-				"--session",
-				"--dest=org.freedesktop.Notifications",
-				"--type=method_call",
-				"/org/freedesktop/Notifications",
-				"org.freedesktop.Notifications.Notify",
-				"string:vimwhat",
-				"uint32:0",
-				"string:" + iconPath,
-				"string:" + title,
-				"string:" + body,
-				"array:string:",
-				"dict:string:string:",
-				"int32:-1",
-			})
-		case "notify-send":
-			args := []string{}
-			if iconPath != "" {
-				args = append(args, "-i", iconPath)
-			}
-			args = append(args, title)
-			if body != "" {
-				args = append(args, body)
-			}
-			err = runCommand(ctx, helper, args)
-		default:
-			continue
-		}
-		if err == nil {
-			return nil
-		}
-		failures = append(failures, fmt.Sprintf("%s: %v", helper, err))
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("notification delivery failed: %s", strings.Join(failures, "; "))
-	}
-	return fmt.Errorf("no D-Bus notification helper found")
-}
-
-func linuxNotificationHelpers() []string {
-	return []string{"notify-send", "gdbus", "dbus-send"}
-}
-
-func sendMacOSNotification(ctx context.Context, note Notification) error {
-	if _, err := lookPath("osascript"); err != nil {
-		return fmt.Errorf("osascript not found in PATH")
-	}
-	title := sanitizeNotificationText(note.Title, 96, "vimwhat")
-	body := sanitizeNotificationText(note.Body, 220, "")
-	script := []string{
-		"-e", "on run argv",
-		"-e", "set noteTitle to item 1 of argv",
-		"-e", "set noteBody to item 2 of argv",
-		"-e", "display notification noteBody with title noteTitle",
-		"-e", "end run",
-		title,
-		body,
-	}
-	return runCommand(ctx, "osascript", script)
-}
-
-func sendWindowsNotification(ctx context.Context, note Notification) error {
-	name := windowsPowerShellCommand()
-	if name == "" {
-		return fmt.Errorf("powershell.exe not found in PATH")
-	}
-	title := sanitizeNotificationText(note.Title, 96, "vimwhat")
-	body := sanitizeNotificationText(note.Body, 220, "")
-	script := strings.Join([]string{
-		"Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null",
-		"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null",
-		"[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] | Out-Null",
-		"function Escape([string]$value) { [System.Security.SecurityElement]::Escape($value) }",
-		"$title = Escape($args[0])",
-		"$body = Escape($args[1])",
-		"$xml = New-Object Windows.Data.Xml.Dom.XmlDocument",
-		"$xml.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>$title</text><text>$body</text></binding></visual></toast>\")",
-		"$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)",
-		"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('vimwhat').Show($toast)",
-	}, "; ")
-	return runCommand(ctx, name, []string{
-		"-NoLogo",
-		"-NonInteractive",
-		"-NoProfile",
-		"-Command",
-		script,
-		title,
-		body,
-	})
-}
-
 func configuredCommandCandidate(template string, note Notification) (commandCandidate, error) {
 	template = strings.TrimSpace(template)
 	if template == "" {
@@ -467,27 +310,6 @@ func configuredCommandCandidate(template string, note Notification) (commandCand
 	return commandCandidate{name: argv[0], args: args}, nil
 }
 
-func windowsPowerShellCommand() string {
-	for _, name := range []string{"powershell.exe", "pwsh"} {
-		if _, err := lookPath(name); err == nil {
-			return name
-		}
-	}
-	return ""
-}
-
-func hasSessionBus() bool {
-	if strings.TrimSpace(getEnv("DBUS_SESSION_BUS_ADDRESS")) != "" {
-		return true
-	}
-	runtimeDir := strings.TrimSpace(getEnv("XDG_RUNTIME_DIR"))
-	if runtimeDir == "" {
-		return false
-	}
-	info, err := statPath(filepath.Join(runtimeDir, "bus"))
-	return err == nil && !info.IsDir()
-}
-
 func normalizeBackend(value string) Backend {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", string(BackendAuto):
@@ -528,55 +350,7 @@ func sanitizeNotificationText(value string, limit int, fallback string) string {
 }
 
 func splitCommandLine(input string) ([]string, error) {
-	var args []string
-	var current strings.Builder
-	var quote rune
-	escaped := false
-
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		args = append(args, current.String())
-		current.Reset()
-	}
-
-	for _, r := range input {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			} else {
-				current.WriteRune(r)
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"':
-			quote = r
-		case ' ', '\t', '\n':
-			flush()
-		default:
-			current.WriteRune(r)
-		}
-	}
-	if escaped {
-		current.WriteRune('\\')
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unterminated quote in command")
-	}
-	flush()
-
-	return args, nil
+	return commandline.Split(input)
 }
 
 func valueOrDefault(value, fallback string) string {

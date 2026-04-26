@@ -3,13 +3,14 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	t.Setenv("EDITOR", "nvim")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 
 	paths := Paths{
 		ConfigFile: filepath.Join(t.TempDir(), "config.toml"),
@@ -36,7 +37,11 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.NotificationBackend != "auto" {
 		t.Fatalf("NotificationBackend = %q, want auto", cfg.NotificationBackend)
 	}
-	if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
+	if runtime.GOOS == "windows" {
+		if cfg.ImageViewerCommand != "" || cfg.VideoPlayerCommand != "" || !strings.Contains(cfg.AudioPlayerCommand, "rundll32.exe") || !strings.Contains(cfg.FileOpenerCommand, "rundll32.exe") {
+			t.Fatalf("windows media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
+		}
+	} else if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
 	if cfg.LeaderKey != "space" {
@@ -51,7 +56,7 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 }
 
 func TestLoadParsesSupportedKeys(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := setTestHome(t)
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -148,7 +153,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
 	}
 
-	wantDownloads := filepath.Join(os.Getenv("HOME"), "Inbox")
+	wantDownloads := filepath.Join(home, "Inbox")
 	if cfg.DownloadsDir != wantDownloads {
 		t.Fatalf("DownloadsDir = %q, want %q", cfg.DownloadsDir, wantDownloads)
 	}
@@ -165,6 +170,23 @@ func TestLoadRejectsUnknownKey(t *testing.T) {
 	_, err := Load(Paths{ConfigFile: path})
 	if err == nil {
 		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestLoadUnescapesQuotedStringValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`file_opener_command = "C:\\Program Files\\Viewer\\viewer.exe \"{path}\""`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(Paths{ConfigFile: path})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.FileOpenerCommand != `C:\Program Files\Viewer\viewer.exe "{path}"` {
+		t.Fatalf("FileOpenerCommand = %q", cfg.FileOpenerCommand)
 	}
 }
 
@@ -299,7 +321,7 @@ func TestLoadRejectsInvalidNotificationBackend(t *testing.T) {
 }
 
 func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vimwhat", "config.toml")
 	paths := Paths{
@@ -352,7 +374,7 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 }
 
 func TestExampleConfigParses(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t)
 	path := filepath.Join("..", "..", "config.example.toml")
 
 	cfg, err := Load(Paths{ConfigFile: path})
@@ -377,6 +399,14 @@ func TestExampleConfigParses(t *testing.T) {
 	if cfg.Keymap.ConfirmRun != "enter" {
 		t.Fatalf("ConfirmRun = %q, want enter", cfg.Keymap.ConfirmRun)
 	}
+}
+
+func setTestHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
 }
 
 func TestResolveEmojiModeAutoUsesFullForUTF8Terminals(t *testing.T) {

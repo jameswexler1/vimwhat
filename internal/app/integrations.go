@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"vimwhat/internal/commandline"
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
@@ -78,16 +79,7 @@ func clipboardCommands(configuredCommand string) [][]string {
 		return [][]string{argv}
 	}
 
-	var commands [][]string
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		commands = append(commands, []string{"wl-copy"})
-	}
-	if os.Getenv("DISPLAY") != "" {
-		commands = append(commands, []string{"xclip", "-selection", "clipboard"})
-		commands = append(commands, []string{"xsel", "--clipboard", "--input"})
-	}
-	commands = append(commands, []string{"pbcopy"}, []string{"termux-clipboard-set"})
-	return commands
+	return platformClipboardCommands()
 }
 
 type imageClipboardCommand struct {
@@ -278,7 +270,6 @@ func imagePasteCommands(commandTemplate, mediaDir string) []imageClipboardComman
 		path := ""
 		if pathMode {
 			path = clipboardImagePath(mediaDir, ".png")
-			commandTemplate = strings.ReplaceAll(commandTemplate, "{path}", path)
 		}
 		argv, err := splitCommandLine(commandTemplate)
 		if err != nil || len(argv) == 0 {
@@ -287,44 +278,27 @@ func imagePasteCommands(commandTemplate, mediaDir string) []imageClipboardComman
 			}
 			return nil
 		}
+		replaceArgPlaceholder(argv, "{path}", path)
 		return []imageClipboardCommand{{argv: argv, pathMode: pathMode, path: path}}
 	}
 
-	var commands []imageClipboardCommand
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		commands = append(commands, imageClipboardCommand{argv: []string{"wl-paste", "--type", "image/png"}})
-	}
-	if os.Getenv("DISPLAY") != "" {
-		commands = append(commands, imageClipboardCommand{argv: []string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"}})
-	}
-	if _, err := exec.LookPath("pngpaste"); err == nil {
-		target := clipboardImagePath(mediaDir, ".png")
-		commands = append(commands, imageClipboardCommand{argv: []string{"pngpaste", target}, pathMode: true, path: target})
-	}
-	return commands
+	return platformImagePasteCommands(mediaDir)
 }
 
 func imageCopyCommands(commandTemplate, path, mimeType string) []imageClipboardCommand {
 	commandTemplate = strings.TrimSpace(commandTemplate)
 	if commandTemplate != "" {
 		pathMode := strings.Contains(commandTemplate, "{path}")
-		commandTemplate = strings.ReplaceAll(commandTemplate, "{path}", path)
-		commandTemplate = strings.ReplaceAll(commandTemplate, "{mime}", mimeType)
 		argv, err := splitCommandLine(commandTemplate)
 		if err != nil || len(argv) == 0 {
 			return nil
 		}
+		replaceArgPlaceholder(argv, "{path}", path)
+		replaceArgPlaceholder(argv, "{mime}", mimeType)
 		return []imageClipboardCommand{{argv: argv, pathMode: pathMode}}
 	}
 
-	var commands []imageClipboardCommand
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		commands = append(commands, imageClipboardCommand{argv: []string{"wl-copy", "--type", mimeType}})
-	}
-	if os.Getenv("DISPLAY") != "" {
-		commands = append(commands, imageClipboardCommand{argv: []string{"xclip", "-selection", "clipboard", "-t", mimeType}})
-	}
-	return commands
+	return platformImageCopyCommands(path, mimeType)
 }
 
 func runClipboardCommand(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) error {
@@ -410,9 +384,8 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 
 	commandTemplate = strings.TrimSpace(commandTemplate)
 	if commandTemplate == "" {
-		commandTemplate = "yazi --chooser-file {chooser}"
+		commandTemplate = platformDefaultFilePickerCommand()
 	}
-	commandTemplate = strings.ReplaceAll(commandTemplate, "{chooser}", chooserPath)
 	argv, err := splitCommandLine(commandTemplate)
 	if err != nil {
 		_ = os.Remove(chooserPath)
@@ -422,6 +395,7 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 		_ = os.Remove(chooserPath)
 		return attachmentPickerError(fmt.Errorf("file picker command is empty"))
 	}
+	replaceArgPlaceholder(argv, "{chooser}", chooserPath)
 	if _, err := exec.LookPath(argv[0]); err != nil {
 		_ = os.Remove(chooserPath)
 		return attachmentPickerError(fmt.Errorf("file picker %q not found", argv[0]))
@@ -492,10 +466,9 @@ func audioPlayerCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd,
 
 	template := strings.TrimSpace(cfg.AudioPlayerCommand)
 	if template == "" {
-		template = "mpv --no-video --no-terminal --really-quiet {path}"
+		template = platformDefaultAudioPlayerCommand()
 	}
 	hasPathPlaceholder := strings.Contains(template, "{path}")
-	template = strings.ReplaceAll(template, "{path}", path)
 	argv, err := splitCommandLine(template)
 	if err != nil {
 		return nil, path, err
@@ -503,6 +476,7 @@ func audioPlayerCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd,
 	if len(argv) == 0 {
 		return nil, path, fmt.Errorf("audio player command is empty")
 	}
+	replaceArgPlaceholder(argv, "{path}", path)
 	if !hasPathPlaceholder {
 		argv = append(argv, path)
 	}
@@ -528,7 +502,6 @@ func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, s
 	}
 
 	hasPathPlaceholder := strings.Contains(template, "{path}")
-	template = strings.ReplaceAll(template, "{path}", path)
 	argv, err := splitCommandLine(template)
 	if err != nil {
 		return nil, path, err
@@ -536,6 +509,7 @@ func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, s
 	if len(argv) == 0 {
 		return nil, path, fmt.Errorf("media opener command is empty")
 	}
+	replaceArgPlaceholder(argv, "{path}", path)
 	if !hasPathPlaceholder {
 		argv = append(argv, path)
 	}
@@ -543,6 +517,12 @@ func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, s
 		return nil, path, fmt.Errorf("media opener %q not found", argv[0])
 	}
 	return exec.Command(argv[0], argv[1:]...), path, nil
+}
+
+func replaceArgPlaceholder(argv []string, placeholder, value string) {
+	for i, arg := range argv {
+		argv[i] = strings.ReplaceAll(arg, placeholder, value)
+	}
 }
 
 func mediaOpenTemplate(cfg config.Config, item store.MediaMetadata) (string, bool) {
@@ -564,20 +544,12 @@ func mediaOpenTemplate(cfg config.Config, item store.MediaMetadata) (string, boo
 }
 
 func autoOpenCommand(item store.MediaMetadata, path string) ([]string, error) {
-	var candidates []string
-	switch media.MediaKind(item.MIMEType, item.FileName) {
-	case media.KindImage:
-		candidates = []string{"nsxiv", "mpv", "xdg-open"}
-	case media.KindVideo:
-		candidates = []string{"mpv", "xdg-open", "nsxiv"}
-	case media.KindAudio:
-		candidates = []string{"mpv", "xdg-open"}
-	default:
-		candidates = []string{"xdg-open", "nsxiv", "mpv"}
-	}
-	for _, name := range candidates {
-		if _, err := exec.LookPath(name); err == nil {
-			return []string{name, path}, nil
+	for _, argv := range platformAutoOpenCommands(item, path) {
+		if len(argv) == 0 {
+			continue
+		}
+		if _, err := exec.LookPath(argv[0]); err == nil {
+			return argv, nil
 		}
 	}
 	return nil, fmt.Errorf("no media opener found")
@@ -626,53 +598,5 @@ func liveMediaForOutgoingMessage(messageID string, attachments []ui.Attachment, 
 }
 
 func splitCommandLine(input string) ([]string, error) {
-	var args []string
-	var current strings.Builder
-	var quote rune
-	escaped := false
-
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		args = append(args, current.String())
-		current.Reset()
-	}
-
-	for _, r := range input {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if quote != 0 {
-			if r == quote {
-				quote = 0
-			} else {
-				current.WriteRune(r)
-			}
-			continue
-		}
-		switch r {
-		case '\'', '"':
-			quote = r
-		case ' ', '\t', '\n':
-			flush()
-		default:
-			current.WriteRune(r)
-		}
-	}
-	if escaped {
-		current.WriteRune('\\')
-	}
-	if quote != 0 {
-		return nil, fmt.Errorf("unterminated quote in command")
-	}
-	flush()
-
-	return args, nil
+	return commandline.Split(input)
 }

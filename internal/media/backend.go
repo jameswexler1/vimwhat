@@ -74,6 +74,9 @@ func unavailableReason(backend Backend) string {
 		}
 		return "sixel renderer command not found"
 	case BackendUeberzugPP:
+		if !platformSupportsUeberzugPP() {
+			return "ueberzug++ overlay unsupported on this platform"
+		}
 		if !hasCommand("ueberzugpp") {
 			return "ueberzugpp not found in PATH"
 		}
@@ -84,7 +87,7 @@ func unavailableReason(backend Backend) string {
 	case BackendChafa:
 		return "chafa not found in PATH"
 	case BackendExternal:
-		return "xdg-open not found in PATH"
+		return platformExternalOpenerUnavailableReason()
 	default:
 		return "not available"
 	}
@@ -93,20 +96,14 @@ func unavailableReason(backend Backend) string {
 func detectAvailable() map[Backend]bool {
 	return map[Backend]bool{
 		BackendSixel:      supportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
-		BackendUeberzugPP: hasCommand("ueberzugpp") && DetectUeberzugPPOutput() != "",
+		BackendUeberzugPP: platformSupportsUeberzugPP() && hasCommand("ueberzugpp") && DetectUeberzugPPOutput() != "",
 		BackendChafa:      hasCommand("chafa"),
-		BackendExternal:   hasCommand("xdg-open"),
+		BackendExternal:   platformExternalOpenerAvailable(),
 	}
 }
 
 func DetectUeberzugPPOutput() string {
-	if os.Getenv("DISPLAY") != "" {
-		return "x11"
-	}
-	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		return "wayland"
-	}
-	return ""
+	return platformUeberzugPPOutput()
 }
 
 func supportsSixel() bool {

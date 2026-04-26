@@ -1,17 +1,17 @@
-# Vim-Centric WhatsApp TUI for Linux
+# Vim-Centric WhatsApp TUI for Linux and Windows
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially Linux desktop delivery, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons where supported, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, native Windows runtime defaults, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially desktop delivery on fresh Linux and Windows installs, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
 - Go CLI entrypoint with `vimwhat`, `doctor`, `demo seed`, and `demo clear`.
-- XDG config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
+- Native Linux and Windows config/data/cache path resolution, first-run default config generation, and config loading, including emoji rendering mode, per-mode status indicator color overrides, and flat configurable keybindings.
 - SQLite-backed local state with migrations, chat/message/media/draft storage, stats, and FTS-backed search.
 - Bubble Tea TUI with modal interaction (`normal`, `insert`, `visual`, `command`, `search`), chat list, message viewport, optional info pane, composer, filters, and help.
 - Local draft persistence, local outgoing message persistence, normal/visual message yanking, text clipboard integration, image clipboard paste/copy integration, attachment staging, message delete flow, and search routing by pane.
-- Media backend detection and in-chat preview behavior with `sixel`, `ueberzug++`, `chafa`, compact audio playback rows via `mpv`, plus external open/save fallback paths.
+- Media backend detection and in-chat preview behavior with `sixel`, Unix `ueberzug++`, `chafa`, compact audio playback rows, plus native external open/save fallback paths.
 - Real `whatsmeow` session store, QR login, logout, rejected-session cleanup, first-use-state local reset on logout, and `doctor` session status reporting.
 - Live WhatsApp connection bootstrap from a paired session, protocol event subscription, inbound chat/message/receipt/media metadata ingestion into SQLite, DB-first UI refreshes, and visible connection state.
 - On-demand remote history fetch for the focused chat, using SQLite paging first and then anchored `whatsmeow` history sync requests before the oldest known local message.
@@ -26,7 +26,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
 - Direct-chat identity hardening for WhatsApp PN/LID aliases: canonicalize mapped 1:1 chats onto a single chat ID, merge already-split alias rows/messages/drafts/history cursors in SQLite, and preserve the active conversation when a live merge remaps the selected chat.
 - Large-history TUI guardrails: historical imports avoid refresh storms, reconnect catch-up sync shows a blocking progress overlay and batches snapshot refreshes until completion, live refreshes are debounced, stale snapshot reloads do not steal chat focus, message rendering is bounded to the visible window, message cursor scrolling behaves like the chat list viewport, duplicate in-flight history requests are suppressed, and `ueberzug++` media/avatar/sticker overlays pause into blank reserved space while scrolling before resyncing.
-- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, focused-pane borders that distinguish chat-list vs message-pane input focus, highlighted unread-count badges in the chat list, a structured keymap-driven help screen, non-redundant mode prompts, configurable help/prompt key hints, search match counts in the status bar, and configurable cancellation/search-clear bindings.
+- Terminal/UI polish for real chat data: full/compat/auto emoji rendering, stable emoji fallback for terminals such as `st`, pywal-backed mode indicators with per-mode hex overrides, focused-pane borders that distinguish chat-list vs message-pane input focus, highlighted unread-count badges in the chat list, a structured keymap-driven help screen, non-redundant mode prompts, configurable help/prompt key hints, search match counts in the status bar, configurable cancellation/search-clear bindings, and native Windows runtime defaults that do not affect Linux behavior.
 - Demo/dev workflows that exercise the full local UI without a live WhatsApp session.
 
 ### In progress
@@ -42,7 +42,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 
 ## Summary
 
-Build a personal, Linux-first WhatsApp TUI in `Go` using `whatsmeow` for protocol access, `Bubble Tea` for the event loop/UI runtime, `Lip Gloss` only for styling, and `SQLite + FTS5` for local state, indexing, and lazy history. The product is a fully modal client, not a terminal chat app with vi-flavored shortcuts.
+Build a personal native Linux and Windows WhatsApp TUI in `Go` using `whatsmeow` for protocol access, `Bubble Tea` for the event loop/UI runtime, `Lip Gloss` only for styling, and `SQLite + FTS5` for local state, indexing, and lazy history. The product is a fully modal client, not a terminal chat app with vi-flavored shortcuts.
 
 The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keyboard navigation, explicit modes, repeatable actions, registers, visual selection, `/` search with context-specific behavior and visible match counts, command-line actions via `:`, optional inline composition, optional `nvim` composition for long messages, and adaptive media/emoji rendering that works in `st` first but degrades cleanly elsewhere.
 
@@ -54,14 +54,14 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 - Protocol library: `go.mau.fi/whatsmeow`.
 - TUI runtime: `Bubble Tea`.
 - Styling/layout: lightweight use of `Lip Gloss`; no heavy widget dependency.
-- Storage: `SQLite` in XDG data dir, plaintext in v1.
+- Storage: `SQLite` in native per-user data dir, plaintext in v1.
 - Search: `SQLite FTS5` for chat and message indexing.
 - Media preview backends, in priority order:
   `sixel` if available in the current terminal,
-  `ueberzug++` if available,
+  Unix `ueberzug++` if available,
   `chafa` text/image fallback,
-  external opener fallback via `xdg-open`/configured command.
-- Packaging: single static-ish Linux binary plus config/data/cache dirs under XDG; no Arch-only assumptions in runtime behavior.
+  external opener fallback via native platform opener/configured command.
+- Packaging: single static-ish Linux and Windows binaries plus native config/data/cache dirs; no Arch-only assumptions in runtime behavior.
 
 ### User-facing interface
 
@@ -73,10 +73,10 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   `vimwhat doctor`
   `vimwhat media open <message-id>`
   `vimwhat export chat <jid>`
-- Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml`.
+- Config file: `$XDG_CONFIG_HOME/vimwhat/config.toml` on Linux and `%APPDATA%\vimwhat\config.toml` on Windows.
 - Config supports `emoji_mode = "auto" | "full" | "compat"`, per-mode indicator colors via `indicator_normal`, `indicator_insert`, `indicator_visual`, `indicator_command`, and `indicator_search`, flat `key_<mode>_<action>` keybinding overrides, plus `notification_backend = "auto" | "none" | "command" | "linux-dbus" | "macos-osascript" | "windows-powershell"` and `notification_command` for desktop delivery overrides.
-- Data dir: `$XDG_DATA_HOME/vimwhat/`.
-- Cache dir: `$XDG_CACHE_HOME/vimwhat/`.
+- Data dir: `$XDG_DATA_HOME/vimwhat/` on Linux and `%LOCALAPPDATA%\vimwhat\data\` on Windows.
+- Cache dir: `$XDG_CACHE_HOME/vimwhat/` on Linux and `%LOCALAPPDATA%\vimwhat\cache\` on Windows.
 - Transient cache dir: per-user app directory under `os.TempDir()`.
 - State file groups:
   WhatsApp device/session store,
@@ -214,7 +214,7 @@ The attachment upload/send milestone now has an implemented first pass:
 - Persist outgoing media messages locally before upload with `sending` / `sent` / `failed` status transitions and file-backed media rows so preview/open/save keep working on failures.
 - Use the composer body as the caption for image, video, and document sends; reject audio captions before queueing.
 - Reuse quoted reply metadata for outgoing media messages so replied-to media sends carry the same context shape as text replies.
-- Paste image data from the system clipboard into the composer as the same single staged attachment used by normal media sends, and copy the focused downloaded image back to the system clipboard through configurable or auto-detected Linux helper commands.
+- Paste image data from the system clipboard into the composer as the same single staged attachment used by normal media sends, and copy the focused downloaded image back to the system clipboard through configurable or auto-detected native platform commands.
 
 The remaining CLI surface milestone is now implemented:
 
@@ -304,7 +304,7 @@ The next protocol milestone is live validation/polish of the completed notificat
 - Backend detection occurs at startup and can be re-run with `:doctor` or `:preview-backend auto`.
 - Preview backend order in v1:
   terminal-native `sixel`,
-  `ueberzug++`,
+  Unix `ueberzug++`,
   `chafa`,
   external opener.
 - The app must remain fully usable without graphical preview support.
@@ -398,7 +398,7 @@ The next protocol milestone is live validation/polish of the completed notificat
 
 ## Assumptions and defaults
 
-- Primary target is Linux desktop use, especially `st`; portability to other Linux terminals matters, but `st` behavior is the non-negotiable path.
+- Primary targets are Linux desktop terminals, especially `st`, and native Windows terminals. Linux `st` behavior remains the non-negotiable compatibility path for terminal layout and emoji width.
 - The app is single-user and local-first; no multi-account support in v1.
 - Plaintext SQLite is acceptable because host-level security is assumed.
 - Default UX favors a complete Vim model over beginner discoverability.

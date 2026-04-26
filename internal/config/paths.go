@@ -25,30 +25,26 @@ type Paths struct {
 	PreviewCacheDir string
 }
 
+type pathRoots struct {
+	ConfigDir string
+	DataDir   string
+	CacheDir  string
+}
+
 func ResolvePaths() (Paths, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve home dir: %w", err)
 	}
 
-	configRoot, err := os.UserConfigDir()
+	roots, err := platformPathRoots(home)
 	if err != nil {
-		return Paths{}, fmt.Errorf("resolve config dir: %w", err)
+		return Paths{}, err
 	}
 
-	cacheRoot, err := os.UserCacheDir()
-	if err != nil {
-		return Paths{}, fmt.Errorf("resolve cache dir: %w", err)
-	}
-
-	dataRoot := os.Getenv("XDG_DATA_HOME")
-	if dataRoot == "" {
-		dataRoot = filepath.Join(home, ".local", "share")
-	}
-
-	configDir := filepath.Join(configRoot, appName)
-	dataDir := filepath.Join(dataRoot, appName)
-	cacheDir := filepath.Join(cacheRoot, appName)
+	configDir := roots.ConfigDir
+	dataDir := roots.DataDir
+	cacheDir := roots.CacheDir
 	transientDir := filepath.Join(os.TempDir(), transientDirName(home))
 
 	return Paths{
@@ -129,8 +125,8 @@ func transientDirName(home string) string {
 }
 
 func pathWithinRoot(path, root string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(root)
+	cleanPath := platformComparablePath(filepath.Clean(path))
+	cleanRoot := platformComparablePath(filepath.Clean(root))
 	rel, err := filepath.Rel(cleanRoot, cleanPath)
 	if err != nil {
 		return false

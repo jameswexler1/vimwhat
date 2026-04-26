@@ -58,7 +58,7 @@ func saveFileName(req SaveRequest) string {
 			name += exts[0]
 		}
 	}
-	return name
+	return platformSafeSaveFileName(name)
 }
 
 func collisionName(name string, index int) string {

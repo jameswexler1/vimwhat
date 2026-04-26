@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -48,6 +49,7 @@ func TestDetectAutoUsesConfiguredCommandOverride(t *testing.T) {
 }
 
 func TestDetectLinuxDBusAvailability(t *testing.T) {
+	skipUnlessLinuxBuild(t)
 	prevGOOS := runtimeGOOS
 	prevLookPath := lookPath
 	prevGetEnv := getEnv
@@ -82,6 +84,7 @@ func TestDetectLinuxDBusAvailability(t *testing.T) {
 }
 
 func TestDetectLinuxDBusPrefersNotifySend(t *testing.T) {
+	skipUnlessLinuxBuild(t)
 	prevGOOS := runtimeGOOS
 	prevLookPath := lookPath
 	prevGetEnv := getEnv
@@ -118,6 +121,7 @@ func TestDetectLinuxDBusPrefersNotifySend(t *testing.T) {
 }
 
 func TestSendLinuxDBusFallsBackAcrossHelpers(t *testing.T) {
+	skipUnlessLinuxBuild(t)
 	prevGOOS := runtimeGOOS
 	prevLookPath := lookPath
 	prevRunCommand := runCommand
@@ -163,6 +167,7 @@ func TestSendLinuxDBusFallsBackAcrossHelpers(t *testing.T) {
 }
 
 func TestSendLinuxDBusIncludesIconPath(t *testing.T) {
+	skipUnlessLinuxBuild(t)
 	tests := []struct {
 		name       string
 		helper     string
@@ -229,6 +234,13 @@ func TestSendLinuxDBusIncludesIconPath(t *testing.T) {
 				t.Fatalf("args = %#v, want sequence %q", gotArgs, test.wantInArgs)
 			}
 		})
+	}
+}
+
+func skipUnlessLinuxBuild(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux D-Bus backend is only built on Linux")
 	}
 }
 

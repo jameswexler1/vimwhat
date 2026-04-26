@@ -184,7 +184,7 @@ func SessionURI(sessionPath string) string {
 
 	return (&url.URL{
 		Scheme:   "file",
-		Path:     filepath.ToSlash(filepath.Clean(sessionPath)),
+		Path:     sessionURIPath(sessionPath),
 		RawQuery: query.Encode(),
 	}).String()
 }

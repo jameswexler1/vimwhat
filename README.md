@@ -1,6 +1,6 @@
 # vimwhat
 
-`vimwhat` is a Linux-first, vim-centric WhatsApp TUI written in Go. The app is now a DB-first live client: the Bubble Tea interface renders from local SQLite state while a paired `whatsmeow` session connects in the background for live WhatsApp traffic.
+`vimwhat` is a native Linux and Windows vim-centric WhatsApp TUI written in Go. The app is now a DB-first live client: the Bubble Tea interface renders from local SQLite state while a paired `whatsmeow` session connects in the background for live WhatsApp traffic.
 
 The project is still pre-release, but it is no longer just a local shell. Current builds include QR login, live ingestion, lazy history fetch, remote media download, outbound text and single-attachment media send, message interactions, desktop notifications, avatar/sticker rendering, and data export helpers.
 
@@ -10,7 +10,7 @@ Implemented:
 
 - Modal Bubble Tea TUI with normal, insert, visual, command, search, and confirm flows.
 - Chat list, message viewport, optional info pane, inline composer, help overlay, compact layout, pane switching, visual selection, search, filters, pinned/unread sorting, and local draft persistence.
-- SQLite state under XDG data paths with migrations, chats, contacts, messages, FTS search, drafts, media metadata, media download descriptors, reactions, avatars, sync cursors, and UI snapshots.
+- SQLite state under native per-user data paths with migrations, chats, contacts, messages, FTS search, drafts, media metadata, media download descriptors, reactions, avatars, sync cursors, and UI snapshots.
 - First-run config generation plus flat configurable keybindings, emoji mode, pywal/hex mode indicators, preview settings, opener/player commands, and notification settings.
 - WhatsApp QR login/logout with a real session store, rejected-session cleanup, paired-state reporting in `doctor`, and first-use local reset on logout.
 - Live WhatsApp bootstrap from a paired session, connection status in the TUI, protocol event ingestion, receipt/status updates, metadata refresh, and DB-first UI refreshes.
@@ -18,7 +18,7 @@ Implemented:
 - Remote media download for received images, videos, audio, documents, and stickers, using persisted WhatsApp download descriptors and temp-backed managed caches.
 - Outbound plain text plus one local attachment per message, including quote context, image/video/document captions, generic audio send, audio-caption rejection, `sending`/`sent`/`failed` status updates, and failed-media retry via `R` or `:retry-message`.
 - Message interactions: auto/manual mark-read, reactions send/clear and rendering, own-message delete-for-everyone, inbound revoke ingestion, replies, quote-jump, right-edge reply gesture, and typing presence.
-- Media UI with backend detection for Sixel, `ueberzug++`, `chafa`, external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through `mpv`.
+- Media UI with backend detection for Sixel, Unix `ueberzug++`, `chafa`, native external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through platform defaults or configured commands.
 - Desktop notifications for new incoming messages with native Linux/macOS/Windows backends or an argv-safe command override, with suppression for muted chats, duplicates, outgoing messages, historical imports, reaction-only updates, and the active chat while the app is known to be focused.
 - Demo data commands for local TUI development without a live WhatsApp session.
 - CLI helpers for `media open` and `export chat`.
@@ -38,11 +38,12 @@ For more detailed stage notes and upcoming validation work, see `PLAN.md`.
 - Go 1.26, matching `go.mod`.
 - A WhatsApp account for live mode, paired with `vimwhat login`.
 - Optional external tools improve the experience:
-  - `yazi` for the default attachment picker.
-  - `chafa`, `img2sixel`, or `ueberzug++` for inline media and avatar previews.
-  - `ffmpeg` for generated video thumbnails.
-  - `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands.
-  - `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste.
+  - Linux: `yazi` for the default attachment picker.
+  - Linux/Windows terminals with support: `chafa` or `img2sixel` for inline media and avatar previews.
+  - Linux graphical terminals: `ueberzug++` for overlay previews.
+  - Linux/Windows: `ffmpeg` for generated video thumbnails.
+  - Linux: `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands.
+  - Linux: `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste. Windows uses native PowerShell/clipboard commands by default.
   - `notify-send`, `gdbus`, `dbus-send`, `osascript`, or `powershell.exe` for native notifications, depending on OS.
 
 ## Quick start
@@ -92,6 +93,7 @@ go run ./cmd/vimwhat export chat <jid>
 make run
 make build
 make test
+make test-windows
 make lint
 ```
 
@@ -101,6 +103,7 @@ Equivalent direct Go commands:
 go run ./cmd/vimwhat
 go build ./cmd/vimwhat
 go test ./...
+GOOS=windows GOARCH=amd64 go test ./... -run ^$ -exec=true
 go vet ./...
 go fmt ./...
 ```
@@ -111,6 +114,8 @@ The `Makefile` defaults `GOCACHE` to `/tmp/vimwhat-go-build`, which keeps builds
 
 Runtime state is kept out of the repository:
 
+Linux:
+
 - Config: `$XDG_CONFIG_HOME/vimwhat/config.toml`
 - App database: `$XDG_DATA_HOME/vimwhat/state.sqlite3`
 - WhatsApp session database: `$XDG_DATA_HOME/vimwhat/whatsapp-session.sqlite3`
@@ -118,9 +123,18 @@ Runtime state is kept out of the repository:
 - Non-exported chat media cache: `$TMPDIR/vimwhat-*/media`
 - Generated preview cache: `$TMPDIR/vimwhat-*/preview`
 
+Windows:
+
+- Config: `%APPDATA%\vimwhat\config.toml`
+- App database: `%LOCALAPPDATA%\vimwhat\data\state.sqlite3`
+- WhatsApp session database: `%LOCALAPPDATA%\vimwhat\data\whatsapp-session.sqlite3`
+- Logs/cache root: `%LOCALAPPDATA%\vimwhat\cache\`
+- Non-exported chat media cache: `%TEMP%\vimwhat-*\media`
+- Generated preview cache: `%TEMP%\vimwhat-*\preview`
+
 Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Files saved explicitly with the configured save-media key go to the configured downloads directory and are not part of the transient cache.
 
-On first run, `vimwhat` creates `$XDG_CONFIG_HOME/vimwhat/config.toml` with the full default configuration so it can be edited in place. The same baseline is checked in as `config.example.toml`.
+On first run, `vimwhat` creates the native config file with the full default configuration so it can be edited in place. Linux defaults keep the existing Unix tools; Windows defaults use native PowerShell, clipboard, and shell opener commands. A Linux-oriented baseline is checked in as `config.example.toml`.
 
 ## TUI workflow
 
@@ -195,7 +209,7 @@ All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<ac
 
 ## Media and previews
 
-`preview_backend = "auto"` chooses the best available inline renderer in this order: Sixel, `ueberzug++`, `chafa`, external opener, none. Images, videos, stickers, and avatars can render inline when a capable backend is available. Videos use generated thumbnails when `ffmpeg` is available. Audio messages render as compact playback rows and use `audio_player_command`, which defaults to `mpv --no-video --no-terminal --really-quiet {path}`.
+`preview_backend = "auto"` chooses the best available inline renderer in this order: Sixel, `ueberzug++` where supported, `chafa`, external opener, none. Images, videos, stickers, and avatars can render inline when a capable backend is available. Videos use generated thumbnails when `ffmpeg` is available. Audio messages render as compact playback rows and use `audio_player_command`, which defaults to `mpv --no-video --no-terminal --really-quiet {path}` on Linux and the native Windows opener on Windows.
 
 Remote media starts as metadata in SQLite. Opening, previewing, saving, or running `vimwhat media open <message-id>` can download it through the paired WhatsApp session when a download descriptor exists.
 
