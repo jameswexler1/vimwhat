@@ -253,6 +253,9 @@ type Model struct {
 	previewInflight            map[string]bool
 	previewRequested           map[string]bool
 	previewGeneration          int
+	inlineFallbackPrompt       bool
+	inlineFallbackAccepted     bool
+	inlineFallbackDeclined     bool
 	overlay                    *media.OverlayManager
 	overlaySignature           string
 	overlaySyncPending         bool
@@ -844,6 +847,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.keyMatches(msg, m.config.Keymap.GlobalQuit) {
 		m.quitting = true
 		return m, tea.Quit
+	}
+	if m.inlineFallbackPrompt {
+		return m.handleInlineFallbackPrompt(msg)
 	}
 	if m.syncOverlay.Visible {
 		return m, nil
@@ -1605,6 +1611,24 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m, nil
+}
+
+func (m Model) handleInlineFallbackPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.ConfirmCancel), m.keyMatches(msg, keys.NormalCancel):
+		m.inlineFallbackPrompt = false
+		m.inlineFallbackDeclined = true
+		m.status = "inline image fallback skipped; media will open externally"
+	case m.keyMatches(msg, keys.ConfirmRun), msg.Type == tea.KeyEnter:
+		m.inlineFallbackPrompt = false
+		m.inlineFallbackAccepted = true
+		m.inlineFallbackDeclined = false
+		m.status = "using chafa fallback for inline images"
+	default:
+		return m, nil
+	}
 	return m, nil
 }
 
@@ -2693,6 +2717,7 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	next := m
 	next.reportVisibleChatsChanged()
 	next, stickerCmd := next.ensureVisibleStickerMedia()
+	next.maybePromptInlineFallback()
 	next, previewCmd := next.queueRequestedPreviewCmd()
 	resumeCmd := next.queueOverlayResumeCmd()
 	overlayCmd := next.syncOverlayCmd()
@@ -2751,6 +2776,97 @@ func batchCmds(cmds ...tea.Cmd) tea.Cmd {
 		return active[0]
 	}
 	return tea.Batch(active...)
+}
+
+var inlineFallbackAllowed = platformAllowsInlineFallback
+
+func (m Model) inlineFallbackAvailable() bool {
+	return inlineFallbackAllowed() &&
+		m.previewReport.Selected == media.BackendExternal &&
+		m.previewReport.Reasons[media.BackendChafa] == "available"
+}
+
+func (m Model) inlineFallbackNeedsPrompt() bool {
+	return m.inlineFallbackAvailable() &&
+		!m.inlineFallbackAccepted &&
+		!m.inlineFallbackDeclined &&
+		!m.inlineFallbackPrompt
+}
+
+func (m Model) inlinePreviewBackend() (media.Backend, bool) {
+	switch m.previewReport.Selected {
+	case media.BackendNone:
+		return "", false
+	case media.BackendExternal:
+		if m.inlineFallbackAccepted && m.inlineFallbackAvailable() {
+			return media.BackendChafa, true
+		}
+		return "", false
+	default:
+		return m.previewReport.Selected, true
+	}
+}
+
+func (m Model) avatarPreviewBackend() (media.Backend, bool) {
+	if backend, ok := media.AvatarPreviewBackend(m.previewReport); ok {
+		return backend, true
+	}
+	if m.inlineFallbackAccepted && m.inlineFallbackAvailable() {
+		return media.BackendChafa, true
+	}
+	return "", false
+}
+
+func (m *Model) maybePromptInlineFallback() {
+	if !m.inlineFallbackNeedsPrompt() || m.helpVisible || m.syncOverlay.Visible {
+		return
+	}
+	if m.hasVisibleRequestedInlineMedia() || m.hasVisibleAvatarFallbackCandidate() {
+		m.showInlineFallbackPrompt()
+	}
+}
+
+func (m Model) hasVisibleRequestedInlineMedia() bool {
+	if len(m.previewRequested) == 0 {
+		return false
+	}
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return false
+	}
+	start, end := 0, len(messages)
+	if geometry, ok := m.messagePaneGeometry(); ok {
+		start, end = m.visibleMessageRange(len(messages), max(1, geometry.height-2))
+	}
+	for _, message := range messages[start:end] {
+		for _, item := range message.Media {
+			if !m.previewRequested[mediaActivationKey(message, item)] {
+				continue
+			}
+			request, ok := m.previewRequestForMediaWithBackend(message, item, 0, 0, media.BackendChafa)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(request.LocalPath) != "" || strings.TrimSpace(request.ThumbnailPath) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m Model) hasVisibleAvatarFallbackCandidate() bool {
+	for _, chatID := range m.visibleChatIDs() {
+		if _, ok := m.chatAvatarPreviewRequestWithBackend(m.chatByID(chatID), media.BackendChafa); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) showInlineFallbackPrompt() {
+	m.inlineFallbackPrompt = true
+	m.status = "sixel unavailable; choose an inline image fallback"
 }
 
 func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
@@ -2948,6 +3064,9 @@ func (m Model) requestedPreviewRequests() []media.PreviewRequest {
 	if m.width <= 0 || m.height <= 0 || m.previewReport.Selected == media.BackendNone {
 		return nil
 	}
+	if _, ok := m.inlinePreviewBackend(); !ok {
+		return nil
+	}
 	if len(m.previewRequested) == 0 {
 		return nil
 	}
@@ -2996,7 +3115,7 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 	if m.width <= 0 || m.height <= 0 {
 		return nil
 	}
-	backend, ok := media.AvatarPreviewBackend(m.previewReport)
+	backend, ok := m.avatarPreviewBackend()
 	if !ok {
 		return nil
 	}
@@ -3021,6 +3140,14 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 }
 
 func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {
+	backend := m.previewReport.Selected
+	if inlineBackend, ok := m.inlinePreviewBackend(); ok {
+		backend = inlineBackend
+	}
+	return m.previewRequestForMediaWithBackend(message, item, width, height, backend)
+}
+
+func (m Model) previewRequestForMediaWithBackend(message store.Message, item store.MediaMetadata, width, height int, backend media.Backend) (media.PreviewRequest, bool) {
 	item, _ = normalizeManagedMediaMetadata(m.paths, item)
 	kind := media.MediaKind(item.MIMEType, item.FileName)
 	requestMIMEType := item.MIMEType
@@ -3054,7 +3181,7 @@ func (m Model) previewRequestForMedia(message store.Message, item store.MediaMet
 		LocalPath:     requestLocalPath,
 		ThumbnailPath: requestThumbnailPath,
 		CacheDir:      m.paths.PreviewCacheDir,
-		Backend:       m.previewReport.Selected,
+		Backend:       backend,
 		Width:         width,
 		Height:        height,
 	}
@@ -3065,7 +3192,7 @@ func (m Model) previewRequestForMedia(message store.Message, item store.MediaMet
 }
 
 func (m Model) chatAvatarPreviewRequest(chat store.Chat) (media.PreviewRequest, bool) {
-	backend, ok := media.AvatarPreviewBackend(m.previewReport)
+	backend, ok := m.avatarPreviewBackend()
 	if !ok {
 		return media.PreviewRequest{}, false
 	}
@@ -3137,14 +3264,23 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("no inline preview for %s", m.mediaDisplayName(item))
 		return m, nil
 	}
-	if m.previewReport.Selected == media.BackendNone || m.previewReport.Selected == media.BackendExternal {
+	inlineBackend, hasInlineBackend := m.inlinePreviewBackend()
+	if !hasInlineBackend {
+		if m.inlineFallbackNeedsPrompt() {
+			if m.previewRequested == nil {
+				m.previewRequested = map[string]bool{}
+			}
+			m.previewRequested[mediaActivationKey(message, item)] = true
+			m.showInlineFallbackPrompt()
+			return m, nil
+		}
 		if strings.TrimSpace(item.LocalPath) != "" {
 			return m.openFocusedMedia()
 		}
 		m.status = fmt.Sprintf("preview backend %s cannot render inline", m.previewReport.Selected)
 		return m, nil
 	}
-	if highQualityPreviewRequiresLocalFile(m.previewReport.Selected, kind) && strings.TrimSpace(item.LocalPath) == "" {
+	if highQualityPreviewRequiresLocalFile(inlineBackend, kind) && strings.TrimSpace(item.LocalPath) == "" {
 		if m.downloadMedia != nil {
 			if !m.startMediaDownload(message, item, "downloading media") {
 				return m, nil

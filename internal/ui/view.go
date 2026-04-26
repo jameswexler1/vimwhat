@@ -66,6 +66,9 @@ func (m Model) renderBody(height int) string {
 	if m.syncOverlay.Visible {
 		return m.renderSyncOverlay(m.width, height)
 	}
+	if m.inlineFallbackPrompt {
+		return m.renderInlineFallbackPrompt(m.width, height)
+	}
 	if m.helpVisible {
 		style := m.panelStyle(m.focus)
 		return m.renderPanel(m.focus, m.width, height, m.renderHelp(panelContentWidth(style, m.width)))
@@ -197,6 +200,35 @@ func (m Model) renderSyncCounts(width int) string {
 		return ""
 	}
 	return lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay(strings.Join(parts, " | "), width))
+}
+
+func (m Model) renderInlineFallbackPrompt(width, height int) string {
+	panelWidth := min(max(48, width*2/3), max(1, width-4))
+	if width < 52 {
+		panelWidth = max(1, width)
+	}
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(warnFG).
+		Padding(1, 2).
+		Width(max(1, panelWidth-2))
+
+	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
+	lines := []string{
+		lipgloss.NewStyle().Foreground(warnFG).Bold(true).Render(truncateDisplay("Sixel image rendering unavailable", contentWidth)),
+		lipgloss.NewStyle().Foreground(softFG).Render(wrapPlainText("For sharper inline images on Windows, run vimwhat in WezTerm or another Sixel-capable terminal. Chafa can render a lower-resolution fallback now.", contentWidth)),
+		"",
+		lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay("Enter use Chafa fallback  Esc keep external opener", contentWidth)),
+	}
+	panel := style.Render(strings.Join(lines, "\n"))
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		panel,
+		lipgloss.WithWhitespaceChars(" "),
+	)
 }
 
 func (m Model) renderPanel(focus Focus, width, height int, content string) string {
@@ -1589,7 +1621,14 @@ func (m Model) mediaAttachmentState(message store.Message, item store.MediaMetad
 			return ""
 		}
 	}
-	if highQualityPreviewRequiresLocalFile(m.previewReport.Selected, kind) && strings.TrimSpace(item.LocalPath) == "" {
+	inlineBackend, hasInlineBackend := m.inlinePreviewBackend()
+	if !hasInlineBackend && m.previewReport.Selected == media.BackendExternal {
+		if strings.TrimSpace(item.LocalPath) != "" {
+			return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " open"
+		}
+		return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " download"
+	}
+	if highQualityPreviewRequiresLocalFile(inlineBackend, kind) && strings.TrimSpace(item.LocalPath) == "" {
 		if strings.TrimSpace(item.ThumbnailPath) != "" {
 			return "thumbnail only"
 		}
@@ -2198,7 +2237,7 @@ func (m Model) footerChatTitle() string {
 }
 
 func (m Model) inputHeight() int {
-	if m.syncOverlay.Visible {
+	if m.syncOverlay.Visible || m.inlineFallbackPrompt {
 		return 0
 	}
 	switch m.mode {

@@ -2706,6 +2706,82 @@ func TestChatAvatarPreviewRendersCachedInlinePreview(t *testing.T) {
 	}
 }
 
+func TestExternalPreviewPromptsBeforeChafaAvatarFallback(t *testing.T) {
+	prev := inlineFallbackAllowed
+	inlineFallbackAllowed = func() bool { return true }
+	t.Cleanup(func() { inlineFallbackAllowed = prev })
+
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendExternal,
+			Reasons: map[media.Backend]string{
+				media.BackendExternal: "available",
+				media.BackendChafa:    "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+
+	if requests := model.requestedAvatarPreviewRequests(); len(requests) != 0 {
+		t.Fatalf("requestedAvatarPreviewRequests() before fallback = %+v, want none", requests)
+	}
+	model.maybePromptInlineFallback()
+	if !model.inlineFallbackPrompt {
+		t.Fatal("inlineFallbackPrompt = false, want prompt for visible avatar fallback")
+	}
+
+	accepted, _ := model.handleInlineFallbackPrompt(tea.KeyMsg{Type: tea.KeyEnter})
+	model = accepted.(Model)
+	requests := model.requestedAvatarPreviewRequests()
+	if len(requests) != 1 || requests[0].Backend != media.BackendChafa {
+		t.Fatalf("requestedAvatarPreviewRequests() after fallback = %+v, want chafa request", requests)
+	}
+}
+
+func TestPreviewNoneDoesNotPromptForChafaFallback(t *testing.T) {
+	prev := inlineFallbackAllowed
+	inlineFallbackAllowed = func() bool { return true }
+	t.Cleanup(func() { inlineFallbackAllowed = prev })
+
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendNone,
+			Reasons: map[media.Backend]string{
+				media.BackendChafa: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: filepath.Join(t.TempDir(), "avatar.jpg"),
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+
+	model.maybePromptInlineFallback()
+	if model.inlineFallbackPrompt {
+		t.Fatal("inlineFallbackPrompt = true, want no prompt when previews are disabled")
+	}
+}
+
 func TestChatAvatarOverlayRendersFallbackUntilPlacementIsActive(t *testing.T) {
 	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
 	model := NewModel(Options{
@@ -4255,6 +4331,132 @@ func TestEnterOnMediaQueuesPreviewRequest(t *testing.T) {
 	}
 	if !queued.previewInflight[media.PreviewKey(requests[0])] {
 		t.Fatalf("previewInflight = %+v, want request key marked", queued.previewInflight)
+	}
+}
+
+func TestEnterOnExternalMediaPromptsForChafaFallback(t *testing.T) {
+	prev := inlineFallbackAllowed
+	inlineFallbackAllowed = func() bool { return true }
+	t.Cleanup(func() { inlineFallbackAllowed = prev })
+
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendExternal,
+			Reasons: map[media.Backend]string{
+				media.BackendExternal: "available",
+				media.BackendChafa:    "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     "/tmp/photo.jpg",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	activated, cmd := model.activateFocusedMediaPreview()
+	model = activated.(Model)
+	if cmd != nil {
+		t.Fatalf("activateFocusedMediaPreview() cmd = %T, want prompt without command", cmd)
+	}
+	if !model.inlineFallbackPrompt {
+		t.Fatal("inlineFallbackPrompt = false, want prompt")
+	}
+	if requests := model.requestedPreviewRequests(); len(requests) != 0 {
+		t.Fatalf("requestedPreviewRequests() before fallback accepted = %+v, want none", requests)
+	}
+
+	accepted, _ := model.handleInlineFallbackPrompt(tea.KeyMsg{Type: tea.KeyEnter})
+	model = accepted.(Model)
+	requests := model.requestedPreviewRequests()
+	if len(requests) != 1 || requests[0].Backend != media.BackendChafa {
+		t.Fatalf("requestedPreviewRequests() after fallback = %+v, want chafa request", requests)
+	}
+}
+
+func TestDecliningChafaFallbackPreservesExternalOpen(t *testing.T) {
+	prev := inlineFallbackAllowed
+	inlineFallbackAllowed = func() bool { return true }
+	t.Cleanup(func() { inlineFallbackAllowed = prev })
+
+	var opened store.MediaMetadata
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendExternal,
+			Reasons: map[media.Backend]string{
+				media.BackendExternal: "available",
+				media.BackendChafa:    "available",
+			},
+		},
+		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
+			opened = media
+			return func() tea.Msg {
+				return MediaOpenFinishedMsg{Path: media.LocalPath}
+			}
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": []store.Message{{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     "/tmp/photo.jpg",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	prompting, _ := model.activateFocusedMediaPreview()
+	model = prompting.(Model)
+	declined, _ := model.handleInlineFallbackPrompt(tea.KeyMsg{Type: tea.KeyEsc})
+	model = declined.(Model)
+	if !model.inlineFallbackDeclined {
+		t.Fatal("inlineFallbackDeclined = false, want declined")
+	}
+
+	openedModel, cmd := model.activateFocusedMediaPreview()
+	model = openedModel.(Model)
+	if cmd == nil {
+		t.Fatal("activateFocusedMediaPreview() after decline returned nil command, want external open")
+	}
+	if opened.LocalPath != "/tmp/photo.jpg" {
+		t.Fatalf("opened media = %+v, want local photo", opened)
+	}
+	if requests := model.requestedPreviewRequests(); len(requests) != 0 {
+		t.Fatalf("requestedPreviewRequests() after decline = %+v, want none", requests)
 	}
 }
 
