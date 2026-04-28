@@ -1796,6 +1796,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"Commands",
 		"j/k",
 		"r/l",
+		"pick recent sticker",
 		"retry failed media",
 		"retry-message|retry",
 		"delete-message-everybody",
@@ -1813,6 +1814,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	keymap.NormalReply = "leader r"
 	keymap.NormalOpenMedia = "m"
 	keymap.NormalSaveMedia = "leader m"
+	keymap.NormalPickSticker = "leader t"
 	model := NewModel(Options{
 		Config: config.Config{
 			LeaderKey: ",",
@@ -1831,7 +1833,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	got := helped.(Model)
 	view := stripANSI(got.View())
-	for _, want := range []string{",r", "m", ",m", "ctrl+g/?"} {
+	for _, want := range []string{",r", "m", ",m", ",t", "ctrl+g/?"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing configured binding %q\n%s", want, view)
 		}
@@ -4122,6 +4124,74 @@ func TestAttachmentPickerStagesAttachmentInComposer(t *testing.T) {
 	view := stripANSI(got.renderMessages(70, 10))
 	if !strings.Contains(view, "[img] photo.jpg 2.0KB local_pending") {
 		t.Fatalf("composer did not render staged attachment\n%s", view)
+	}
+}
+
+func TestNormalLeaderPickStickerSendsWithoutChangingComposer(t *testing.T) {
+	var sentSticker store.RecentSticker
+	var sentChatID string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "draft caption"},
+			ActiveChatID:   "chat-1",
+		},
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		PickSticker: func() tea.Cmd {
+			return func() tea.Msg {
+				return StickerPickedMsg{Sticker: store.RecentSticker{
+					ID:        "sticker-1",
+					LocalPath: "/tmp/sticker.webp",
+					FileName:  "sticker.webp",
+					MIMEType:  "image/webp",
+				}}
+			}
+		},
+		SendSticker: func(chatID string, sticker store.RecentSticker) (store.Message, error) {
+			sentChatID = chatID
+			sentSticker = sticker
+			return store.Message{
+				ID:         "chat-1/remote-1",
+				RemoteID:   "remote-1",
+				ChatID:     chatID,
+				Sender:     "me",
+				Timestamp:  time.Unix(1_700_000_000, 0),
+				IsOutgoing: true,
+				Status:     "sending",
+				Media: []store.MediaMetadata{{
+					MessageID: "chat-1/remote-1",
+					Kind:      "sticker",
+					MIMEType:  "image/webp",
+					FileName:  "sticker.webp",
+					LocalPath: "/tmp/sticker.webp",
+				}},
+			}, nil
+		},
+	})
+	model.mode = ModeNormal
+	model.focus = FocusMessages
+	model.composer = "draft caption"
+	model.attachments = []Attachment{{LocalPath: "/tmp/photo.jpg", FileName: "photo.jpg", MIMEType: "image/jpeg"}}
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	picking, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+	model = picking.(Model)
+	if cmd == nil {
+		t.Fatal("<leader>t command = nil, want sticker picker")
+	}
+	final, _ := model.Update(cmd())
+	got := final.(Model)
+	if sentChatID != "chat-1" || sentSticker.ID != "sticker-1" {
+		t.Fatalf("sent sticker chat=%q sticker=%+v", sentChatID, sentSticker)
+	}
+	if got.composer != "draft caption" || len(got.attachments) != 1 {
+		t.Fatalf("composer/attachments changed = %q/%+v", got.composer, got.attachments)
+	}
+	if len(got.messagesByChat["chat-1"]) != 1 || got.messagesByChat["chat-1"][0].Media[0].Kind != "sticker" {
+		t.Fatalf("messages after sticker send = %+v", got.messagesByChat["chat-1"])
 	}
 }
 

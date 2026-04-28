@@ -87,6 +87,29 @@ type MediaDownloadDescriptor struct {
 	UpdatedAt     time.Time
 }
 
+type RecentSticker struct {
+	ID            string
+	URL           string
+	DirectPath    string
+	MediaKey      []byte
+	FileSHA256    []byte
+	FileEncSHA256 []byte
+	FileLength    int64
+	MIMEType      string
+	FileName      string
+	LocalPath     string
+	Width         int
+	Height        int
+	Weight        float64
+	LastUsedAt    time.Time
+	IsFavorite    bool
+	IsAnimated    bool
+	IsLottie      bool
+	IsAvatar      bool
+	ImageHash     string
+	UpdatedAt     time.Time
+}
+
 type UISnapshot struct {
 	Kind      string
 	Name      string

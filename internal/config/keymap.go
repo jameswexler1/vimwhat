@@ -44,6 +44,7 @@ type Keymap struct {
 	NormalOpenMedia          string
 	NormalYankMessage        string
 	NormalEditMessage        string
+	NormalPickSticker        string
 	NormalSearchNext         string
 	NormalSearchPrevious     string
 	NormalToggleUnread       string
@@ -118,6 +119,7 @@ func DefaultKeymap() Keymap {
 		NormalOpenMedia:          "o",
 		NormalYankMessage:        "y",
 		NormalEditMessage:        "leader e",
+		NormalPickSticker:        "leader t",
 		NormalSearchNext:         "n",
 		NormalSearchPrevious:     "N",
 		NormalToggleUnread:       "u",
@@ -233,6 +235,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalEditMessage == "" {
 		input.NormalEditMessage = defaults.NormalEditMessage
+	}
+	if input.NormalPickSticker == "" {
+		input.NormalPickSticker = defaults.NormalPickSticker
 	}
 	if input.NormalSearchNext == "" {
 		input.NormalSearchNext = defaults.NormalSearchNext
@@ -363,6 +368,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_open_media", Mode: KeyModeNormal, Value: k.NormalOpenMedia},
 		{Name: "key_normal_yank_message", Mode: KeyModeNormal, Value: k.NormalYankMessage},
 		{Name: "key_normal_edit_message", Mode: KeyModeNormal, Value: k.NormalEditMessage},
+		{Name: "key_normal_pick_sticker", Mode: KeyModeNormal, Value: k.NormalPickSticker},
 		{Name: "key_normal_search_next", Mode: KeyModeNormal, Value: k.NormalSearchNext},
 		{Name: "key_normal_search_previous", Mode: KeyModeNormal, Value: k.NormalSearchPrevious},
 		{Name: "key_normal_toggle_unread", Mode: KeyModeNormal, Value: k.NormalToggleUnread},
@@ -454,6 +460,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalYankMessage = normalized
 	case "key_normal_edit_message":
 		k.NormalEditMessage = normalized
+	case "key_normal_pick_sticker":
+		k.NormalPickSticker = normalized
 	case "key_normal_search_next":
 		k.NormalSearchNext = normalized
 	case "key_normal_search_previous":

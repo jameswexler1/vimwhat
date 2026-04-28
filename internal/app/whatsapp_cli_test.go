@@ -63,6 +63,7 @@ type fakeLiveWhatsAppSession struct {
 	downloads       chan fakeDownloadRequest
 	sends           chan fakeSendRequest
 	mediaSends      chan whatsapp.MediaSendRequest
+	stickerSends    chan whatsapp.StickerSendRequest
 	readReceipts    chan []whatsapp.ReadReceiptTarget
 	reactions       chan whatsapp.ReactionSendRequest
 	deletes         chan whatsapp.DeleteForEveryoneRequest
@@ -189,6 +190,24 @@ func (s *fakeLiveWhatsAppSession) SendText(_ context.Context, request whatsapp.T
 func (s *fakeLiveWhatsAppSession) SendMedia(_ context.Context, request whatsapp.MediaSendRequest) (whatsapp.SendResult, error) {
 	if s.mediaSends != nil {
 		s.mediaSends <- request
+	}
+	if s.sendErr != nil {
+		return whatsapp.SendResult{}, s.sendErr
+	}
+	if request.RemoteID == "" {
+		request.RemoteID = s.GenerateMessageID()
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, request.RemoteID),
+		RemoteID:  request.RemoteID,
+		Status:    "sent",
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (s *fakeLiveWhatsAppSession) SendSticker(_ context.Context, request whatsapp.StickerSendRequest) (whatsapp.SendResult, error) {
+	if s.stickerSends != nil {
+		s.stickerSends <- request
 	}
 	if s.sendErr != nil {
 		return whatsapp.SendResult{}, s.sendErr
@@ -1658,6 +1677,73 @@ func TestHandleMediaSendRequestFailureMarksFailedAndRestoresCaptionDraft(t *test
 	}
 }
 
+func TestHandleStickerSendRequestQueuesDedicatedStickerMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	stickerPath := filepath.Join(t.TempDir(), "sticker.webp")
+	if err := os.WriteFile(stickerPath, []byte("webp-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID:  "sticker-remote-1",
+		stickerSends: make(chan whatsapp.StickerSendRequest, 1),
+	}
+	result := make(chan mediaSendQueuedResult, 1)
+	updates := make(chan ui.LiveUpdate, 4)
+	handleMediaSendRequest(ctx, db, session, updates, nil, true, mediaSendRequest{
+		ChatID: chatJID,
+		Body:   "ignored caption",
+		Sticker: &store.RecentSticker{
+			ID:        "recent-sticker-1",
+			LocalPath: stickerPath,
+			FileName:  "sticker.webp",
+			MIMEType:  "image/webp",
+			Width:     256,
+			Height:    256,
+		},
+		Result: result,
+	})
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued sticker send error = %v", queued.Err)
+	}
+	request := <-session.stickerSends
+	if request.ChatJID != chatJID || request.LocalPath != stickerPath || request.RemoteID != "sticker-remote-1" || request.Width != 256 || request.Height != 256 {
+		t.Fatalf("sticker request = %+v, want dedicated sticker send", request)
+	}
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if len(messages) != 1 || messages[0].ID != queued.Message.ID || messages[0].Status != "sent" || messages[0].Body != "" || len(messages[0].Media) != 1 {
+		t.Fatalf("stored sticker message = %+v", messages)
+	}
+	mediaItem := messages[0].Media[0]
+	if mediaItem.Kind != "sticker" || mediaItem.LocalPath != stickerPath || mediaItem.DownloadState != "downloaded" {
+		t.Fatalf("stored sticker media = %+v", mediaItem)
+	}
+	recent, ok, err := db.RecentSticker(ctx, "recent-sticker-1")
+	if err != nil {
+		t.Fatalf("RecentSticker() error = %v", err)
+	}
+	if !ok || recent.LocalPath != stickerPath || recent.LastUsedAt.IsZero() {
+		t.Fatalf("recent sticker after send = %+v ok=%v", recent, ok)
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "sticker")
+	})
+}
+
 func TestHandleMediaSendRequestRejectsAudioCaption(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
@@ -1792,6 +1878,77 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 	}
 	if messages[2].ID != queued.Message.ID || messages[2].Status != "sent" {
 		t.Fatalf("retry message = %+v, want new sent row", messages[2])
+	}
+}
+
+func TestRetryMediaSendRequestUsesStickerSendForFailedSticker(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	chatJID := "12345@s.whatsapp.net"
+	if err := db.UpsertChat(ctx, store.Chat{ID: chatJID, JID: chatJID, Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	stickerPath := filepath.Join(t.TempDir(), "sticker.webp")
+	if err := os.WriteFile(stickerPath, []byte("webp-bytes"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	failed := store.Message{
+		ID:         whatsapp.LocalMessageID(chatJID, "failed-sticker-1"),
+		RemoteID:   "failed-sticker-1",
+		ChatID:     chatJID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Timestamp:  time.Unix(1_700_000_100, 0),
+		IsOutgoing: true,
+		Status:     "failed",
+		Media: []store.MediaMetadata{{
+			MessageID:     whatsapp.LocalMessageID(chatJID, "failed-sticker-1"),
+			Kind:          "sticker",
+			FileName:      "sticker.webp",
+			MIMEType:      "image/webp",
+			LocalPath:     stickerPath,
+			SizeBytes:     10,
+			DownloadState: "downloaded",
+		}},
+	}
+	if err := db.AddMessageWithMedia(ctx, failed, failed.Media); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		generatedID:  "retry-sticker-1",
+		stickerSends: make(chan whatsapp.StickerSendRequest, 1),
+	}
+	result := make(chan mediaSendQueuedResult, 1)
+	request, err := retryMediaSendRequest(ctx, db, failed, result)
+	if err != nil {
+		t.Fatalf("retryMediaSendRequest() error = %v", err)
+	}
+	if request.Sticker == nil {
+		t.Fatal("retryMediaSendRequest() Sticker = nil, want sticker retry")
+	}
+	updates := make(chan ui.LiveUpdate, 4)
+	handleMediaSendRequest(ctx, db, session, updates, nil, true, request)
+
+	queued := <-result
+	if queued.Err != nil {
+		t.Fatalf("queued sticker retry error = %v", queued.Err)
+	}
+	sent := <-session.stickerSends
+	if sent.ChatJID != chatJID || sent.LocalPath != stickerPath || sent.RemoteID != "retry-sticker-1" {
+		t.Fatalf("sticker retry request = %+v", sent)
+	}
+	messages := waitForStoredMessages(t, db, chatJID, 2)
+	if messages[0].ID != failed.ID || messages[0].Status != "failed" || messages[1].ID != queued.Message.ID || messages[1].Status != "sent" {
+		t.Fatalf("messages after sticker retry = %+v", messages)
 	}
 }
 

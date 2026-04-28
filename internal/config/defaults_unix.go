@@ -19,6 +19,10 @@ func platformDefaultFilePickerCommand() string {
 	return "yazi --chooser-file {chooser}"
 }
 
+func platformDefaultStickerPickerCommand() string {
+	return "nsxiv -t -o -p {files}"
+}
+
 func platformDefaultImageViewerCommand() string {
 	return "nsxiv {path}"
 }

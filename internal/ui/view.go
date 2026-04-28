@@ -2320,6 +2320,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
 			{Key: key(keys.NormalYankMessage), Action: "yank selected message"},
 			{Key: key(keys.NormalEditMessage), Action: "edit outgoing text"},
+			{Key: key(keys.NormalPickSticker), Action: "pick recent sticker"},
 			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
@@ -2346,7 +2347,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: "media", Action: "preview/open/save/hide, copy-image"},
 			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
 			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
-			{Key: "more", Action: "edit-message, preview-backend, attach, paste-image, delete-message-everybody"},
+			{Key: "more", Action: "edit-message, sticker, preview-backend, attach, paste-image, delete-message-everybody"},
 		},
 	}
 

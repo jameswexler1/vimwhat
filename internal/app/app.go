@@ -236,6 +236,21 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 			return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
 		},
+		SendSticker: func(chatID string, sticker store.RecentSticker) (store.Message, error) {
+			if !liveEnabled {
+				return store.Message{}, fmt.Errorf("whatsapp is not paired")
+			}
+			waitCtx, cancel := context.WithTimeout(context.Background(), mediaSendQueueTimeout)
+			defer cancel()
+			result := make(chan mediaSendQueuedResult, 1)
+			request := mediaSendRequest{
+				Context: waitCtx,
+				ChatID:  chatID,
+				Sticker: cloneRecentStickerPtr(&sticker),
+				Result:  result,
+			}
+			return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
+		},
 		MarkRead: func(chat store.Chat, messages []store.Message) error {
 			if !liveEnabled {
 				return fmt.Errorf("whatsapp is not paired")
@@ -342,6 +357,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		},
 		PickAttachment: func() tea.Cmd {
 			return pickAttachment(env.Config.FilePickerCommand)
+		},
+		PickSticker: func() tea.Cmd {
+			return pickSticker(env.Paths, env.Config, env.Store)
 		},
 		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
 			return openMedia(env.Config, media)
@@ -485,6 +503,7 @@ type mediaSendRequest struct {
 	ChatID      string
 	Body        string
 	Attachments []ui.Attachment
+	Sticker     *store.RecentSticker
 	Quote       *store.Message
 	Result      chan mediaSendQueuedResult
 }
@@ -875,6 +894,16 @@ func runLiveWhatsApp(
 					})
 				} else {
 					event.Media = prepared
+				}
+			}
+			if event.Kind == whatsapp.EventRecentSticker {
+				prepared, err := prepareRecentStickerEvent(ctx, env.Store, live, env.Paths, event.Sticker)
+				if err != nil {
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Status: fmt.Sprintf("sticker cache failed: %s", shortStatusError(err)),
+					})
+				} else {
+					event.Sticker = prepared
 				}
 			}
 			result, err := ingestor.Apply(ctx, event)
@@ -1368,6 +1397,10 @@ func handleMediaSendRequest(
 		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("media send needs WhatsApp online"))
 		return
 	}
+	if request.Sticker != nil {
+		handleStickerSendRequest(ctx, db, live, updates, wg, request)
+		return
+	}
 	attachment, err := prepareLiveAttachmentForSend(request.Attachments)
 	if err != nil {
 		sendMediaQueuedResult(ctx, request, store.Message{}, err)
@@ -1428,6 +1461,69 @@ func handleMediaSendRequest(
 	completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote)
 }
 
+func handleStickerSendRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	request mediaSendRequest,
+) {
+	sticker, err := prepareLiveStickerForSend(*request.Sticker)
+	if err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	chatJID, err := canonicalizeLiveChatID(ctx, live, request.ChatID)
+	if err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	remoteID := strings.TrimSpace(live.GenerateMessageID())
+	if remoteID == "" {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("generate message id failed"))
+		return
+	}
+
+	messageID := whatsapp.LocalMessageID(chatJID, remoteID)
+	now := time.Now()
+	message := store.Message{
+		ID:         messageID,
+		RemoteID:   remoteID,
+		ChatID:     chatJID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Timestamp:  now,
+		IsOutgoing: true,
+		Status:     "sending",
+		Media:      mediaForOutgoingStickerMessage(messageID, sticker, now),
+	}
+	if request.Quote != nil {
+		message.QuotedMessageID = request.Quote.ID
+		message.QuotedRemoteID = request.Quote.RemoteID
+	}
+	if message.ID == "" {
+		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("message id is required"))
+		return
+	}
+	if err := db.AddMessage(ctx, message); err != nil {
+		sendMediaQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+
+	sendMediaQueuedResult(ctx, request, message, nil)
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeQueuedStickerSend(ctx, db, live, updates, message, sticker, request.Quote)
+		}()
+		return
+	}
+	completeQueuedStickerSend(ctx, db, live, updates, message, sticker, request.Quote)
+}
+
 func sendMediaQueuedResult(ctx context.Context, request mediaSendRequest, message store.Message, err error) {
 	if request.Result == nil {
 		return
@@ -1481,6 +1577,53 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	})
 }
 
+func completeQueuedStickerSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, sticker store.RecentSticker, quote *store.Message) {
+	sendCtx, cancel := context.WithTimeout(ctx, mediaSendTimeout)
+	defer cancel()
+	request := whatsapp.StickerSendRequest{
+		ChatJID:            message.ChatJID,
+		LocalPath:          sticker.LocalPath,
+		FileName:           sticker.FileName,
+		MIMEType:           sticker.MIMEType,
+		Width:              uint32(max(0, sticker.Width)),
+		Height:             uint32(max(0, sticker.Height)),
+		IsAnimated:         sticker.IsAnimated,
+		IsLottie:           sticker.IsLottie,
+		AccessibilityLabel: "",
+		RemoteID:           message.RemoteID,
+	}
+	if quote != nil {
+		request.QuotedRemoteID = quote.RemoteID
+		request.QuotedSenderJID = quote.SenderJID
+		request.QuotedMessageBody = quote.Body
+	}
+	result, err := live.SendSticker(sendCtx, request)
+	if err != nil {
+		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("sticker send failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "sent"
+	}
+	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	refreshRecentStickerAfterSend(context.Background(), db, sticker, time.Now())
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  stickerSendStatus(result),
+	})
+}
+
 func mediaSendStatus(result whatsapp.SendResult) string {
 	if notice := strings.TrimSpace(result.Notice); notice != "" {
 		return "sent attachment; " + notice
@@ -1488,7 +1631,32 @@ func mediaSendStatus(result whatsapp.SendResult) string {
 	return "sent attachment"
 }
 
+func stickerSendStatus(result whatsapp.SendResult) string {
+	if notice := strings.TrimSpace(result.Notice); notice != "" {
+		return "sent sticker; " + notice
+	}
+	return "sent sticker"
+}
+
 func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.Message, result chan mediaSendQueuedResult) (mediaSendRequest, error) {
+	if retryMessageHasSticker(message) {
+		sticker, err := retryStickerForMessage(message)
+		if err != nil {
+			return mediaSendRequest{}, err
+		}
+		request := mediaSendRequest{
+			Context: ctx,
+			ChatID:  retryChatID(message),
+			Sticker: &sticker,
+			Result:  result,
+		}
+		quote, err := retryQuoteForMessage(ctx, db, message)
+		if err != nil {
+			return mediaSendRequest{}, err
+		}
+		request.Quote = quote
+		return request, nil
+	}
 	attachment, err := retryAttachmentForMessage(message)
 	if err != nil {
 		return mediaSendRequest{}, err
@@ -1508,20 +1676,18 @@ func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.M
 	return request, nil
 }
 
+func retryMessageHasSticker(message store.Message) bool {
+	return len(message.Media) == 1 && strings.EqualFold(strings.TrimSpace(message.Media[0].Kind), "sticker")
+}
+
 func retryAttachmentForMessage(message store.Message) (ui.Attachment, error) {
-	if !message.IsOutgoing {
-		return ui.Attachment{}, fmt.Errorf("retry needs an outgoing message")
+	item, err := retryMediaItemForMessage(message)
+	if err != nil {
+		return ui.Attachment{}, err
 	}
-	if strings.TrimSpace(message.Status) != "failed" {
-		return ui.Attachment{}, fmt.Errorf("retry needs a failed message")
+	if strings.EqualFold(strings.TrimSpace(item.Kind), "sticker") {
+		return ui.Attachment{}, fmt.Errorf("retry sticker media through sticker send")
 	}
-	if len(message.Media) == 0 {
-		return ui.Attachment{}, fmt.Errorf("retry needs a media attachment")
-	}
-	if len(message.Media) > 1 {
-		return ui.Attachment{}, fmt.Errorf("only one attachment per message is supported")
-	}
-	item := message.Media[0]
 	attachment, err := prepareLiveAttachmentForSend([]ui.Attachment{{
 		LocalPath:     item.LocalPath,
 		FileName:      item.FileName,
@@ -1534,6 +1700,40 @@ func retryAttachmentForMessage(message store.Message) (ui.Attachment, error) {
 		return ui.Attachment{}, err
 	}
 	return attachment, nil
+}
+
+func retryStickerForMessage(message store.Message) (store.RecentSticker, error) {
+	item, err := retryMediaItemForMessage(message)
+	if err != nil {
+		return store.RecentSticker{}, err
+	}
+	sticker := store.RecentSticker{
+		ID:         localStickerID(store.RecentSticker{LocalPath: item.LocalPath, FileName: item.FileName}),
+		MIMEType:   item.MIMEType,
+		FileName:   item.FileName,
+		LocalPath:  item.LocalPath,
+		FileLength: item.SizeBytes,
+		IsAnimated: item.IsAnimated,
+		IsLottie:   item.IsLottie,
+		UpdatedAt:  time.Now(),
+	}
+	return prepareLiveStickerForSend(sticker)
+}
+
+func retryMediaItemForMessage(message store.Message) (store.MediaMetadata, error) {
+	if !message.IsOutgoing {
+		return store.MediaMetadata{}, fmt.Errorf("retry needs an outgoing message")
+	}
+	if strings.TrimSpace(message.Status) != "failed" {
+		return store.MediaMetadata{}, fmt.Errorf("retry needs a failed message")
+	}
+	if len(message.Media) == 0 {
+		return store.MediaMetadata{}, fmt.Errorf("retry needs a media attachment")
+	}
+	if len(message.Media) > 1 {
+		return store.MediaMetadata{}, fmt.Errorf("only one attachment per message is supported")
+	}
+	return message.Media[0], nil
 }
 
 func retryQuoteForMessage(ctx context.Context, db *store.Store, message store.Message) (*store.Message, error) {
@@ -1600,6 +1800,50 @@ func prepareLiveAttachmentForSend(attachments []ui.Attachment) (ui.Attachment, e
 	attachment.LocalPath = localPath
 	attachment.DownloadState = "downloaded"
 	return attachment, nil
+}
+
+func prepareLiveStickerForSend(sticker store.RecentSticker) (store.RecentSticker, error) {
+	localPath := strings.TrimSpace(sticker.LocalPath)
+	if localPath == "" {
+		return store.RecentSticker{}, fmt.Errorf("sticker local path is required")
+	}
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return store.RecentSticker{}, fmt.Errorf("stat sticker file: %w", err)
+	}
+	if info.IsDir() {
+		return store.RecentSticker{}, fmt.Errorf("sticker path is a directory")
+	}
+	fileName := strings.TrimSpace(sticker.FileName)
+	if fileName == "" {
+		fileName = info.Name()
+	}
+	mimeType := strings.TrimSpace(sticker.MIMEType)
+	if mimeType == "" {
+		mimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(fileName)))
+	}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	if sticker.IsLottie || strings.EqualFold(filepath.Ext(fileName), ".tgs") {
+		return store.RecentSticker{}, fmt.Errorf("lottie sticker send is not supported yet")
+	}
+	if !isSupportedOutgoingSticker(mimeType, fileName) {
+		return store.RecentSticker{}, fmt.Errorf("unsupported sticker MIME type %q", mimeType)
+	}
+	sticker.ID = localStickerID(sticker)
+	sticker.LocalPath = localPath
+	sticker.FileName = fileName
+	sticker.MIMEType = mimeType
+	sticker.FileLength = info.Size()
+	sticker.UpdatedAt = time.Now()
+	return sticker, nil
+}
+
+func isSupportedOutgoingSticker(mimeType, fileName string) bool {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	fileName = strings.ToLower(strings.TrimSpace(fileName))
+	return mimeType == "image/webp" || strings.HasSuffix(fileName, ".webp")
 }
 
 func handleReadReceiptRequest(
@@ -2327,6 +2571,76 @@ func prepareIncomingMediaEvent(paths config.Paths, event whatsapp.MediaEvent) (w
 	return event, nil
 }
 
+func prepareRecentStickerEvent(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, event whatsapp.RecentStickerEvent) (whatsapp.RecentStickerEvent, error) {
+	if strings.TrimSpace(event.ID) == "" {
+		return event, fmt.Errorf("recent sticker id is required")
+	}
+	if strings.TrimSpace(event.FileName) == "" {
+		event.FileName = "sticker" + recentStickerExtension(event.MIMEType, event.FileName, event.IsLottie)
+	}
+	if event.IsLottie || strings.EqualFold(filepath.Ext(event.FileName), ".tgs") {
+		return event, nil
+	}
+	dir := filepath.Join(paths.TransientDir, "stickers", "files")
+	if strings.TrimSpace(paths.TransientDir) == "" {
+		dir = filepath.Join(os.TempDir(), "vimwhat-stickers")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return event, fmt.Errorf("create sticker cache dir: %w", err)
+	}
+
+	finalPath := recentStickerCachePath(dir, event)
+	if mediaPathAvailable(finalPath) {
+		event.LocalPath = finalPath
+		return event, nil
+	}
+	if db != nil {
+		if current, ok, err := db.RecentSticker(ctx, event.ID); err != nil {
+			return event, err
+		} else if ok && mediaPathAvailable(current.LocalPath) {
+			event.LocalPath = current.LocalPath
+			return event, nil
+		}
+	}
+	if live == nil || (strings.TrimSpace(event.DirectPath) == "" && strings.TrimSpace(event.URL) == "") || len(event.MediaKey) == 0 || len(event.FileEncSHA256) == 0 {
+		return event, nil
+	}
+
+	tmp, err := os.CreateTemp(dir, "sticker-download-*.tmp")
+	if err != nil {
+		return event, fmt.Errorf("create sticker temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	descriptor := whatsapp.MediaDownloadDescriptor{
+		Kind:          "sticker",
+		URL:           event.URL,
+		DirectPath:    event.DirectPath,
+		MediaKey:      cloneBytes(event.MediaKey),
+		FileSHA256:    cloneBytes(event.FileSHA256),
+		FileEncSHA256: cloneBytes(event.FileEncSHA256),
+		FileLength:    event.FileLength,
+	}
+	if err := live.DownloadMedia(ctx, descriptor, tmpPath); err != nil {
+		return event, err
+	}
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return event, fmt.Errorf("stat downloaded sticker: %w", err)
+	}
+	if info.Size() <= 0 {
+		return event, fmt.Errorf("downloaded sticker is empty")
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		return event, fmt.Errorf("store downloaded sticker: %w", err)
+	}
+	event.LocalPath = finalPath
+	event.FileLength = info.Size()
+	return event, nil
+}
+
 func storeStickerThumbnail(mediaDir string, event whatsapp.MediaEvent) (string, error) {
 	if strings.TrimSpace(mediaDir) == "" {
 		return "", fmt.Errorf("media dir is required")
@@ -2531,6 +2845,15 @@ func mediaCachePath(mediaDir, messageID string, mediaItem store.MediaMetadata) s
 	return filepath.Join(mediaDir, name)
 }
 
+func recentStickerCachePath(dir string, event whatsapp.RecentStickerEvent) string {
+	name := safeFileStem(event.ID)
+	if name == "" {
+		sum := sha256.Sum256([]byte(strings.Join([]string{event.URL, event.DirectPath, event.ImageHash}, "\x00")))
+		name = "sticker-" + hex.EncodeToString(sum[:])[:24]
+	}
+	return filepath.Join(dir, name+recentStickerExtension(event.MIMEType, event.FileName, event.IsLottie))
+}
+
 func mediaFileExtension(mediaItem store.MediaMetadata) string {
 	if ext := strings.ToLower(filepath.Ext(strings.TrimSpace(mediaItem.FileName))); validMediaExtension(ext) {
 		return ext
@@ -2539,6 +2862,38 @@ func mediaFileExtension(mediaItem store.MediaMetadata) string {
 		return exts[0]
 	}
 	return ".bin"
+}
+
+func recentStickerExtension(mimeType, fileName string, lottie bool) string {
+	if lottie {
+		return ".tgs"
+	}
+	if ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))); validStickerExtension(ext) {
+		return ext
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/webp":
+		return ".webp"
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "application/x-tgsticker", "application/x-tgs", "application/gzip":
+		return ".tgs"
+	default:
+		return ".webp"
+	}
+}
+
+func validStickerExtension(ext string) bool {
+	switch strings.ToLower(strings.TrimSpace(ext)) {
+	case ".webp", ".png", ".jpg", ".jpeg", ".gif", ".tgs":
+		return true
+	default:
+		return false
+	}
 }
 
 func validMediaExtension(ext string) bool {
@@ -2552,6 +2907,27 @@ func validMediaExtension(ext string) bool {
 		return false
 	}
 	return true
+}
+
+func safeFileStem(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func whatsappDescriptorFromStore(descriptor store.MediaDownloadDescriptor) whatsapp.MediaDownloadDescriptor {
@@ -2577,6 +2953,49 @@ func cloneBytes(input []byte) []byte {
 	return out
 }
 
+func cloneRecentStickerPtr(sticker *store.RecentSticker) *store.RecentSticker {
+	if sticker == nil {
+		return nil
+	}
+	out := *sticker
+	out.MediaKey = cloneBytes(sticker.MediaKey)
+	out.FileSHA256 = cloneBytes(sticker.FileSHA256)
+	out.FileEncSHA256 = cloneBytes(sticker.FileEncSHA256)
+	return &out
+}
+
+func localStickerID(sticker store.RecentSticker) string {
+	if id := strings.TrimSpace(sticker.ID); id != "" {
+		return id
+	}
+	seed := strings.Join([]string{
+		strings.TrimSpace(sticker.LocalPath),
+		strings.TrimSpace(sticker.FileName),
+		strings.TrimSpace(sticker.MIMEType),
+	}, "\x00")
+	if strings.Trim(seed, "\x00") == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed))
+	return "local-sticker-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func refreshRecentStickerAfterSend(ctx context.Context, db *store.Store, sticker store.RecentSticker, usedAt time.Time) {
+	if db == nil {
+		return
+	}
+	if usedAt.IsZero() {
+		usedAt = time.Now()
+	}
+	sticker.ID = localStickerID(sticker)
+	if sticker.ID == "" {
+		return
+	}
+	sticker.LastUsedAt = usedAt
+	sticker.UpdatedAt = usedAt
+	_ = db.UpsertRecentSticker(ctx, sticker)
+}
+
 func isHistoricalImportEvent(event whatsapp.Event) bool {
 	switch event.Kind {
 	case whatsapp.EventChatUpsert:
@@ -2589,6 +3008,8 @@ func isHistoricalImportEvent(event whatsapp.Event) bool {
 		return event.Delete.Historical
 	case whatsapp.EventMediaMetadata:
 		return event.Media.Historical
+	case whatsapp.EventRecentSticker:
+		return event.Sticker.Historical
 	default:
 		return false
 	}

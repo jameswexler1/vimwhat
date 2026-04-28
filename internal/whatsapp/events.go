@@ -2,12 +2,15 @@ package whatsapp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
+	waSyncAction "go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -83,6 +86,8 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 				Processed: event.Count,
 			},
 		}}
+	case *events.AppState:
+		return normalizeAppStateEvent(event)
 	case *events.Message:
 		return normalizeMessageEvent(event)
 	case *events.Receipt:
@@ -120,11 +125,11 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 		return nil
 	}
 	history := event.Data
+	out := normalizeHistoryRecentStickers(history)
 	if history.GetSyncType() != waHistorySync.HistorySync_ON_DEMAND {
-		return nil
+		return out
 	}
 
-	var out []Event
 	for _, conversation := range history.GetConversations() {
 		chatJID, alternateChatJID, ok := historyConversationJIDs(conversation)
 		if !ok || !supportedChat(chatJID) {
@@ -201,6 +206,164 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 		})
 	}
 	return out
+}
+
+func normalizeHistoryRecentStickers(history *waHistorySync.HistorySync) []Event {
+	if history == nil {
+		return nil
+	}
+	stickers := history.GetRecentStickers()
+	out := make([]Event, 0, len(stickers))
+	for _, sticker := range stickers {
+		event, ok := recentStickerFromHistory(sticker)
+		if !ok {
+			continue
+		}
+		event.Historical = true
+		out = append(out, Event{
+			Kind:    EventRecentSticker,
+			Sticker: event,
+		})
+	}
+	return out
+}
+
+func normalizeAppStateEvent(event *events.AppState) []Event {
+	if event == nil || event.SyncActionValue == nil {
+		return nil
+	}
+	if sticker := event.GetStickerAction(); sticker != nil {
+		stickerEvent, ok := recentStickerFromAction(sticker, event.GetTimestamp())
+		if !ok {
+			return nil
+		}
+		return []Event{{
+			Kind:    EventRecentSticker,
+			Sticker: stickerEvent,
+		}}
+	}
+	if remove := event.GetRemoveRecentStickerAction(); remove != nil {
+		lastUsedAt := recentStickerTime(remove.GetLastStickerSentTS())
+		if lastUsedAt.IsZero() {
+			return nil
+		}
+		return []Event{{
+			Kind: EventRecentStickerRemove,
+			StickerRemove: RecentStickerRemoveEvent{
+				LastUsedAt: lastUsedAt,
+				UpdatedAt:  time.Now(),
+			},
+		}}
+	}
+	return nil
+}
+
+func recentStickerFromHistory(sticker *waHistorySync.StickerMetadata) (RecentStickerEvent, bool) {
+	if sticker == nil {
+		return RecentStickerEvent{}, false
+	}
+	lastUsedAt := recentStickerTime(sticker.GetLastStickerSentTS())
+	updatedAt := lastUsedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	event := RecentStickerEvent{
+		URL:           strings.TrimSpace(sticker.GetURL()),
+		DirectPath:    strings.TrimSpace(sticker.GetDirectPath()),
+		MediaKey:      cloneBytes(sticker.GetMediaKey()),
+		FileSHA256:    cloneBytes(sticker.GetFileSHA256()),
+		FileEncSHA256: cloneBytes(sticker.GetFileEncSHA256()),
+		FileLength:    int64(sticker.GetFileLength()),
+		MIMEType:      strings.TrimSpace(sticker.GetMimetype()),
+		Width:         int(sticker.GetWidth()),
+		Height:        int(sticker.GetHeight()),
+		Weight:        float64(sticker.GetWeight()),
+		LastUsedAt:    lastUsedAt,
+		IsLottie:      sticker.GetIsLottie(),
+		IsAvatar:      sticker.GetIsAvatarSticker(),
+		ImageHash:     strings.TrimSpace(sticker.GetImageHash()),
+		UpdatedAt:     updatedAt,
+	}
+	event.FileName = stickerFileNameForRecent(event.MIMEType, event.IsLottie)
+	event.ID = recentStickerID(event)
+	if event.ID == "" || (event.DirectPath == "" && event.URL == "") || len(event.MediaKey) == 0 || len(event.FileEncSHA256) == 0 {
+		return RecentStickerEvent{}, false
+	}
+	return event, true
+}
+
+func recentStickerFromAction(sticker *waSyncAction.StickerAction, timestampMS int64) (RecentStickerEvent, bool) {
+	if sticker == nil {
+		return RecentStickerEvent{}, false
+	}
+	lastUsedAt := recentStickerTime(timestampMS)
+	updatedAt := lastUsedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	event := RecentStickerEvent{
+		URL:           strings.TrimSpace(sticker.GetURL()),
+		DirectPath:    strings.TrimSpace(sticker.GetDirectPath()),
+		MediaKey:      cloneBytes(sticker.GetMediaKey()),
+		FileEncSHA256: cloneBytes(sticker.GetFileEncSHA256()),
+		FileLength:    int64(sticker.GetFileLength()),
+		MIMEType:      strings.TrimSpace(sticker.GetMimetype()),
+		Width:         int(sticker.GetWidth()),
+		Height:        int(sticker.GetHeight()),
+		LastUsedAt:    lastUsedAt,
+		IsFavorite:    sticker.GetIsFavorite(),
+		IsLottie:      sticker.GetIsLottie(),
+		IsAvatar:      sticker.GetIsAvatarSticker(),
+		ImageHash:     strings.TrimSpace(sticker.GetImageHash()),
+		UpdatedAt:     updatedAt,
+	}
+	event.FileName = stickerFileNameForRecent(event.MIMEType, event.IsLottie)
+	event.ID = recentStickerID(event)
+	if event.ID == "" || (event.DirectPath == "" && event.URL == "") || len(event.MediaKey) == 0 || len(event.FileEncSHA256) == 0 {
+		return RecentStickerEvent{}, false
+	}
+	return event, true
+}
+
+func recentStickerID(sticker RecentStickerEvent) string {
+	var seed strings.Builder
+	for _, value := range []string{
+		sticker.ImageHash,
+		sticker.DirectPath,
+		sticker.URL,
+		hex.EncodeToString(sticker.FileSHA256),
+		hex.EncodeToString(sticker.FileEncSHA256),
+		hex.EncodeToString(sticker.MediaKey),
+	} {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		seed.WriteString(value)
+		seed.WriteByte('\n')
+	}
+	if seed.Len() == 0 {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(seed.String()))
+	return "sticker-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func recentStickerTime(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	if value > 100_000_000_000 {
+		return time.UnixMilli(value)
+	}
+	return time.Unix(value, 0)
+}
+
+func stickerFileNameForRecent(mimeType string, isLottie bool) string {
+	if isLottie {
+		return "sticker.tgs"
+	}
+	return stickerFileName(mimeType)
 }
 
 func historyTerminalReason(conversation *waHistorySync.Conversation) string {

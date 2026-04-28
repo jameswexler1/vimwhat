@@ -128,6 +128,12 @@ type ClipboardImageCopiedMsg struct {
 	Err       error
 }
 
+type StickerPickedMsg struct {
+	Sticker   store.RecentSticker
+	Err       error
+	Cancelled bool
+}
+
 type mediaPreviewReadyMsg struct {
 	Key        string
 	Generation int
@@ -214,6 +220,7 @@ type Options struct {
 	BlockAttachments         bool
 	RequireOnlineForSend     bool
 	PersistMessage           func(OutgoingMessage) (store.Message, error)
+	SendSticker              func(chatID string, sticker store.RecentSticker) (store.Message, error)
 	RetryMessage             func(message store.Message) (store.Message, error)
 	MarkRead                 func(chat store.Chat, messages []store.Message) error
 	SendReaction             func(message store.Message, emoji string) error
@@ -230,6 +237,7 @@ type Options struct {
 	PasteImageFromClipboard  func() tea.Cmd
 	CopyImageToClipboard     func(media store.MediaMetadata) tea.Cmd
 	PickAttachment           func() tea.Cmd
+	PickSticker              func() tea.Cmd
 	OpenMedia                func(media store.MediaMetadata) tea.Cmd
 	StartAudio               func(media store.MediaMetadata) (AudioProcess, error)
 	DeleteMessage            func(messageID string) error
@@ -319,6 +327,7 @@ type Model struct {
 	ownPresenceComposing       bool
 	ownPresenceGeneration      int
 	persistMessage             func(OutgoingMessage) (store.Message, error)
+	sendSticker                func(chatID string, sticker store.RecentSticker) (store.Message, error)
 	retryMessage               func(message store.Message) (store.Message, error)
 	markRead                   func(chat store.Chat, messages []store.Message) error
 	sendReaction               func(message store.Message, emoji string) error
@@ -335,6 +344,7 @@ type Model struct {
 	pasteImageFromClipboard    func() tea.Cmd
 	copyImageToClipboard       func(media store.MediaMetadata) tea.Cmd
 	pickAttachment             func() tea.Cmd
+	pickSticker                func() tea.Cmd
 	openMedia                  func(media store.MediaMetadata) tea.Cmd
 	startAudio                 func(media store.MediaMetadata) (AudioProcess, error)
 	deleteMessage              func(messageID string) error
@@ -422,6 +432,7 @@ func NewModel(opts Options) Model {
 		connectionState:          opts.ConnectionState,
 		pinnedFirst:              true,
 		persistMessage:           opts.PersistMessage,
+		sendSticker:              opts.SendSticker,
 		retryMessage:             opts.RetryMessage,
 		loadMessages:             opts.LoadMessages,
 		loadOlderMessages:        opts.LoadOlderMessages,
@@ -434,6 +445,7 @@ func NewModel(opts Options) Model {
 		pasteImageFromClipboard:  opts.PasteImageFromClipboard,
 		copyImageToClipboard:     opts.CopyImageToClipboard,
 		pickAttachment:           opts.PickAttachment,
+		pickSticker:              opts.PickSticker,
 		openMedia:                opts.OpenMedia,
 		startAudio:               opts.StartAudio,
 		deleteMessage:            opts.DeleteMessage,
@@ -781,6 +793,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleClipboardImageCopied(msg)
 	case AttachmentPickedMsg:
 		return m.handlePickedAttachment(msg)
+	case StickerPickedMsg:
+		return m.handlePickedSticker(msg)
 	case mediaPreviewReadyMsg:
 		updated, cmd := m.handleMediaPreviewReady(msg)
 		if next, ok := updated.(Model); ok {
@@ -950,6 +964,7 @@ const (
 	normalActionOpenMedia         = "open_media"
 	normalActionYankMessage       = "yank_message"
 	normalActionEditMessage       = "edit_message"
+	normalActionPickSticker       = "pick_sticker"
 	normalActionSearchNext        = "search_next"
 	normalActionSearchPrevious    = "search_previous"
 	normalActionToggleUnread      = "toggle_unread"
@@ -1003,6 +1018,8 @@ func (m Model) normalActionForKey(msg tea.KeyMsg) string {
 		return normalActionYankMessage
 	case m.keyMatches(msg, keys.NormalEditMessage):
 		return normalActionEditMessage
+	case m.keyMatches(msg, keys.NormalPickSticker):
+		return normalActionPickSticker
 	case m.keyMatches(msg, keys.NormalSearchNext):
 		return normalActionSearchNext
 	case m.keyMatches(msg, keys.NormalSearchPrevious):
@@ -1064,6 +1081,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
 		{binding: keys.NormalYankMessage, action: normalActionYankMessage},
 		{binding: keys.NormalEditMessage, action: normalActionEditMessage},
+		{binding: keys.NormalPickSticker, action: normalActionPickSticker},
 		{binding: keys.NormalSearchNext, action: normalActionSearchNext},
 		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
 		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
@@ -1198,6 +1216,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.yankFocusedMessage()
 	case normalActionEditMessage:
 		return m.beginEditFocusedMessage()
+	case normalActionPickSticker:
+		return m.startStickerPicker()
 	case normalActionSearchNext:
 		m.advanceSearch(1)
 	case normalActionSearchPrevious:
@@ -1976,6 +1996,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("attach failed: %v", err)
 			break
 		}
+	case cmd == "sticker" || cmd == "pick-sticker" || cmd == "sticker pick":
+		return m.startStickerPicker()
 	case cmd == "delete-message" || cmd == "delete message":
 		m.armDeleteFocusedMessage()
 	case cmd == "delete-message confirm" || cmd == "delete message confirm":
@@ -4001,6 +4023,54 @@ func (m Model) handlePickedAttachment(msg AttachmentPickedMsg) (tea.Model, tea.C
 	return m, nil
 }
 
+func (m Model) handlePickedSticker(msg StickerPickedMsg) (tea.Model, tea.Cmd) {
+	m.mode = ModeNormal
+	m.focus = FocusMessages
+	if msg.Cancelled {
+		m.status = "sticker picker cancelled"
+		return m, nil
+	}
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("sticker failed: %v", msg.Err)
+		return m, nil
+	}
+	if strings.TrimSpace(msg.Sticker.ID) == "" {
+		m.status = "sticker picker returned no sticker"
+		return m, nil
+	}
+	if m.sendSticker == nil {
+		m.status = "sticker send is unavailable"
+		return m, nil
+	}
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+
+	chatID := m.currentChat().ID
+	message, err := m.sendSticker(chatID, msg.Sticker)
+	if err != nil {
+		m.status = fmt.Sprintf("sticker send failed: %v", err)
+		return m, nil
+	}
+	if message.ID == "" {
+		m.status = "sticker queued"
+		return m, nil
+	}
+	if message.ChatID == "" {
+		message.ChatID = chatID
+	}
+	m.messagesByChat[chatID] = append(m.messagesByChat[chatID], message)
+	if base, ok := m.unfilteredByChat[chatID]; ok {
+		m.unfilteredByChat[chatID] = append(base, message)
+	}
+	m.messageCursor = len(m.messagesByChat[chatID]) - 1
+	m.messageScrollTop = m.messageCursor
+	m.rebuildSearchMatches()
+	m.status = "sticker queued"
+	return m, nil
+}
+
 func (m Model) handleClipboardImagePasted(msg ClipboardImagePastedMsg) (tea.Model, tea.Cmd) {
 	m.mode = ModeInsert
 	m.focus = FocusMessages
@@ -4044,6 +4114,30 @@ func (m Model) startAttachmentPicker() (tea.Model, tea.Cmd) {
 
 	m.status = "opening attachment picker"
 	return m, m.pickAttachment()
+}
+
+func (m Model) startStickerPicker() (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	m.mode = ModeNormal
+	m.focus = FocusMessages
+	if m.pickSticker == nil {
+		m.status = "sticker picker unavailable"
+		return m, nil
+	}
+	if m.sendSticker == nil {
+		m.status = "sticker send is unavailable"
+		return m, nil
+	}
+	if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
+		m.status = "sticker send needs WhatsApp online"
+		return m, nil
+	}
+
+	m.status = "opening sticker picker"
+	return m, m.pickSticker()
 }
 
 func (m Model) startClipboardImagePaste() (tea.Model, tea.Cmd) {

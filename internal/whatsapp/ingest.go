@@ -103,6 +103,31 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			return ApplyResult{}, i.Store.UpsertMediaMetadataWithDownload(ctx, metadata, &descriptor)
 		}
 		return ApplyResult{}, i.Store.UpsertMediaMetadata(ctx, metadata)
+	case EventRecentSticker:
+		return ApplyResult{}, i.Store.UpsertRecentSticker(ctx, store.RecentSticker{
+			ID:            event.Sticker.ID,
+			URL:           event.Sticker.URL,
+			DirectPath:    event.Sticker.DirectPath,
+			MediaKey:      cloneBytes(event.Sticker.MediaKey),
+			FileSHA256:    cloneBytes(event.Sticker.FileSHA256),
+			FileEncSHA256: cloneBytes(event.Sticker.FileEncSHA256),
+			FileLength:    event.Sticker.FileLength,
+			MIMEType:      event.Sticker.MIMEType,
+			FileName:      event.Sticker.FileName,
+			LocalPath:     event.Sticker.LocalPath,
+			Width:         event.Sticker.Width,
+			Height:        event.Sticker.Height,
+			Weight:        event.Sticker.Weight,
+			LastUsedAt:    event.Sticker.LastUsedAt,
+			IsFavorite:    event.Sticker.IsFavorite,
+			IsAnimated:    event.Sticker.IsAnimated,
+			IsLottie:      event.Sticker.IsLottie,
+			IsAvatar:      event.Sticker.IsAvatar,
+			ImageHash:     event.Sticker.ImageHash,
+			UpdatedAt:     event.Sticker.UpdatedAt,
+		})
+	case EventRecentStickerRemove:
+		return ApplyResult{}, i.Store.DeleteRecentStickerByLastUsedAt(ctx, event.StickerRemove.LastUsedAt)
 	case EventReceiptUpdate:
 		if event.Receipt.MessageID == "" {
 			return ApplyResult{}, fmt.Errorf("receipt message id is required")

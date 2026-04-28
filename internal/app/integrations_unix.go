@@ -52,6 +52,10 @@ func platformDefaultFilePickerCommand() string {
 	return "yazi --chooser-file {chooser}"
 }
 
+func platformDefaultStickerPickerCommand() string {
+	return "nsxiv -t -o -p {files}"
+}
+
 func platformDefaultAudioPlayerCommand() string {
 	return "mpv --no-video --no-terminal --really-quiet {path}"
 }

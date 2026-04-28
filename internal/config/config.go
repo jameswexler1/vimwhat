@@ -25,6 +25,7 @@ type Config struct {
 	ClipboardImagePasteCommand string
 	ClipboardImageCopyCommand  string
 	FilePickerCommand          string
+	StickerPickerCommand       string
 	ImageViewerCommand         string
 	VideoPlayerCommand         string
 	AudioPlayerCommand         string
@@ -66,26 +67,27 @@ func Default(paths Paths) Config {
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:              platformDefaultEditor(),
-		PreviewBackend:      "auto",
-		EmojiMode:           EmojiModeAuto,
-		IndicatorNormal:     IndicatorPywal,
-		IndicatorInsert:     IndicatorPywal,
-		IndicatorVisual:     IndicatorPywal,
-		IndicatorCommand:    IndicatorPywal,
-		IndicatorSearch:     IndicatorPywal,
-		NotificationBackend: "auto",
-		FilePickerCommand:   platformDefaultFilePickerCommand(),
-		ImageViewerCommand:  platformDefaultImageViewerCommand(),
-		VideoPlayerCommand:  platformDefaultVideoPlayerCommand(),
-		AudioPlayerCommand:  platformDefaultAudioPlayerCommand(),
-		FileOpenerCommand:   platformDefaultFileOpenerCommand(),
-		LeaderKey:           "space",
-		Keymap:              DefaultKeymap(),
-		PreviewMaxWidth:     67,
-		PreviewMaxHeight:    18,
-		PreviewDelayMS:      80,
-		DownloadsDir:        downloadsDir,
+		Editor:               platformDefaultEditor(),
+		PreviewBackend:       "auto",
+		EmojiMode:            EmojiModeAuto,
+		IndicatorNormal:      IndicatorPywal,
+		IndicatorInsert:      IndicatorPywal,
+		IndicatorVisual:      IndicatorPywal,
+		IndicatorCommand:     IndicatorPywal,
+		IndicatorSearch:      IndicatorPywal,
+		NotificationBackend:  "auto",
+		FilePickerCommand:    platformDefaultFilePickerCommand(),
+		StickerPickerCommand: platformDefaultStickerPickerCommand(),
+		ImageViewerCommand:   platformDefaultImageViewerCommand(),
+		VideoPlayerCommand:   platformDefaultVideoPlayerCommand(),
+		AudioPlayerCommand:   platformDefaultAudioPlayerCommand(),
+		FileOpenerCommand:    platformDefaultFileOpenerCommand(),
+		LeaderKey:            "space",
+		Keymap:               DefaultKeymap(),
+		PreviewMaxWidth:      67,
+		PreviewMaxHeight:     18,
+		PreviewDelayMS:       80,
+		DownloadsDir:         downloadsDir,
 	}
 }
 
@@ -180,6 +182,8 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.ClipboardImageCopyCommand = parsed
 		case "file_picker_command":
 			cfg.FilePickerCommand = parsed
+		case "sticker_picker_command":
+			cfg.StickerPickerCommand = parsed
 		case "image_viewer_command":
 			cfg.ImageViewerCommand = parsed
 		case "video_player_command":

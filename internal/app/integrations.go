@@ -420,6 +420,224 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 	})
 }
 
+func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd {
+	stickers, err := stickerPickerCandidates(context.Background(), db, 96)
+	if err != nil {
+		return stickerPickerError(err)
+	}
+	if len(stickers) == 0 {
+		return stickerPickerError(fmt.Errorf("no cached recent stickers available"))
+	}
+	pickerDir, pickerFiles, stickersByPath, err := prepareStickerPickerFiles(paths, stickers)
+	if err != nil {
+		return stickerPickerError(err)
+	}
+	chooserPath, err := createStickerChooserFile(paths)
+	if err != nil {
+		_ = os.RemoveAll(pickerDir)
+		return stickerPickerError(err)
+	}
+
+	commandTemplate := strings.TrimSpace(cfg.StickerPickerCommand)
+	if commandTemplate == "" {
+		commandTemplate = platformDefaultStickerPickerCommand()
+	}
+	argv, err := splitCommandLine(commandTemplate)
+	if err != nil {
+		_ = os.RemoveAll(pickerDir)
+		_ = os.Remove(chooserPath)
+		return stickerPickerError(err)
+	}
+	argv = expandStickerPickerArgs(argv, chooserPath, pickerDir, pickerFiles)
+	if len(argv) == 0 {
+		_ = os.RemoveAll(pickerDir)
+		_ = os.Remove(chooserPath)
+		return stickerPickerError(fmt.Errorf("sticker picker command is empty"))
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		_ = os.RemoveAll(pickerDir)
+		_ = os.Remove(chooserPath)
+		return stickerPickerError(fmt.Errorf("sticker picker %q not found", argv[0]))
+	}
+
+	var stdout bytes.Buffer
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdout = &stdout
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		defer os.RemoveAll(pickerDir)
+		defer os.Remove(chooserPath)
+		if err != nil {
+			return ui.StickerPickedMsg{Err: err}
+		}
+		selected := firstNonEmptyLine(stdout.String())
+		if data, readErr := os.ReadFile(chooserPath); readErr == nil {
+			if fromChooser := firstNonEmptyLine(string(data)); fromChooser != "" {
+				selected = fromChooser
+			}
+		}
+		if selected == "" {
+			return ui.StickerPickedMsg{Cancelled: true}
+		}
+		sticker, ok := selectedStickerForPath(selected, stickersByPath)
+		if !ok {
+			return ui.StickerPickedMsg{Err: fmt.Errorf("selected sticker is not from the picker set")}
+		}
+		return ui.StickerPickedMsg{Sticker: sticker}
+	})
+}
+
+func stickerPickerCandidates(ctx context.Context, db *store.Store, limit int) ([]store.RecentSticker, error) {
+	if db == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+	stickers, err := db.ListRecentStickers(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]store.RecentSticker, 0, len(stickers))
+	for _, sticker := range stickers {
+		if !stickerPickerUsable(sticker) {
+			continue
+		}
+		out = append(out, sticker)
+	}
+	return out, nil
+}
+
+func stickerPickerUsable(sticker store.RecentSticker) bool {
+	if sticker.IsLottie || strings.EqualFold(filepath.Ext(sticker.FileName), ".tgs") {
+		return false
+	}
+	if !mediaPathAvailable(sticker.LocalPath) {
+		return false
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(sticker.MIMEType))
+	fileName := strings.ToLower(strings.TrimSpace(sticker.FileName))
+	localPath := strings.ToLower(strings.TrimSpace(sticker.LocalPath))
+	return mimeType == "image/webp" || strings.HasSuffix(fileName, ".webp") || strings.HasSuffix(localPath, ".webp")
+}
+
+func prepareStickerPickerFiles(paths config.Paths, stickers []store.RecentSticker) (string, []string, map[string]store.RecentSticker, error) {
+	root := paths.TransientDir
+	if strings.TrimSpace(root) == "" {
+		root = os.TempDir()
+	}
+	dir, err := os.MkdirTemp(filepath.Join(root, "stickers"), "picker-*")
+	if err != nil {
+		if mkdirErr := os.MkdirAll(filepath.Join(root, "stickers"), 0o700); mkdirErr != nil {
+			return "", nil, nil, fmt.Errorf("create sticker picker root: %w", mkdirErr)
+		}
+		dir, err = os.MkdirTemp(filepath.Join(root, "stickers"), "picker-*")
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("create sticker picker dir: %w", err)
+		}
+	}
+	pickerFiles := make([]string, 0, len(stickers))
+	stickersByPath := make(map[string]store.RecentSticker, len(stickers)*3)
+	for i, sticker := range stickers {
+		src := strings.TrimSpace(sticker.LocalPath)
+		ext := recentStickerExtension(sticker.MIMEType, sticker.FileName, sticker.IsLottie)
+		dst := filepath.Join(dir, fmt.Sprintf("%03d-%s%s", i+1, safeFileStem(sticker.ID), ext))
+		if err := linkOrCopyFile(src, dst); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", nil, nil, fmt.Errorf("prepare sticker picker file: %w", err)
+		}
+		pickerFiles = append(pickerFiles, dst)
+		registerStickerPickerPath(stickersByPath, dst, sticker)
+	}
+	return dir, pickerFiles, stickersByPath, nil
+}
+
+func createStickerChooserFile(paths config.Paths) (string, error) {
+	root := strings.TrimSpace(paths.TransientDir)
+	if root == "" {
+		root = os.TempDir()
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create sticker chooser dir: %w", err)
+	}
+	chooser, err := os.CreateTemp(root, "vimwhat-sticker-chooser-*")
+	if err != nil {
+		return "", fmt.Errorf("create sticker chooser: %w", err)
+	}
+	path := chooser.Name()
+	if err := chooser.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
+func expandStickerPickerArgs(argv []string, chooserPath, pickerDir string, pickerFiles []string) []string {
+	out := make([]string, 0, len(argv)+len(pickerFiles))
+	filesExpanded := false
+	for _, arg := range argv {
+		arg = strings.ReplaceAll(arg, "{chooser}", chooserPath)
+		arg = strings.ReplaceAll(arg, "{dir}", pickerDir)
+		if arg == "{files}" {
+			out = append(out, pickerFiles...)
+			filesExpanded = true
+			continue
+		}
+		if strings.Contains(arg, "{files}") {
+			out = append(out, strings.ReplaceAll(arg, "{files}", strings.Join(pickerFiles, " ")))
+			filesExpanded = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	if !filesExpanded {
+		out = append(out, pickerFiles...)
+	}
+	return out
+}
+
+func selectedStickerForPath(path string, stickersByPath map[string]store.RecentSticker) (store.RecentSticker, bool) {
+	path = strings.Trim(strings.TrimSpace(path), `"'`)
+	if path == "" {
+		return store.RecentSticker{}, false
+	}
+	for _, candidate := range []string{path, filepath.Clean(path)} {
+		if sticker, ok := stickersByPath[candidate]; ok {
+			return sticker, true
+		}
+		if abs, err := filepath.Abs(candidate); err == nil {
+			if sticker, ok := stickersByPath[abs]; ok {
+				return sticker, true
+			}
+		}
+	}
+	return store.RecentSticker{}, false
+}
+
+func registerStickerPickerPath(stickersByPath map[string]store.RecentSticker, path string, sticker store.RecentSticker) {
+	path = filepath.Clean(path)
+	stickersByPath[path] = sticker
+	if abs, err := filepath.Abs(path); err == nil {
+		stickersByPath[abs] = sticker
+	}
+}
+
+func linkOrCopyFile(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 func openMedia(cfg config.Config, item store.MediaMetadata) tea.Cmd {
 	cmd, path, err := mediaOpenCommand(cfg, item)
 	if err != nil {
@@ -561,6 +779,12 @@ func attachmentPickerError(err error) tea.Cmd {
 	}
 }
 
+func stickerPickerError(err error) tea.Cmd {
+	return func() tea.Msg {
+		return ui.StickerPickedMsg{Err: err}
+	}
+}
+
 func firstNonEmptyLine(value string) string {
 	for _, line := range strings.Split(value, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -585,6 +809,21 @@ func mediaForOutgoingMessage(messageID string, attachments []ui.Attachment, upda
 		})
 	}
 	return mediaItems
+}
+
+func mediaForOutgoingStickerMessage(messageID string, sticker store.RecentSticker, updatedAt time.Time) []store.MediaMetadata {
+	return []store.MediaMetadata{{
+		MessageID:     messageID,
+		Kind:          "sticker",
+		MIMEType:      sticker.MIMEType,
+		FileName:      sticker.FileName,
+		SizeBytes:     sticker.FileLength,
+		LocalPath:     sticker.LocalPath,
+		DownloadState: "downloaded",
+		IsAnimated:    sticker.IsAnimated,
+		IsLottie:      sticker.IsLottie,
+		UpdatedAt:     updatedAt,
+	}}
 }
 
 func liveMediaForOutgoingMessage(messageID string, attachments []ui.Attachment, updatedAt time.Time) []store.MediaMetadata {

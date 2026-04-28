@@ -172,6 +172,35 @@ var migrations = []migration{
 			`ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		name: "0009_recent_stickers",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS recent_stickers (
+				id TEXT PRIMARY KEY,
+				url TEXT NOT NULL DEFAULT '',
+				direct_path TEXT NOT NULL DEFAULT '',
+				media_key BLOB NOT NULL DEFAULT X'',
+				file_sha256 BLOB NOT NULL DEFAULT X'',
+				file_enc_sha256 BLOB NOT NULL DEFAULT X'',
+				file_length INTEGER NOT NULL DEFAULT 0,
+				mime_type TEXT NOT NULL DEFAULT '',
+				file_name TEXT NOT NULL DEFAULT '',
+				local_path TEXT NOT NULL DEFAULT '',
+				width INTEGER NOT NULL DEFAULT 0,
+				height INTEGER NOT NULL DEFAULT 0,
+				weight REAL NOT NULL DEFAULT 0,
+				last_used_at INTEGER NOT NULL DEFAULT 0,
+				is_favorite INTEGER NOT NULL DEFAULT 0,
+				is_animated INTEGER NOT NULL DEFAULT 0,
+				is_lottie INTEGER NOT NULL DEFAULT 0,
+				is_avatar INTEGER NOT NULL DEFAULT 0,
+				image_hash TEXT NOT NULL DEFAULT '',
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX IF NOT EXISTS recent_stickers_sort_idx
+				ON recent_stickers (last_used_at DESC, weight DESC, updated_at DESC, id ASC)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

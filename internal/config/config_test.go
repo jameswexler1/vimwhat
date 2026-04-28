@@ -41,14 +41,20 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 		if cfg.ImageViewerCommand != "" || cfg.VideoPlayerCommand != "" || !strings.Contains(cfg.AudioPlayerCommand, "rundll32.exe") || !strings.Contains(cfg.FileOpenerCommand, "rundll32.exe") {
 			t.Fatalf("windows media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 		}
+		if !strings.Contains(cfg.StickerPickerCommand, "powershell.exe") || !strings.Contains(cfg.StickerPickerCommand, "{chooser}") || !strings.Contains(cfg.StickerPickerCommand, "{dir}") {
+			t.Fatalf("windows StickerPickerCommand = %q", cfg.StickerPickerCommand)
+		}
 	} else if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
+	}
+	if runtime.GOOS != "windows" && cfg.StickerPickerCommand != "nsxiv -t -o -p {files}" {
+		t.Fatalf("StickerPickerCommand = %q", cfg.StickerPickerCommand)
 	}
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q yank %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.ConfirmRun)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -75,6 +81,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`clipboard_image_paste_command = "wl-paste --type image/png"`,
 		`clipboard_image_copy_command = "wl-copy --type {mime}"`,
 		`file_picker_command = "yazi --chooser-file {chooser}"`,
+		`sticker_picker_command = "nsxiv -t -o -p {files}"`,
 		`image_viewer_command = "imv {path}"`,
 		`video_player_command = "mpv --force-window {path}"`,
 		`audio_player_command = "mpv --no-video {path}"`,
@@ -83,6 +90,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_normal_quit = "x"`,
 		`key_normal_yank_message = "Y"`,
 		`key_normal_edit_message = "leader e"`,
+		`key_normal_pick_sticker = "leader t"`,
 		`key_normal_copy_image = "leader c"`,
 		`key_normal_save_media = "leader y"`,
 		`key_insert_paste_image = "ctrl+p"`,
@@ -132,6 +140,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.FilePickerCommand != "yazi --chooser-file {chooser}" {
 		t.Fatalf("FilePickerCommand = %q", cfg.FilePickerCommand)
 	}
+	if cfg.StickerPickerCommand != "nsxiv -t -o -p {files}" {
+		t.Fatalf("StickerPickerCommand = %q", cfg.StickerPickerCommand)
+	}
 	if cfg.ImageViewerCommand != "imv {path}" {
 		t.Fatalf("ImageViewerCommand = %q", cfg.ImageViewerCommand)
 	}
@@ -147,8 +158,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
-		t.Fatalf("keymap = quit %q yank %q edit %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
+		t.Fatalf("keymap = quit %q yank %q edit %q sticker %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)

@@ -66,6 +66,7 @@ type Adapter interface {
 	CanonicalChatJID(ctx context.Context, chatJID string) (string, error)
 	SendText(ctx context.Context, request TextSendRequest) (SendResult, error)
 	SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error)
+	SendSticker(ctx context.Context, request StickerSendRequest) (SendResult, error)
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
 	DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error)
@@ -1087,19 +1088,21 @@ type SendResult struct {
 type EventKind string
 
 const (
-	EventChatUpsert       EventKind = "chat_upsert"
-	EventMessageUpsert    EventKind = "message_upsert"
-	EventMessageEdit      EventKind = "message_edit"
-	EventMessageDelete    EventKind = "message_delete"
-	EventReceiptUpdate    EventKind = "receipt_update"
-	EventReactionUpdate   EventKind = "reaction_update"
-	EventPresenceUpdate   EventKind = "presence_update"
-	EventMediaMetadata    EventKind = "media_metadata"
-	EventConnectionState  EventKind = "connection_state"
-	EventHistoryStatus    EventKind = "history_status"
-	EventOfflineSync      EventKind = "offline_sync"
-	EventContactUpsert    EventKind = "contact_upsert"
-	EventChatAvatarUpdate EventKind = "chat_avatar_update"
+	EventChatUpsert          EventKind = "chat_upsert"
+	EventMessageUpsert       EventKind = "message_upsert"
+	EventMessageEdit         EventKind = "message_edit"
+	EventMessageDelete       EventKind = "message_delete"
+	EventReceiptUpdate       EventKind = "receipt_update"
+	EventReactionUpdate      EventKind = "reaction_update"
+	EventPresenceUpdate      EventKind = "presence_update"
+	EventMediaMetadata       EventKind = "media_metadata"
+	EventRecentSticker       EventKind = "recent_sticker"
+	EventRecentStickerRemove EventKind = "recent_sticker_remove"
+	EventConnectionState     EventKind = "connection_state"
+	EventHistoryStatus       EventKind = "history_status"
+	EventOfflineSync         EventKind = "offline_sync"
+	EventContactUpsert       EventKind = "contact_upsert"
+	EventChatAvatarUpdate    EventKind = "chat_avatar_update"
 )
 
 type ConnectionState string
@@ -1114,20 +1117,22 @@ const (
 )
 
 type Event struct {
-	Kind       EventKind
-	Chat       ChatEvent
-	Message    MessageEvent
-	Edit       MessageEditEvent
-	Delete     MessageDeleteEvent
-	Receipt    ReceiptEvent
-	Reaction   ReactionEvent
-	Presence   PresenceEvent
-	Media      MediaEvent
-	Connection ConnectionEvent
-	History    HistoryEvent
-	Offline    OfflineSyncEvent
-	Contact    ContactEvent
-	Avatar     AvatarEvent
+	Kind          EventKind
+	Chat          ChatEvent
+	Message       MessageEvent
+	Edit          MessageEditEvent
+	Delete        MessageDeleteEvent
+	Receipt       ReceiptEvent
+	Reaction      ReactionEvent
+	Presence      PresenceEvent
+	Media         MediaEvent
+	Sticker       RecentStickerEvent
+	StickerRemove RecentStickerRemoveEvent
+	Connection    ConnectionEvent
+	History       HistoryEvent
+	Offline       OfflineSyncEvent
+	Contact       ContactEvent
+	Avatar        AvatarEvent
 }
 
 type ApplyResult struct {
@@ -1268,4 +1273,33 @@ type MediaEvent struct {
 	UpdatedAt          time.Time
 	Download           MediaDownloadDescriptor
 	Historical         bool
+}
+
+type RecentStickerEvent struct {
+	ID            string
+	URL           string
+	DirectPath    string
+	MediaKey      []byte
+	FileSHA256    []byte
+	FileEncSHA256 []byte
+	FileLength    int64
+	MIMEType      string
+	FileName      string
+	LocalPath     string
+	Width         int
+	Height        int
+	Weight        float64
+	LastUsedAt    time.Time
+	IsFavorite    bool
+	IsAnimated    bool
+	IsLottie      bool
+	IsAvatar      bool
+	ImageHash     string
+	UpdatedAt     time.Time
+	Historical    bool
+}
+
+type RecentStickerRemoveEvent struct {
+	LastUsedAt time.Time
+	UpdatedAt  time.Time
 }

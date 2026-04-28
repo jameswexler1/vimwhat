@@ -1891,6 +1891,246 @@ func scanReaction(row scanner) (Reaction, error) {
 	return reaction, nil
 }
 
+func (s *Store) UpsertRecentSticker(ctx context.Context, sticker RecentSticker) error {
+	if strings.TrimSpace(sticker.ID) == "" {
+		return fmt.Errorf("recent sticker id is required")
+	}
+	if sticker.UpdatedAt.IsZero() {
+		sticker.UpdatedAt = time.Now()
+	}
+	if sticker.FileName == "" {
+		sticker.FileName = recentStickerFileName(sticker.MIMEType, sticker.IsLottie)
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO recent_stickers (
+			id, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+			mime_type, file_name, local_path, width, height, weight, last_used_at,
+			is_favorite, is_animated, is_lottie, is_avatar, image_hash, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			url = CASE WHEN excluded.url != '' THEN excluded.url ELSE recent_stickers.url END,
+			direct_path = CASE WHEN excluded.direct_path != '' THEN excluded.direct_path ELSE recent_stickers.direct_path END,
+			media_key = CASE WHEN length(excluded.media_key) > 0 THEN excluded.media_key ELSE recent_stickers.media_key END,
+			file_sha256 = CASE WHEN length(excluded.file_sha256) > 0 THEN excluded.file_sha256 ELSE recent_stickers.file_sha256 END,
+			file_enc_sha256 = CASE WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256 ELSE recent_stickers.file_enc_sha256 END,
+			file_length = CASE WHEN excluded.file_length > 0 THEN excluded.file_length ELSE recent_stickers.file_length END,
+			mime_type = CASE WHEN excluded.mime_type != '' THEN excluded.mime_type ELSE recent_stickers.mime_type END,
+			file_name = CASE WHEN excluded.file_name != '' THEN excluded.file_name ELSE recent_stickers.file_name END,
+			local_path = CASE WHEN excluded.local_path != '' THEN excluded.local_path ELSE recent_stickers.local_path END,
+			width = CASE WHEN excluded.width > 0 THEN excluded.width ELSE recent_stickers.width END,
+			height = CASE WHEN excluded.height > 0 THEN excluded.height ELSE recent_stickers.height END,
+			weight = CASE WHEN excluded.weight > 0 THEN excluded.weight ELSE recent_stickers.weight END,
+			last_used_at = CASE WHEN excluded.last_used_at > 0 THEN excluded.last_used_at ELSE recent_stickers.last_used_at END,
+			is_favorite = CASE
+				WHEN excluded.is_favorite != 0 THEN excluded.is_favorite
+				ELSE recent_stickers.is_favorite
+			END,
+			is_animated = CASE
+				WHEN excluded.is_animated != 0 THEN excluded.is_animated
+				ELSE recent_stickers.is_animated
+			END,
+			is_lottie = CASE
+				WHEN excluded.is_lottie != 0 THEN excluded.is_lottie
+				ELSE recent_stickers.is_lottie
+			END,
+			is_avatar = CASE
+				WHEN excluded.is_avatar != 0 THEN excluded.is_avatar
+				ELSE recent_stickers.is_avatar
+			END,
+			image_hash = CASE WHEN excluded.image_hash != '' THEN excluded.image_hash ELSE recent_stickers.image_hash END,
+			updated_at = excluded.updated_at
+	`, sticker.ID,
+		sticker.URL,
+		sticker.DirectPath,
+		blobOrEmpty(sticker.MediaKey),
+		blobOrEmpty(sticker.FileSHA256),
+		blobOrEmpty(sticker.FileEncSHA256),
+		sticker.FileLength,
+		sticker.MIMEType,
+		sticker.FileName,
+		sticker.LocalPath,
+		sticker.Width,
+		sticker.Height,
+		sticker.Weight,
+		unixOrZero(sticker.LastUsedAt),
+		boolToInt(sticker.IsFavorite),
+		boolToInt(sticker.IsAnimated),
+		boolToInt(sticker.IsLottie),
+		boolToInt(sticker.IsAvatar),
+		sticker.ImageHash,
+		sticker.UpdatedAt.Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert recent sticker %s: %w", sticker.ID, err)
+	}
+	return nil
+}
+
+func (s *Store) ListRecentStickers(ctx context.Context, limit int) ([]RecentSticker, error) {
+	if limit <= 0 {
+		limit = 64
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+			mime_type, file_name, local_path, width, height, weight, last_used_at,
+			is_favorite, is_animated, is_lottie, is_avatar, image_hash, updated_at
+		FROM recent_stickers
+		ORDER BY last_used_at DESC, weight DESC, updated_at DESC, id ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent stickers: %w", err)
+	}
+	defer rows.Close()
+
+	var stickers []RecentSticker
+	for rows.Next() {
+		sticker, err := scanRecentSticker(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan recent sticker: %w", err)
+		}
+		stickers = append(stickers, sticker)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent stickers: %w", err)
+	}
+	return stickers, nil
+}
+
+func (s *Store) RecentSticker(ctx context.Context, id string) (RecentSticker, bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return RecentSticker{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+			mime_type, file_name, local_path, width, height, weight, last_used_at,
+			is_favorite, is_animated, is_lottie, is_avatar, image_hash, updated_at
+		FROM recent_stickers
+		WHERE id = ?
+	`, id)
+	sticker, err := scanRecentSticker(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return RecentSticker{}, false, nil
+		}
+		return RecentSticker{}, false, fmt.Errorf("load recent sticker %s: %w", id, err)
+	}
+	return sticker, true, nil
+}
+
+func (s *Store) UpdateRecentStickerLocalPath(ctx context.Context, id, localPath string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("recent sticker id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE recent_stickers
+		SET local_path = ?, updated_at = ?
+		WHERE id = ?
+	`, strings.TrimSpace(localPath), time.Now().Unix(), id)
+	if err != nil {
+		return fmt.Errorf("update recent sticker local path %s: %w", id, err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteRecentStickerByLastUsedAt(ctx context.Context, lastUsedAt time.Time) error {
+	if lastUsedAt.IsZero() {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM recent_stickers WHERE last_used_at = ?`, lastUsedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("delete recent sticker at %s: %w", lastUsedAt.Format(time.RFC3339), err)
+	}
+	return nil
+}
+
+func scanRecentSticker(row scanner) (RecentSticker, error) {
+	var (
+		sticker      RecentSticker
+		lastUsedUnix int64
+		updatedUnix  int64
+		isFavorite   int
+		isAnimated   int
+		isLottie     int
+		isAvatar     int
+	)
+	if err := row.Scan(
+		&sticker.ID,
+		&sticker.URL,
+		&sticker.DirectPath,
+		&sticker.MediaKey,
+		&sticker.FileSHA256,
+		&sticker.FileEncSHA256,
+		&sticker.FileLength,
+		&sticker.MIMEType,
+		&sticker.FileName,
+		&sticker.LocalPath,
+		&sticker.Width,
+		&sticker.Height,
+		&sticker.Weight,
+		&lastUsedUnix,
+		&isFavorite,
+		&isAnimated,
+		&isLottie,
+		&isAvatar,
+		&sticker.ImageHash,
+		&updatedUnix,
+	); err != nil {
+		return RecentSticker{}, err
+	}
+	if lastUsedUnix > 0 {
+		sticker.LastUsedAt = time.Unix(lastUsedUnix, 0)
+	}
+	if updatedUnix > 0 {
+		sticker.UpdatedAt = time.Unix(updatedUnix, 0)
+	}
+	sticker.IsFavorite = isFavorite == 1
+	sticker.IsAnimated = isAnimated == 1
+	sticker.IsLottie = isLottie == 1
+	sticker.IsAvatar = isAvatar == 1
+	return sticker, nil
+}
+
+func recentStickerFileName(mimeType string, lottie bool) string {
+	if lottie {
+		return "sticker.tgs"
+	}
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "image/png":
+		return "sticker.png"
+	case "application/x-tgsticker", "application/x-tgs", "application/gzip":
+		return "sticker.tgs"
+	default:
+		return "sticker.webp"
+	}
+}
+
+func unixOrZero(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.Unix()
+}
+
+func cloneBytes(input []byte) []byte {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([]byte, len(input))
+	copy(out, input)
+	return out
+}
+
+func blobOrEmpty(input []byte) []byte {
+	if len(input) == 0 {
+		return []byte{}
+	}
+	return cloneBytes(input)
+}
+
 func boolToInt(value bool) int {
 	if value {
 		return 1

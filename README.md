@@ -2,7 +2,7 @@
 
 `vimwhat` is a native Linux and Windows vim-centric WhatsApp TUI written in Go. The app is now a DB-first live client: the Bubble Tea interface renders from local SQLite state while a paired `whatsmeow` session connects in the background for live WhatsApp traffic.
 
-The project is still pre-release, but it is no longer just a local shell. Current builds include QR login, live ingestion, lazy history fetch, remote media download, outbound text and single-attachment media send, message interactions, desktop notifications, avatar/sticker rendering, and data export helpers.
+The project is still pre-release, but it is no longer just a local shell. Current builds include QR login, live ingestion, lazy history fetch, remote media download, outbound text, single-attachment media send, recent-sticker send, message interactions, desktop notifications, avatar/sticker rendering, and data export helpers.
 
 ## Current status
 
@@ -17,6 +17,7 @@ Implemented:
 - On-demand remote history fetch for the focused chat, triggered by `:history fetch` or by scrolling above the loaded message window.
 - Remote media download for received images, videos, audio, documents, and stickers, using persisted WhatsApp download descriptors and temp-backed managed caches.
 - Outbound plain text plus one local attachment per message, including quote context, image/video/document captions, generic audio send, audio-caption rejection, `sending`/`sent`/`failed` status updates, and failed-media retry via `R` or `:retry-message`.
+- Recent WhatsApp stickers are cached in temporary storage when seen in history/app-state sync, selectable with the configured sticker picker, and sent through WhatsApp as sticker messages rather than image attachments.
 - Message interactions: auto/manual mark-read, reactions send/clear and rendering, own-message edit, own-message delete-for-everyone, inbound edit/revoke ingestion, replies, quote-jump, right-edge reply gesture, and typing presence.
 - Media UI with backend detection for Sixel, Unix `ueberzug++`, `chafa`, native external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through platform defaults or configured commands.
 - Desktop notifications for new incoming messages with native Linux/macOS/Windows backends or an argv-safe command override, with suppression for muted chats, duplicates, outgoing messages, historical imports, reaction-only updates, and the active chat while the app is known to be focused.
@@ -42,7 +43,7 @@ For more detailed stage notes and upcoming validation work, see `PLAN.md`.
   - Linux/Windows terminals with support: `chafa` or `img2sixel` for inline media and avatar previews.
   - Linux graphical terminals: `ueberzug++` for overlay previews.
   - Linux/Windows: `ffmpeg` for generated video thumbnails.
-  - Linux: `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands.
+  - Linux: `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands and the default sticker thumbnail picker.
   - Linux: `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste. Windows uses native PowerShell/clipboard commands by default.
   - `notify-send`, `gdbus`, `dbus-send`, `osascript`, or `powershell.exe` for native notifications, depending on OS.
 
@@ -173,6 +174,7 @@ key_normal_open = "enter"
 key_normal_open_media = "o"
 key_normal_yank_message = "y"
 key_normal_edit_message = "leader e"
+key_normal_pick_sticker = "leader t"
 key_normal_copy_image = "leader y"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
@@ -207,6 +209,7 @@ Useful command-mode actions:
 :attach
 :attach <path>
 :edit-message
+:sticker
 :delete-message
 :delete-message-everybody
 :filter unread
@@ -221,6 +224,8 @@ Useful command-mode actions:
 ```
 
 Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the current clipboard image as the composer attachment, preserving composer text as the caption. `key_normal_copy_image` copies the focused image message to the clipboard and auto-downloads remote image media first when possible. The default image clipboard commands auto-detect Wayland/X11 tools; set `clipboard_image_paste_command` or `clipboard_image_copy_command` to override them. Paste commands may write to `{path}` or stdout, and copy commands may use `{path}` and `{mime}` or receive image bytes on stdin.
+
+Sticker sending uses `key_normal_pick_sticker` or `:sticker`. Linux defaults to `sticker_picker_command = "nsxiv -t -o -p {files}"`; commands may use `{files}` for the temporary sticker file list, `{dir}` for the picker directory, and `{chooser}` for a chooser-output file. WebP stickers are selectable in v1; Lottie/TGS stickers are cached as metadata but skipped by the current picker/send path.
 
 All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<action>` variables. Bindings accept printable single keys plus named tokens such as `space`, `enter`, `esc`, `tab`, `shift+tab`, `backspace`, `ctrl+x`, `alt+x`, `alt+enter`, and leader sequences. Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.
 
