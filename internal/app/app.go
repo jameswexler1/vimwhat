@@ -142,6 +142,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	readReceiptRequests := make(chan readReceiptRequest, readReceiptQueueSize)
 	reactionRequests := make(chan reactionRequest, reactionQueueSize)
 	deleteEveryoneRequests := make(chan deleteEveryoneRequest, deleteEveryoneQueueSize)
+	editMessageRequests := make(chan editMessageRequest, editMessageQueueSize)
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
@@ -156,7 +157,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, editMessageRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -354,6 +355,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
 			return deleteMessageForEveryoneCmd(liveEnabled, deleteEveryoneRequests, message)
 		},
+		EditMessage: func(message store.Message, body string) tea.Cmd {
+			return editMessageCmd(liveEnabled, editMessageRequests, message, body)
+		},
 		SaveMedia: func(media store.MediaMetadata) error {
 			return env.Store.UpsertMediaMetadata(context.Background(), media)
 		},
@@ -445,6 +449,9 @@ const (
 	deleteEveryoneQueueSize    = 16
 	deleteEveryoneQueueTimeout = 5 * time.Second
 	deleteEveryoneTimeout      = 90 * time.Second
+	editMessageQueueSize       = 16
+	editMessageQueueTimeout    = 5 * time.Second
+	editMessageTimeout         = 90 * time.Second
 	presenceQueueSize          = 32
 	presenceSendTimeout        = 5 * time.Second
 	mediaDownloadWorkers       = 2
@@ -526,6 +533,19 @@ type deleteEveryoneResult struct {
 	Err       error
 }
 
+type editMessageRequest struct {
+	Message store.Message
+	Body    string
+	Result  chan<- editMessageResult
+}
+
+type editMessageResult struct {
+	MessageID string
+	Body      string
+	EditedAt  time.Time
+	Err       error
+}
+
 func deleteMessageForEveryoneCmd(liveEnabled bool, requests chan<- deleteEveryoneRequest, message store.Message) tea.Cmd {
 	return func() tea.Msg {
 		if !liveEnabled {
@@ -554,6 +574,38 @@ func deleteMessageForEveryoneCmd(liveEnabled bool, requests chan<- deleteEveryon
 			return ui.MessageDeletedForEveryoneMsg{MessageID: deleted.MessageID, Err: deleted.Err}
 		case <-waitCtx.Done():
 			return ui.MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: fmt.Errorf("delete for everybody timed out")}
+		}
+	}
+}
+
+func editMessageCmd(liveEnabled bool, requests chan<- editMessageRequest, message store.Message, body string) tea.Cmd {
+	return func() tea.Msg {
+		if !liveEnabled {
+			return ui.MessageEditedMsg{MessageID: message.ID, Body: body, Err: fmt.Errorf("whatsapp is not paired")}
+		}
+		if requests == nil {
+			return ui.MessageEditedMsg{MessageID: message.ID, Body: body, Err: fmt.Errorf("edit queue is unavailable")}
+		}
+		result := make(chan editMessageResult, 1)
+		request := editMessageRequest{Message: message, Body: body, Result: result}
+
+		queueCtx, cancelQueue := context.WithTimeout(context.Background(), editMessageQueueTimeout)
+		defer cancelQueue()
+		select {
+		case requests <- request:
+		case <-queueCtx.Done():
+			return ui.MessageEditedMsg{MessageID: message.ID, Body: body, Err: fmt.Errorf("edit queue timed out")}
+		default:
+			return ui.MessageEditedMsg{MessageID: message.ID, Body: body, Err: fmt.Errorf("edit request queue is full")}
+		}
+
+		waitCtx, cancelWait := context.WithTimeout(context.Background(), editMessageTimeout)
+		defer cancelWait()
+		select {
+		case edited := <-result:
+			return ui.MessageEditedMsg{MessageID: edited.MessageID, Body: edited.Body, EditedAt: edited.EditedAt, Err: edited.Err}
+		case <-waitCtx.Done():
+			return ui.MessageEditedMsg{MessageID: message.ID, Body: body, Err: fmt.Errorf("edit timed out")}
 		}
 	}
 }
@@ -599,6 +651,7 @@ func runLiveWhatsApp(
 	readReceiptRequests <-chan readReceiptRequest,
 	reactionRequests <-chan reactionRequest,
 	deleteEveryoneRequests <-chan deleteEveryoneRequest,
+	editMessageRequests <-chan editMessageRequest,
 	presenceRequests <-chan presenceRequest,
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
@@ -905,6 +958,11 @@ func runLiveWhatsApp(
 				return
 			}
 			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-editMessageRequests:
+			if !ok {
+				return
+			}
+			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
 		case request, ok := <-presenceRequests:
 			if !ok {
 				return
@@ -1843,6 +1901,124 @@ func completeDeleteForEveryone(ctx context.Context, db *store.Store, live WhatsA
 	})
 }
 
+func handleEditMessageRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request editMessageRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if db == nil {
+		sendEditMessageResult(ctx, request, "", time.Time{}, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("edit needs WhatsApp online"))
+		return
+	}
+	if !request.Message.IsOutgoing {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("only your outgoing text messages can be edited"))
+		return
+	}
+	if strings.TrimSpace(request.Message.RemoteID) == "" {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("edit target has no WhatsApp id"))
+		return
+	}
+	if strings.TrimSpace(request.Body) == "" {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("edit body is required"))
+		return
+	}
+	if len(request.Message.Media) > 0 {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, fmt.Errorf("media captions are not editable yet"))
+		return
+	}
+	chatJID, err := canonicalizeLiveChatID(ctx, live, retryChatID(request.Message))
+	if err != nil {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, err)
+		return
+	}
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeEditMessage(ctx, db, live, updates, request, chatJID)
+		}()
+		return
+	}
+	completeEditMessage(ctx, db, live, updates, request, chatJID)
+}
+
+func sendEditMessageResult(ctx context.Context, request editMessageRequest, messageID string, editedAt time.Time, err error) {
+	if request.Result == nil {
+		return
+	}
+	if messageID == "" {
+		messageID = request.Message.ID
+	}
+	select {
+	case request.Result <- editMessageResult{MessageID: messageID, Body: strings.TrimSpace(request.Body), EditedAt: editedAt, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func completeEditMessage(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, request editMessageRequest, chatJID string) {
+	sendCtx, cancel := context.WithTimeout(ctx, editMessageTimeout)
+	defer cancel()
+	body := strings.TrimSpace(request.Body)
+	result, err := live.EditMessage(sendCtx, whatsapp.EditMessageRequest{
+		ChatJID:        chatJID,
+		TargetRemoteID: request.Message.RemoteID,
+		Body:           body,
+	})
+	if err != nil {
+		sendEditMessageResult(ctx, request, request.Message.ID, time.Time{}, err)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Status: fmt.Sprintf("edit failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	messageID := strings.TrimSpace(request.Message.ID)
+	if messageID == "" {
+		messageID = strings.TrimSpace(result.MessageID)
+	}
+	editedAt := result.Timestamp
+	if editedAt.IsZero() {
+		editedAt = time.Now()
+	}
+	updated, err := db.UpdateMessageBody(context.Background(), messageID, body, editedAt)
+	if err != nil {
+		sendEditMessageResult(ctx, request, messageID, editedAt, err)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("edit local state failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	if !updated {
+		err := fmt.Errorf("message %s does not exist", messageID)
+		sendEditMessageResult(ctx, request, messageID, editedAt, err)
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("edit local state failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendEditMessageResult(ctx, request, messageID, editedAt, nil)
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  "edited message",
+	})
+}
+
 func handlePresenceRequest(ctx context.Context, live WhatsAppLiveSession, online bool, request presenceRequest) {
 	if live == nil || !online || strings.TrimSpace(request.ChatID) == "" {
 		return
@@ -2407,6 +2583,8 @@ func isHistoricalImportEvent(event whatsapp.Event) bool {
 		return event.Chat.Historical
 	case whatsapp.EventMessageUpsert:
 		return event.Message.Historical
+	case whatsapp.EventMessageEdit:
+		return event.Edit.Historical
 	case whatsapp.EventMessageDelete:
 		return event.Delete.Historical
 	case whatsapp.EventMediaMetadata:

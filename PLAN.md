@@ -2,7 +2,7 @@
 
 ## Current Stage
 
-Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons where supported, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, native Windows runtime defaults, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially desktop delivery on fresh Linux and Windows installs, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
+Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text and single-attachment media send, protocol-backed read receipts, reactions, own-message text editing, own-message delete-for-everybody, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, stable paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons where supported, catch-up sync overlay/batching, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, image clipboard paste/copy helpers, native Windows runtime defaults, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially desktop delivery on fresh Linux and Windows installs, notification backend default resolution on a fresh config, audio/document fallback behavior, and the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
 
@@ -21,7 +21,7 @@ Implementation is past the local-shell phase and currently sits at a DB-first, l
 - First-class sticker receive/render support: sticker messages are ingested into SQLite with explicit media kind/flags, remote sticker downloads work through the existing media pipeline, PNG sticker thumbnails are cached immediately when provided by WhatsApp, sticker previews auto-inline in the message pane, and chat/notification preview text uses sticker-specific labels instead of generic file names.
 - Real outbound send from the inline composer for plain text plus one local attachment per message, with precomputed WhatsApp message IDs, local `sending`/`sent`/`failed` status updates, draft preservation on failure, captions for image/video/document sends, audio-caption rejection before queueing, ffprobe-backed generic audio send, and document fallback when audio metadata is unavailable.
 - CLI helpers for persisted data: `vimwhat media open <message-id>` reuses the normal opener flow and auto-downloads remote media when possible, while `vimwhat export chat <jid>` writes a local-only Markdown transcript into the configured downloads directory.
-- Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, own outgoing message delete-for-everybody via WhatsApp revoke with local deletion after ACK, inbound revoke ingestion, text replies with quoted metadata, quote-jump into loaded history, a right-edge `l` reply gesture from the message pane when no further pane exists to the right, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
+- Protocol-backed message interactions: auto/manual mark-read, reaction send/clear plus reaction rendering, own outgoing text edit via WhatsApp edit with local rewrite after ACK, inbound edit ingestion, own outgoing message delete-for-everybody via WhatsApp revoke with local deletion after ACK, inbound revoke ingestion, text replies with quoted metadata, quote-jump into loaded history, a right-edge `l` reply gesture from the message pane when no further pane exists to the right, direct-chat typing presence subscription/display, and best-effort composing/paused presence send while typing.
 - Cross-platform desktop notifications for new incoming messages in inactive, unmuted chats, with native Linux/macOS/Windows backends, cached chat-avatar icons on Linux when available, resilient Linux helper fallback, safe command override support, notification preview formatting for media-only messages, backend diagnostics in `doctor`, and active-chat suppression that only applies while the app window is known to be focused.
 - Retry/resend UX for failed outgoing media rows in the TUI via `R` and `:retry-message`, keeping the original failed row in chat and queueing a brand-new send attempt when the local attachment file still exists.
 - Chat title quality tracking with source precedence, group/contact metadata refresh, and safe placeholders so group JIDs/phone-like IDs are not treated as real names.
@@ -153,6 +153,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   receive/send text,
   receive/send common attachments,
   quoted replies,
+  own outgoing text edits and own-message revoke,
   reactions,
   read receipts handling,
   typing presence display if exposed cleanly,
@@ -163,7 +164,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   channels/newsletters,
   status posting/viewing,
   business-only features,
-  full message edit/revoke UI,
+  batch or media-caption message edit/revoke UI,
   starred messages,
   community management.
 - If `whatsmeow` exposes revoke/edit primitives cleanly, keep internal architecture ready for them, but do not make them required for initial ship.

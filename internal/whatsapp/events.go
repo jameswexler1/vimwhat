@@ -175,6 +175,9 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 					normalized.Message.Historical = true
 					messages++
 				}
+				if normalized.Kind == EventMessageEdit {
+					normalized.Edit.Historical = true
+				}
 				if normalized.Kind == EventMediaMetadata {
 					normalized.Media.Historical = true
 				}
@@ -324,6 +327,14 @@ func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.
 		normalized = append(normalized, Event{
 			Kind:   EventMessageDelete,
 			Delete: deleted,
+		})
+		return normalized
+	}
+
+	if edit, ok := messageEditEvent(chatID, event); ok {
+		normalized = append(normalized, Event{
+			Kind: EventMessageEdit,
+			Edit: edit,
 		})
 		return normalized
 	}
@@ -541,6 +552,14 @@ func normalizeMessageEvent(event *events.Message) []Event {
 		return normalized
 	}
 
+	if edit, ok := messageEditEvent(chatID, event); ok {
+		normalized = append(normalized, Event{
+			Kind: EventMessageEdit,
+			Edit: edit,
+		})
+		return normalized
+	}
+
 	if hasReaction {
 		normalized = append(normalized, Event{
 			Kind:     EventReactionUpdate,
@@ -645,6 +664,36 @@ func messageDeleteEvent(chatID string, event *events.Message) (MessageDeleteEven
 		ChatJID:       chatID,
 		DeletedReason: "everyone",
 		Timestamp:     event.Info.Timestamp,
+	}, true
+}
+
+func messageEditEvent(chatID string, event *events.Message) (MessageEditEvent, bool) {
+	if event == nil || event.Message == nil || !event.IsEdit {
+		return MessageEditEvent{}, false
+	}
+	protocol := event.Message.GetProtocolMessage()
+	if protocol == nil || protocol.GetType() != waE2E.ProtocolMessage_MESSAGE_EDIT || protocol.GetKey() == nil {
+		return MessageEditEvent{}, false
+	}
+	remoteID := strings.TrimSpace(protocol.GetKey().GetID())
+	body := strings.TrimSpace(messageBody(protocol.GetEditedMessage()))
+	if remoteID == "" || strings.TrimSpace(chatID) == "" || body == "" {
+		return MessageEditEvent{}, false
+	}
+	editedAt := event.Info.Timestamp
+	if millis := protocol.GetTimestampMS(); millis > 0 {
+		editedAt = time.UnixMilli(millis)
+	}
+	if editedAt.IsZero() {
+		editedAt = time.Now()
+	}
+	return MessageEditEvent{
+		MessageID: localMessageID(chatID, remoteID),
+		RemoteID:  remoteID,
+		ChatID:    chatID,
+		ChatJID:   chatID,
+		Body:      body,
+		EditedAt:  editedAt,
 	}, true
 }
 

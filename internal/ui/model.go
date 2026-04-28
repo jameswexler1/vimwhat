@@ -191,6 +191,13 @@ type MessageDeletedForEveryoneMsg struct {
 	Err       error
 }
 
+type MessageEditedMsg struct {
+	MessageID string
+	Body      string
+	EditedAt  time.Time
+	Err       error
+}
+
 type AudioProcess interface {
 	Wait() error
 	Stop() error
@@ -227,6 +234,7 @@ type Options struct {
 	StartAudio               func(media store.MediaMetadata) (AudioProcess, error)
 	DeleteMessage            func(messageID string) error
 	DeleteMessageForEveryone func(message store.Message) tea.Cmd
+	EditMessage              func(message store.Message, body string) tea.Cmd
 	SaveMedia                func(media store.MediaMetadata) error
 	DownloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 	ActiveChatChanged        func(chatID string)
@@ -302,6 +310,7 @@ type Model struct {
 	searchHistory              []string
 	deleteConfirmID            string
 	deleteForEveryoneConfirmID string
+	editTarget                 *store.Message
 	replyTo                    *store.Message
 	presenceByChat             map[string]PresenceUpdate
 	readReceiptInflight        map[string]bool
@@ -330,6 +339,7 @@ type Model struct {
 	startAudio                 func(media store.MediaMetadata) (AudioProcess, error)
 	deleteMessage              func(messageID string) error
 	deleteMessageForEveryone   func(message store.Message) tea.Cmd
+	editMessage                func(message store.Message, body string) tea.Cmd
 	saveMedia                  func(media store.MediaMetadata) error
 	downloadMedia              func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
 	activeChatChanged          func(chatID string)
@@ -428,6 +438,7 @@ func NewModel(opts Options) Model {
 		startAudio:               opts.StartAudio,
 		deleteMessage:            opts.DeleteMessage,
 		deleteMessageForEveryone: opts.DeleteMessageForEveryone,
+		editMessage:              opts.EditMessage,
 		saveMedia:                opts.SaveMedia,
 		downloadMedia:            opts.DownloadMedia,
 		activeChatChanged:        opts.ActiveChatChanged,
@@ -807,6 +818,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MessageDeletedForEveryoneMsg:
 		m.handleMessageDeletedForEveryone(msg)
 		return m.withPreviewCmd(nil)
+	case MessageEditedMsg:
+		m.handleMessageEdited(msg)
+		return m.withPreviewCmd(nil)
 	case mediaOverlayMsg:
 		if msg.Err != nil {
 			m.overlaySignature = ""
@@ -935,6 +949,7 @@ const (
 	normalActionOpen              = "open"
 	normalActionOpenMedia         = "open_media"
 	normalActionYankMessage       = "yank_message"
+	normalActionEditMessage       = "edit_message"
 	normalActionSearchNext        = "search_next"
 	normalActionSearchPrevious    = "search_previous"
 	normalActionToggleUnread      = "toggle_unread"
@@ -986,6 +1001,8 @@ func (m Model) normalActionForKey(msg tea.KeyMsg) string {
 		return normalActionOpenMedia
 	case m.keyMatches(msg, keys.NormalYankMessage):
 		return normalActionYankMessage
+	case m.keyMatches(msg, keys.NormalEditMessage):
+		return normalActionEditMessage
 	case m.keyMatches(msg, keys.NormalSearchNext):
 		return normalActionSearchNext
 	case m.keyMatches(msg, keys.NormalSearchPrevious):
@@ -1046,6 +1063,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalOpen, action: normalActionOpen},
 		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
 		{binding: keys.NormalYankMessage, action: normalActionYankMessage},
+		{binding: keys.NormalEditMessage, action: normalActionEditMessage},
 		{binding: keys.NormalSearchNext, action: normalActionSearchNext},
 		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
 		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
@@ -1178,6 +1196,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.openFocusedMedia()
 	case normalActionYankMessage:
 		return m.yankFocusedMessage()
+	case normalActionEditMessage:
+		return m.beginEditFocusedMessage()
 	case normalActionSearchNext:
 		m.advanceSearch(1)
 	case normalActionSearchPrevious:
@@ -1216,6 +1236,29 @@ func (m Model) beginReplyToFocusedMessage() (tea.Model, tea.Cmd) {
 	return m.beginInsert(&message)
 }
 
+func (m Model) beginEditFocusedMessage() (tea.Model, tea.Cmd) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	if err := m.validateEditTarget(message); err != nil {
+		m.status = fmt.Sprintf("edit unavailable: %v", err)
+		return m, nil
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	m.composer = message.Body
+	m.attachments = nil
+	m.replyTo = nil
+	target := message
+	m.editTarget = &target
+	m.handleCurrentChatActivated()
+	m.sendOwnPresence(m.currentChat().ID, true)
+	m.status = "editing message"
+	return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
+}
+
 func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
 	if len(m.chats) == 0 || m.currentChat().ID == "" {
 		m.status = "no chat selected"
@@ -1231,6 +1274,7 @@ func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
 	} else {
 		m.replyTo = nil
 	}
+	m.editTarget = nil
 	m.handleCurrentChatActivated()
 	m.sendOwnPresence(m.currentChat().ID, true)
 	return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
@@ -1387,12 +1431,24 @@ func (m Model) handleLeaderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
 	if m.keyMatches(msg, keys.InsertAttach) {
+		if m.editTarget != nil {
+			m.status = "attachments cannot be used while editing"
+			return m, nil
+		}
 		return m.startAttachmentPicker()
 	}
 	if m.keyMatches(msg, keys.InsertPasteImage) {
+		if m.editTarget != nil {
+			m.status = "attachments cannot be used while editing"
+			return m, nil
+		}
 		return m.startClipboardImagePaste()
 	}
 	if m.keyMatches(msg, keys.InsertRemoveAttachment) {
+		if m.editTarget != nil {
+			m.status = "attachments cannot be used while editing"
+			return m, nil
+		}
 		if len(m.attachments) == 0 {
 			m.status = "no staged attachments"
 			return m, nil
@@ -1410,6 +1466,17 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case m.keyMatches(msg, keys.InsertCancel):
+		if m.editTarget != nil {
+			chatID := m.currentChat().ID
+			m.composer = ""
+			m.attachments = nil
+			m.replyTo = nil
+			m.editTarget = nil
+			m.sendOwnPresence(chatID, false)
+			m.mode = ModeNormal
+			m.status = "edit cancelled"
+			return m, nil
+		}
 		if err := m.persistCurrentDraft(); err != nil {
 			m.status = fmt.Sprintf("save draft failed: %v", err)
 			return m, nil
@@ -1418,6 +1485,9 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.replyTo = nil
 		m.mode = ModeNormal
 	case m.keyMatches(msg, keys.InsertSend):
+		if m.editTarget != nil {
+			return m.submitEditedMessage()
+		}
 		body := strings.TrimSpace(m.composer)
 		if body == "" && len(m.attachments) == 0 {
 			m.status = "empty message"
@@ -1929,6 +1999,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 			break
 		}
 		return m.deleteConfirmedMessageForEveryone()
+	case cmd == "edit-message" || cmd == "edit message":
+		return m.beginEditFocusedMessage()
 	default:
 		m.status = fmt.Sprintf("unknown command: %s", cmd)
 	}
@@ -2389,7 +2461,7 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 	if strings.TrimSpace(m.lastSearch) != "" {
 		m.rebuildSearchMatches()
 	}
-	if m.mode == ModeInsert && m.composer == "" {
+	if m.mode == ModeInsert && m.editTarget == nil && m.composer == "" {
 		if draft := m.draftsByChat[m.currentChat().ID]; strings.TrimSpace(draft) != "" {
 			m.composer = draft
 		}
@@ -4208,6 +4280,70 @@ func (m Model) validateDeleteForEveryone(message store.Message) error {
 	return nil
 }
 
+func (m Model) submitEditedMessage() (tea.Model, tea.Cmd) {
+	if m.editTarget == nil {
+		m.status = "edit failed: no message selected"
+		m.mode = ModeNormal
+		return m, nil
+	}
+	body := strings.TrimSpace(m.composer)
+	target := *m.editTarget
+	if err := m.validateEditMessage(target, body); err != nil {
+		m.status = fmt.Sprintf("edit failed: %v", err)
+		return m, nil
+	}
+	cmd := m.editMessage(target, body)
+	if cmd == nil {
+		m.status = "edit failed: unavailable"
+		return m, nil
+	}
+	chatID := m.currentChat().ID
+	m.composer = ""
+	m.attachments = nil
+	m.replyTo = nil
+	m.editTarget = nil
+	m.sendOwnPresence(chatID, false)
+	m.mode = ModeNormal
+	m.focus = FocusMessages
+	m.status = "edit queued"
+	return m, cmd
+}
+
+func (m Model) validateEditMessage(message store.Message, body string) error {
+	if err := m.validateEditTarget(message); err != nil {
+		return err
+	}
+	if strings.TrimSpace(body) == "" {
+		return fmt.Errorf("edit body is required")
+	}
+	if strings.TrimSpace(body) == strings.TrimSpace(message.Body) {
+		return fmt.Errorf("message is unchanged")
+	}
+	return nil
+}
+
+func (m Model) validateEditTarget(message store.Message) error {
+	if m.editMessage == nil {
+		return fmt.Errorf("live edit is unavailable")
+	}
+	if m.connectionState != ConnectionOnline {
+		return fmt.Errorf("WhatsApp must be online")
+	}
+	if !message.IsOutgoing {
+		return fmt.Errorf("only your outgoing text messages can be edited")
+	}
+	if strings.TrimSpace(message.RemoteID) == "" {
+		return fmt.Errorf("message has no WhatsApp id")
+	}
+	if strings.TrimSpace(message.Body) == "" {
+		return fmt.Errorf("message has no editable text")
+	}
+	if len(message.Media) > 0 {
+		return fmt.Errorf("media captions are not editable yet")
+	}
+	return nil
+}
+
 func (m *Model) handleMessageDeletedForEveryone(msg MessageDeletedForEveryoneMsg) {
 	if msg.Err != nil {
 		m.status = fmt.Sprintf("delete for everybody failed: %s", shortError(msg.Err))
@@ -4224,6 +4360,65 @@ func (m *Model) handleMessageDeletedForEveryone(msg MessageDeletedForEveryoneMsg
 	}
 	m.rebuildSearchMatches()
 	m.status = "deleted message for everybody"
+}
+
+func (m *Model) handleMessageEdited(msg MessageEditedMsg) {
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("edit failed: %s", shortError(msg.Err))
+		return
+	}
+	messageID := strings.TrimSpace(msg.MessageID)
+	body := strings.TrimSpace(msg.Body)
+	if messageID == "" {
+		m.status = "edit failed: missing message id"
+		return
+	}
+	if body == "" {
+		m.status = "edit failed: empty body"
+		return
+	}
+	editedAt := msg.EditedAt
+	if editedAt.IsZero() {
+		editedAt = time.Now()
+	}
+	if !m.updateLoadedMessageBody(messageID, body, editedAt) {
+		m.status = "edited message"
+		return
+	}
+	m.rebuildSearchMatches()
+	m.status = "edited message"
+}
+
+func (m *Model) updateLoadedMessageBody(messageID, body string, editedAt time.Time) bool {
+	if strings.TrimSpace(messageID) == "" {
+		return false
+	}
+	updated := false
+	for chatID, messages := range m.messagesByChat {
+		for i := range messages {
+			if messages[i].ID != messageID {
+				continue
+			}
+			messages[i].Body = body
+			messages[i].EditedAt = editedAt
+			m.messagesByChat[chatID] = messages
+			updated = true
+			break
+		}
+	}
+	for chatID, messages := range m.unfilteredByChat {
+		for i := range messages {
+			if messages[i].ID != messageID {
+				continue
+			}
+			messages[i].Body = body
+			messages[i].EditedAt = editedAt
+			m.unfilteredByChat[chatID] = messages
+			updated = true
+			break
+		}
+	}
+	return updated
 }
 
 func (m *Model) removeLoadedMessage(messageID string) bool {

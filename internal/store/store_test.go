@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 7 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=7", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 8 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=8", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -826,6 +826,63 @@ func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestUpdateMessageBodyUpdatesEditedAtAndFTS(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	when := time.Unix(1_700_000_000, 0)
+	if err := store.AddMessage(ctx, Message{
+		ID:         "chat-1/remote-1",
+		RemoteID:   "remote-1",
+		ChatID:     "chat-1",
+		Sender:     "me",
+		Body:       "old report",
+		Timestamp:  when,
+		IsOutgoing: true,
+		Status:     "sent",
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	editedAt := when.Add(time.Minute)
+	updated, err := store.UpdateMessageBody(ctx, "chat-1/remote-1", "new report", editedAt)
+	if err != nil {
+		t.Fatalf("UpdateMessageBody() error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateMessageBody() updated = false, want true")
+	}
+
+	messages, err := store.SearchMessages(ctx, "chat-1", "new", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(new) error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "new report" || !messages[0].EditedAt.Equal(editedAt) {
+		t.Fatalf("edited messages = %+v", messages)
+	}
+	old, err := store.SearchMessages(ctx, "chat-1", "old", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(old) error = %v", err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("old search after edit = %+v, want none", old)
+	}
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "new report" {
+		t.Fatalf("chat preview after edit = %+v", chats)
+	}
+}
+
 func TestListChatsUsesStickerPreviewLabel(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
@@ -1250,8 +1307,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 7 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want seven applied and none pending", applied, pending)
+	if len(applied) != 8 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want eight applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

@@ -166,6 +166,12 @@ var migrations = []migration{
 			`ALTER TABLE media_metadata ADD COLUMN accessibility_label TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		name: "0008_message_edits",
+		sql: []string{
+			`ALTER TABLE messages ADD COLUMN edited_at INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

@@ -1778,6 +1778,9 @@ func messageBubbleMeta(message store.Message) string {
 			parts = append(parts, ticks)
 		}
 	}
+	if !message.EditedAt.IsZero() {
+		parts = append(parts, "edited")
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -2103,6 +2106,9 @@ func (m Model) renderPrompt(content, hint string) string {
 func (m Model) renderComposer(width int) string {
 	lines := []string{m.renderFooterHelpLine(width)}
 
+	if edit := m.editPreviewLine(width); edit != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(edit))
+	}
 	if quote := m.replyPreviewLine(width); quote != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(quote))
 	}
@@ -2126,6 +2132,20 @@ func (m Model) renderComposer(width int) string {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) editPreviewLine(width int) string {
+	if m.editTarget == nil {
+		return ""
+	}
+	body := strings.TrimSpace(m.sanitizeDisplayLine(firstLine(m.editTarget.Body)))
+	if body == "" {
+		body = strings.TrimSpace(m.editTarget.RemoteID)
+	}
+	if body == "" {
+		body = strings.TrimSpace(m.editTarget.ID)
+	}
+	return truncateDisplay("edit: "+body, width)
 }
 
 func (m Model) replyPreviewLine(width int) string {
@@ -2256,6 +2276,9 @@ func (m Model) composerHeight() int {
 	if m.replyTo != nil {
 		extra++
 	}
+	if m.editTarget != nil {
+		extra++
+	}
 	return min(7, max(3, len(composerLines(m.composer))+extra))
 }
 
@@ -2296,6 +2319,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalOpen), Action: "preview or open selected row"},
 			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
 			{Key: key(keys.NormalYankMessage), Action: "yank selected message"},
+			{Key: key(keys.NormalEditMessage), Action: "edit outgoing text"},
 			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
@@ -2322,7 +2346,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: "media", Action: "preview/open/save/hide, copy-image"},
 			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
 			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
-			{Key: "more", Action: "preview-backend, attach, paste-image, delete-message-everybody"},
+			{Key: "more", Action: "edit-message, preview-backend, attach, paste-image, delete-message-everybody"},
 		},
 	}
 

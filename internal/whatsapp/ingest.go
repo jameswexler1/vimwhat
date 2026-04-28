@@ -63,6 +63,16 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			MessageInserted: inserted,
 			Message:         event.Message,
 		}, err
+	case EventMessageEdit:
+		messageID := strings.TrimSpace(event.Edit.MessageID)
+		if messageID == "" && strings.TrimSpace(event.Edit.ChatID) != "" && strings.TrimSpace(event.Edit.RemoteID) != "" {
+			messageID = LocalMessageID(event.Edit.ChatID, event.Edit.RemoteID)
+		}
+		if messageID == "" {
+			return ApplyResult{}, fmt.Errorf("edit message id is required")
+		}
+		_, err := i.Store.UpdateMessageBody(ctx, messageID, event.Edit.Body, event.Edit.EditedAt)
+		return ApplyResult{}, err
 	case EventMessageDelete:
 		messageID := strings.TrimSpace(event.Delete.MessageID)
 		if messageID == "" && strings.TrimSpace(event.Delete.ChatID) != "" && strings.TrimSpace(event.Delete.RemoteID) != "" {

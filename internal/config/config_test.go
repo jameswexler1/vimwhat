@@ -82,6 +82,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`leader_key = ","`,
 		`key_normal_quit = "x"`,
 		`key_normal_yank_message = "Y"`,
+		`key_normal_edit_message = "leader e"`,
 		`key_normal_copy_image = "leader c"`,
 		`key_normal_save_media = "leader y"`,
 		`key_insert_paste_image = "ctrl+p"`,
@@ -146,8 +147,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
-		t.Fatalf("keymap = quit %q yank %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
+		t.Fatalf("keymap = quit %q yank %q edit %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -342,6 +343,7 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`clipboard_image_paste_command = ""`,
 		`clipboard_image_copy_command = ""`,
 		`key_normal_yank_message = "y"`,
+		`key_normal_edit_message = "leader e"`,
 		`key_normal_copy_image = "leader y"`,
 		`key_normal_unload_previews = "leader h f"`,
 		`key_normal_delete_for_everybody = "leader d e"`,

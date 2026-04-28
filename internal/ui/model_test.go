@@ -6588,6 +6588,135 @@ func TestDeleteMessageForEverybodyRejectsIncomingMessage(t *testing.T) {
 	}
 }
 
+func TestEditMessageUsesLeaderAndUpdatesAfterCompletion(t *testing.T) {
+	var queued store.Message
+	var queuedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "old text", IsOutgoing: true, Status: "sent"}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		EditMessage: func(message store.Message, body string) tea.Cmd {
+			queued = message
+			queuedBody = body
+			return func() tea.Msg {
+				return MessageEditedMsg{MessageID: message.ID, Body: body, EditedAt: time.Unix(1_700_000_000, 0)}
+			}
+		},
+	})
+	model.focus = FocusMessages
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	editing, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = editing.(Model)
+	if model.mode != ModeInsert || model.editTarget == nil || model.composer != "old text" {
+		t.Fatalf("edit state = mode %s target %+v composer %q", model.mode, model.editTarget, model.composer)
+	}
+
+	unchanged, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	model = unchanged.(Model)
+	if cmd != nil || !strings.Contains(model.status, "unchanged") {
+		t.Fatalf("unchanged edit = cmd %T status %q", cmd, model.status)
+	}
+	model.composer = "new text"
+	submitted, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	model = submitted.(Model)
+	if queued.ID != "m-1" || queuedBody != "new text" || cmd == nil {
+		t.Fatalf("queued edit = message %+v body %q cmd %T", queued, queuedBody, cmd)
+	}
+	if got := model.messagesByChat["chat-1"][0].Body; got != "old text" {
+		t.Fatalf("body before completion = %q, want old text", got)
+	}
+
+	handled, _ := model.Update(cmd())
+	model = handled.(Model)
+	message := model.messagesByChat["chat-1"][0]
+	if message.Body != "new text" || message.EditedAt.IsZero() {
+		t.Fatalf("message after edit = %+v", message)
+	}
+}
+
+func TestEditMessageCancelDoesNotSaveDraft(t *testing.T) {
+	saveDraftCalled := false
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice", HasDraft: true}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "old text", IsOutgoing: true, Status: "sent"}},
+			},
+			DraftsByChat: map[string]string{"chat-1": "existing draft"},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		EditMessage: func(message store.Message, body string) tea.Cmd {
+			return nil
+		},
+		SaveDraft: func(chatID, body string) error {
+			saveDraftCalled = true
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+
+	editing, _ := model.beginEditFocusedMessage()
+	model = editing.(Model)
+	model.composer = "changed text"
+	cancelled, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
+	model = cancelled.(Model)
+	if saveDraftCalled || model.draftsByChat["chat-1"] != "existing draft" || model.editTarget != nil || model.mode != ModeNormal {
+		t.Fatalf("cancel state = saveDraft %v drafts %+v target %+v mode %s", saveDraftCalled, model.draftsByChat, model.editTarget, model.mode)
+	}
+}
+
+func TestEditMessageRejectsIncomingAndMediaMessages(t *testing.T) {
+	tests := []struct {
+		name    string
+		message store.Message
+		want    string
+	}{
+		{
+			name:    "incoming",
+			message: store.Message{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "Alice", Body: "incoming"},
+			want:    "only your outgoing text messages",
+		},
+		{
+			name:    "media",
+			message: store.Message{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "caption", IsOutgoing: true, Media: []store.MediaMetadata{{MessageID: "m-1", MIMEType: "image/png"}}},
+			want:    "media captions",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewModel(Options{
+				Snapshot: store.Snapshot{
+					Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+					MessagesByChat: map[string][]store.Message{"chat-1": {tt.message}},
+					DraftsByChat:   map[string]string{},
+					ActiveChatID:   "chat-1",
+				},
+				ConnectionState: ConnectionOnline,
+				EditMessage: func(message store.Message, body string) tea.Cmd {
+					t.Fatal("EditMessage should not be called")
+					return nil
+				},
+			})
+			model.focus = FocusMessages
+
+			updated, cmd := model.executeCommand("edit-message")
+			got := updated.(Model)
+			if cmd != nil || got.editTarget != nil || !strings.Contains(got.status, tt.want) {
+				t.Fatalf("edit state = cmd %T target %+v status %q", cmd, got.editTarget, got.status)
+			}
+		})
+	}
+}
+
 func TestCompactInsertComposerVisibleAt80ColumnsWithDatedMessages(t *testing.T) {
 	now := time.Date(2026, 4, 21, 20, 0, 0, 0, time.UTC)
 	messages := []store.Message{

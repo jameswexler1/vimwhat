@@ -248,6 +248,78 @@ func TestIngestorAppliesMessageDeleteEvent(t *testing.T) {
 	}
 }
 
+func TestIngestorAppliesMessageEditEvent(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	when := time.Unix(1_700_000_000, 0)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(chat) error = %v", err)
+	}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventMessageUpsert,
+		Message: MessageEvent{
+			ID:         "chat-1/remote-1",
+			RemoteID:   "remote-1",
+			ChatID:     "chat-1",
+			ChatJID:    "chat-1@s.whatsapp.net",
+			Sender:     "me",
+			SenderJID:  "me",
+			Body:       "old body",
+			Timestamp:  when,
+			IsOutgoing: true,
+			Status:     "sent",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(message) error = %v", err)
+	}
+	editedAt := when.Add(time.Minute)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventMessageEdit,
+		Edit: MessageEditEvent{
+			MessageID: "chat-1/remote-1",
+			RemoteID:  "remote-1",
+			ChatID:    "chat-1",
+			ChatJID:   "chat-1@s.whatsapp.net",
+			Body:      "new body",
+			EditedAt:  editedAt,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(edit) error = %v", err)
+	}
+
+	messages, err := db.SearchMessages(ctx, "chat-1", "new", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "new body" || !messages[0].EditedAt.Equal(editedAt) {
+		t.Fatalf("messages after edit = %+v", messages)
+	}
+	old, err := db.SearchMessages(ctx, "chat-1", "old", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(old) error = %v", err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("old search after edit = %+v, want none", old)
+	}
+}
+
 func TestIngestorApplyReportsInsertedOnlyForFirstLiveMessage(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))

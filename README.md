@@ -17,7 +17,7 @@ Implemented:
 - On-demand remote history fetch for the focused chat, triggered by `:history fetch` or by scrolling above the loaded message window.
 - Remote media download for received images, videos, audio, documents, and stickers, using persisted WhatsApp download descriptors and temp-backed managed caches.
 - Outbound plain text plus one local attachment per message, including quote context, image/video/document captions, generic audio send, audio-caption rejection, `sending`/`sent`/`failed` status updates, and failed-media retry via `R` or `:retry-message`.
-- Message interactions: auto/manual mark-read, reactions send/clear and rendering, own-message delete-for-everyone, inbound revoke ingestion, replies, quote-jump, right-edge reply gesture, and typing presence.
+- Message interactions: auto/manual mark-read, reactions send/clear and rendering, own-message edit, own-message delete-for-everyone, inbound edit/revoke ingestion, replies, quote-jump, right-edge reply gesture, and typing presence.
 - Media UI with backend detection for Sixel, Unix `ueberzug++`, `chafa`, native external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through platform defaults or configured commands.
 - Desktop notifications for new incoming messages with native Linux/macOS/Windows backends or an argv-safe command override, with suppression for muted chats, duplicates, outgoing messages, historical imports, reaction-only updates, and the active chat while the app is known to be focused.
 - Demo data commands for local TUI development without a live WhatsApp session.
@@ -172,6 +172,7 @@ key_normal_move_up = "k"
 key_normal_open = "enter"
 key_normal_open_media = "o"
 key_normal_yank_message = "y"
+key_normal_edit_message = "leader e"
 key_normal_copy_image = "leader y"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
@@ -205,6 +206,7 @@ Useful command-mode actions:
 :paste-image
 :attach
 :attach <path>
+:edit-message
 :delete-message
 :delete-message-everybody
 :filter unread

@@ -432,6 +432,55 @@ func TestNormalizeRevokeMessageEvent(t *testing.T) {
 	}
 }
 
+func TestNormalizeEditedMessageEvent(t *testing.T) {
+	when := time.Unix(1_700_000_000, 0)
+	editMS := when.Add(time.Minute).UnixMilli()
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	evt := (&events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:     chat,
+				Sender:   types.NewJID("99999", types.DefaultUserServer),
+				IsFromMe: true,
+			},
+			ID:        "EDIT1",
+			Timestamp: when,
+		},
+		RawMessage: &waE2E.Message{
+			EditedMessage: &waE2E.FutureProofMessage{
+				Message: &waE2E.Message{
+					ProtocolMessage: &waE2E.ProtocolMessage{
+						Key: &waCommon.MessageKey{
+							RemoteJID: proto.String(chat.String()),
+							FromMe:    proto.Bool(true),
+							ID:        proto.String("TARGET1"),
+						},
+						Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(),
+						EditedMessage: &waE2E.Message{
+							Conversation: proto.String("edited text"),
+						},
+						TimestampMS: proto.Int64(editMS),
+					},
+				},
+			},
+		},
+	}).UnwrapRaw()
+
+	normalized := normalizeWhatsmeowEvent(evt)
+	if len(normalized) != 2 {
+		t.Fatalf("len(normalized) = %d, want chat+edit", len(normalized))
+	}
+	if normalized[1].Kind != EventMessageEdit {
+		t.Fatalf("event kind = %s, want %s", normalized[1].Kind, EventMessageEdit)
+	}
+	if normalized[1].Edit.MessageID != "12345@s.whatsapp.net/TARGET1" ||
+		normalized[1].Edit.RemoteID != "TARGET1" ||
+		normalized[1].Edit.Body != "edited text" ||
+		normalized[1].Edit.EditedAt.UnixMilli() != editMS {
+		t.Fatalf("edit event = %+v", normalized[1].Edit)
+	}
+}
+
 func TestNormalizeChatPresenceEvent(t *testing.T) {
 	chat := types.NewJID("12345", types.DefaultUserServer)
 	sender := types.NewJID("67890", types.DefaultUserServer)

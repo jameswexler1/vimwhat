@@ -466,7 +466,7 @@ func loadMessagesForChatMerge(ctx context.Context, tx *sql.Tx, chatID string) ([
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY timestamp_unix ASC, id ASC
@@ -541,7 +541,7 @@ func loadMessageForMerge(ctx context.Context, tx *sql.Tx, messageID string) (Mes
 	row := tx.QueryRowContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM messages
 		WHERE id = ?
 	`, messageID)
@@ -645,12 +645,16 @@ func writeMergedMessage(ctx context.Context, tx *sql.Tx, message Message) error 
 	if !message.DeletedAt.IsZero() {
 		deletedAt = message.DeletedAt.Unix()
 	}
+	editedAt := int64(0)
+	if !message.EditedAt.IsZero() {
+		editedAt = message.EditedAt.Unix()
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (
 			id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			deleted_at, deleted_reason, edited_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			remote_id = excluded.remote_id,
 			chat_id = excluded.chat_id,
@@ -664,7 +668,8 @@ func writeMergedMessage(ctx context.Context, tx *sql.Tx, message Message) error 
 			quoted_message_id = excluded.quoted_message_id,
 			quoted_remote_id = excluded.quoted_remote_id,
 			deleted_at = excluded.deleted_at,
-			deleted_reason = excluded.deleted_reason
+			deleted_reason = excluded.deleted_reason,
+			edited_at = excluded.edited_at
 	`,
 		message.ID,
 		message.RemoteID,
@@ -680,6 +685,7 @@ func writeMergedMessage(ctx context.Context, tx *sql.Tx, message Message) error 
 		message.QuotedRemoteID,
 		deletedAt,
 		message.DeletedReason,
+		editedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("write merged message %s: %w", message.ID, err)

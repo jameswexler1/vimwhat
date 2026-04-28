@@ -35,6 +35,7 @@ type Message struct {
 	QuotedRemoteID  string
 	DeletedAt       time.Time
 	DeletedReason   string
+	EditedAt        time.Time
 	Media           []MediaMetadata
 	Reactions       []Reaction
 }

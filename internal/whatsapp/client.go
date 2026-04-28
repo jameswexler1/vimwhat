@@ -69,6 +69,7 @@ type Adapter interface {
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
 	DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error)
+	EditMessage(ctx context.Context, request EditMessageRequest) (SendResult, error)
 	SendChatPresence(ctx context.Context, chatJID string, composing bool) error
 	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
@@ -496,6 +497,12 @@ type DeleteForEveryoneRequest struct {
 	TargetRemoteID string
 }
 
+type EditMessageRequest struct {
+	ChatJID        string
+	TargetRemoteID string
+	Body           string
+}
+
 func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendResult, error) {
 	if c == nil || c.client == nil {
 		return SendResult{}, ErrClientNotOpen
@@ -746,6 +753,44 @@ func (c *Client) DeleteMessageForEveryone(ctx context.Context, request DeleteFor
 		MessageID: LocalMessageID(chatJID, targetRemoteID),
 		RemoteID:  targetRemoteID,
 		Status:    "deleted",
+		Timestamp: timestamp,
+	}, nil
+}
+
+func (c *Client) EditMessage(ctx context.Context, request EditMessageRequest) (SendResult, error) {
+	if c == nil || c.client == nil {
+		return SendResult{}, ErrClientNotOpen
+	}
+	chatJID, err := NormalizeSendChatJID(request.ChatJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	targetRemoteID := strings.TrimSpace(request.TargetRemoteID)
+	if targetRemoteID == "" {
+		return SendResult{}, fmt.Errorf("edit target message id is required")
+	}
+	body := strings.TrimSpace(request.Body)
+	if body == "" {
+		return SendResult{}, fmt.Errorf("edit body is required")
+	}
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("parse edit chat jid: %w", err)
+	}
+	resp, err := c.client.SendMessage(ctx, chat, c.client.BuildEdit(chat, types.MessageID(targetRemoteID), &waE2E.Message{
+		Conversation: proto.String(body),
+	}))
+	if err != nil {
+		return SendResult{}, fmt.Errorf("send whatsapp edit: %w", err)
+	}
+	timestamp := resp.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return SendResult{
+		MessageID: LocalMessageID(chatJID, targetRemoteID),
+		RemoteID:  targetRemoteID,
+		Status:    "edited",
 		Timestamp: timestamp,
 	}, nil
 }
@@ -1044,6 +1089,7 @@ type EventKind string
 const (
 	EventChatUpsert       EventKind = "chat_upsert"
 	EventMessageUpsert    EventKind = "message_upsert"
+	EventMessageEdit      EventKind = "message_edit"
 	EventMessageDelete    EventKind = "message_delete"
 	EventReceiptUpdate    EventKind = "receipt_update"
 	EventReactionUpdate   EventKind = "reaction_update"
@@ -1071,6 +1117,7 @@ type Event struct {
 	Kind       EventKind
 	Chat       ChatEvent
 	Message    MessageEvent
+	Edit       MessageEditEvent
 	Delete     MessageDeleteEvent
 	Receipt    ReceiptEvent
 	Reaction   ReactionEvent
@@ -1143,6 +1190,16 @@ type MessageDeleteEvent struct {
 	DeletedReason string
 	Timestamp     time.Time
 	Historical    bool
+}
+
+type MessageEditEvent struct {
+	MessageID  string
+	RemoteID   string
+	ChatID     string
+	ChatJID    string
+	Body       string
+	EditedAt   time.Time
+	Historical bool
 }
 
 type HistoryEvent struct {

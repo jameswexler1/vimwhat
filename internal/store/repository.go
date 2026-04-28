@@ -206,11 +206,11 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM (
 			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-				deleted_at, deleted_reason
+				deleted_at, deleted_reason, edited_at
 				FROM messages m
 				WHERE m.chat_id = ?
 					AND m.deleted_at = 0
@@ -250,7 +250,7 @@ func (s *Store) MessageByID(ctx context.Context, id string) (Message, bool, erro
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM messages m
 		WHERE m.id = ?
 			AND m.deleted_at = 0
@@ -280,7 +280,7 @@ func (s *Store) ListAllMessages(ctx context.Context, chatID string) ([]Message, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM messages m
 		WHERE m.chat_id = ?
 			AND m.deleted_at = 0
@@ -321,11 +321,11 @@ func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Me
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 		FROM (
 			SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-				deleted_at, deleted_reason
+				deleted_at, deleted_reason, edited_at
 				FROM messages m
 				WHERE m.chat_id = ?
 					AND m.deleted_at = 0
@@ -368,7 +368,7 @@ func (s *Store) OldestMessage(ctx context.Context, chatID string) (Message, bool
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
+			deleted_at, deleted_reason, edited_at
 			FROM messages m
 			WHERE m.chat_id = ?
 				AND m.deleted_at = 0
@@ -454,7 +454,7 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
 			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
-			m.deleted_at, m.deleted_reason
+			m.deleted_at, m.deleted_reason, m.edited_at
 			FROM message_fts
 			JOIN messages m ON m.id = message_fts.message_id
 			WHERE message_fts.chat_id = ?
@@ -708,6 +708,10 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	if !message.DeletedAt.IsZero() {
 		deletedAt = message.DeletedAt.Unix()
 	}
+	editedAt := int64(0)
+	if !message.EditedAt.IsZero() {
+		editedAt = message.EditedAt.Unix()
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -725,8 +729,8 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		INSERT INTO messages (
 			id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
 			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			deleted_at, deleted_reason, edited_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			remote_id = excluded.remote_id,
 			chat_jid = excluded.chat_jid,
@@ -745,6 +749,10 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 			deleted_reason = CASE
 				WHEN excluded.deleted_at > 0 THEN excluded.deleted_reason
 				ELSE messages.deleted_reason
+			END,
+			edited_at = CASE
+				WHEN excluded.edited_at > 0 THEN excluded.edited_at
+				ELSE messages.edited_at
 			END
 	`,
 		message.ID,
@@ -761,6 +769,7 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		message.QuotedRemoteID,
 		deletedAt,
 		message.DeletedReason,
+		editedAt,
 	); err != nil {
 		_ = tx.Rollback()
 		return false, fmt.Errorf("insert message %s: %w", message.ID, err)
@@ -857,6 +866,78 @@ func (s *Store) UpdateMessageStatusIfExists(ctx context.Context, messageID, stat
 
 	rows, _ := result.RowsAffected()
 	return rows > 0, nil
+}
+
+func (s *Store) UpdateMessageBody(ctx context.Context, messageID, body string, editedAt time.Time) (bool, error) {
+	if strings.TrimSpace(messageID) == "" {
+		return false, fmt.Errorf("message id is required")
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false, fmt.Errorf("message body is required")
+	}
+	if editedAt.IsZero() {
+		editedAt = time.Now()
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin edit message: %w", err)
+	}
+	var chatID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT chat_id
+		FROM messages
+		WHERE id = ?
+			AND deleted_at = 0
+	`, messageID).Scan(&chatID)
+	if err != nil {
+		_ = tx.Rollback()
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("load message %s for edit: %w", messageID, err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE messages
+		SET body = ?,
+			edited_at = ?
+		WHERE id = ?
+			AND deleted_at = 0
+	`, body, editedAt.Unix(), messageID)
+	if err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("edit message %s: %w", messageID, err)
+	}
+	if rows, _ := result.RowsAffected(); rows == 0 {
+		_ = tx.Rollback()
+		return false, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, messageID); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("clear fts for edited message %s: %w", messageID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO message_fts (message_id, chat_id, body)
+		VALUES (?, ?, ?)
+	`, messageID, chatID, body); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("index edited message %s: %w", messageID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE chats
+		SET updated_at = ?
+		WHERE id = ?
+	`, editedAt.Unix(), chatID); err != nil {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("touch chat %s after edit: %w", chatID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit edit message: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Store) ClearChatUnread(ctx context.Context, chatID string) error {
@@ -1743,6 +1824,7 @@ func scanMessage(row scanner) (Message, error) {
 		timestampUnix int64
 		isOutgoing    int
 		deletedUnix   int64
+		editedUnix    int64
 	)
 	if err := row.Scan(
 		&message.ID,
@@ -1759,6 +1841,7 @@ func scanMessage(row scanner) (Message, error) {
 		&message.QuotedRemoteID,
 		&deletedUnix,
 		&message.DeletedReason,
+		&editedUnix,
 	); err != nil {
 		return Message{}, err
 	}
@@ -1766,6 +1849,9 @@ func scanMessage(row scanner) (Message, error) {
 	message.Timestamp = time.Unix(timestampUnix, 0)
 	if deletedUnix > 0 {
 		message.DeletedAt = time.Unix(deletedUnix, 0)
+	}
+	if editedUnix > 0 {
+		message.EditedAt = time.Unix(editedUnix, 0)
 	}
 	message.IsOutgoing = isOutgoing == 1
 	if message.ChatJID == "" {

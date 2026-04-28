@@ -66,6 +66,7 @@ type fakeLiveWhatsAppSession struct {
 	readReceipts    chan []whatsapp.ReadReceiptTarget
 	reactions       chan whatsapp.ReactionSendRequest
 	deletes         chan whatsapp.DeleteForEveryoneRequest
+	edits           chan whatsapp.EditMessageRequest
 	presences       chan fakePresenceRequest
 	subscriptions   chan string
 	historyErr      error
@@ -74,6 +75,7 @@ type fakeLiveWhatsAppSession struct {
 	readErr         error
 	reactionErr     error
 	deleteErr       error
+	editErr         error
 	presenceErr     error
 	canonicalErr    error
 	generatedID     string
@@ -243,6 +245,21 @@ func (s *fakeLiveWhatsAppSession) DeleteMessageForEveryone(_ context.Context, re
 	}, nil
 }
 
+func (s *fakeLiveWhatsAppSession) EditMessage(_ context.Context, request whatsapp.EditMessageRequest) (whatsapp.SendResult, error) {
+	if s.edits != nil {
+		s.edits <- request
+	}
+	if s.editErr != nil {
+		return whatsapp.SendResult{}, s.editErr
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, request.TargetRemoteID),
+		RemoteID:  request.TargetRemoteID,
+		Status:    "edited",
+		Timestamp: time.Now(),
+	}, nil
+}
+
 func (s *fakeLiveWhatsAppSession) SendChatPresence(_ context.Context, chatID string, composing bool) error {
 	if s.presences != nil {
 		s.presences <- fakePresenceRequest{chatID: chatID, composing: composing}
@@ -346,7 +363,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -435,7 +452,7 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -593,7 +610,7 @@ func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -740,6 +757,60 @@ func TestHandleDeleteEveryoneRequestSendsRemoteRevokeBeforeLocalDelete(t *testin
 	}
 }
 
+func TestHandleEditMessageRequestUsesProtocolAndUpdatesLocalMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	if err := db.UpsertChat(ctx, store.Chat{ID: "12345@s.whatsapp.net", JID: "12345@s.whatsapp.net", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	message := store.Message{
+		ID:         "12345@s.whatsapp.net/remote-1",
+		RemoteID:   "remote-1",
+		ChatID:     "12345@s.whatsapp.net",
+		ChatJID:    "12345@s.whatsapp.net",
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       "old text",
+		Timestamp:  time.Unix(1_700_000_000, 0),
+		IsOutgoing: true,
+		Status:     "sent",
+	}
+	if err := db.AddMessage(ctx, message); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{edits: make(chan whatsapp.EditMessageRequest, 1)}
+	updates := make(chan ui.LiveUpdate, 4)
+	result := make(chan editMessageResult, 1)
+	handleEditMessageRequest(ctx, db, session, updates, nil, true, editMessageRequest{
+		Message: message,
+		Body:    "new text",
+		Result:  result,
+	})
+
+	gotResult := <-result
+	if gotResult.Err != nil || gotResult.MessageID != message.ID || gotResult.Body != "new text" {
+		t.Fatalf("edit result = %+v", gotResult)
+	}
+	gotRequest := <-session.edits
+	if gotRequest.ChatJID != "12345@s.whatsapp.net" || gotRequest.TargetRemoteID != "remote-1" || gotRequest.Body != "new text" {
+		t.Fatalf("edit request = %+v", gotRequest)
+	}
+	messages, err := db.ListMessages(ctx, message.ChatID, 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != "new text" || messages[0].EditedAt.IsZero() {
+		t.Fatalf("messages after edit = %+v", messages)
+	}
+}
+
 func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -787,7 +858,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -845,7 +916,7 @@ func TestRunLiveWhatsAppNotifiesInactiveIncomingMessageWhileFocused(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -956,7 +1027,7 @@ func TestRunLiveWhatsAppSuppressesActiveChatNotificationsOnlyWhenFocused(t *test
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1072,7 +1143,7 @@ func TestRunLiveWhatsAppSuppressesNotificationsForMutedAndDuplicateMessages(t *t
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), activeChat, appFocus, make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1218,7 +1289,7 @@ func TestRunLiveWhatsAppSuppressesHistoricalOutgoingAndReactionNotifications(t *
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
