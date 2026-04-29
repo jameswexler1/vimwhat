@@ -71,6 +71,7 @@ type Adapter interface {
 	SendText(ctx context.Context, request TextSendRequest) (SendResult, error)
 	SendMedia(ctx context.Context, request MediaSendRequest) (SendResult, error)
 	SendSticker(ctx context.Context, request StickerSendRequest) (SendResult, error)
+	ForwardMessage(ctx context.Context, request ForwardMessageRequest) (SendResult, error)
 	MarkRead(ctx context.Context, targets []ReadReceiptTarget) error
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
 	DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error)
@@ -483,6 +484,12 @@ type TextSendRequest struct {
 	QuotedMessageBody string
 }
 
+type ForwardMessageRequest struct {
+	ChatJID  string
+	Payload  []byte
+	RemoteID string
+}
+
 type ReadReceiptTarget struct {
 	ChatJID   string
 	RemoteID  string
@@ -599,6 +606,124 @@ func (c *Client) quoteParticipant(senderJID string) string {
 		return senderJID
 	}
 	return jid.ToNonAD().String()
+}
+
+func (c *Client) ForwardMessage(ctx context.Context, request ForwardMessageRequest) (SendResult, error) {
+	if c == nil || c.client == nil {
+		return SendResult{}, ErrClientNotOpen
+	}
+	normalizedChatJID, err := NormalizeSendChatJID(request.ChatJID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	to, err := types.ParseJID(normalizedChatJID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("parse forward chat jid: %w", err)
+	}
+	message, err := ForwardedMessageFromPayload(request.Payload)
+	if err != nil {
+		return SendResult{}, err
+	}
+	remoteID := strings.TrimSpace(request.RemoteID)
+	if remoteID == "" {
+		remoteID = c.GenerateMessageID()
+	}
+	if remoteID == "" {
+		return SendResult{}, fmt.Errorf("generate message id failed")
+	}
+	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
+	if err != nil {
+		return SendResult{}, fmt.Errorf("send whatsapp forward: %w", err)
+	}
+	if resp.ID != "" {
+		remoteID = string(resp.ID)
+	}
+	timestamp := resp.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return SendResult{
+		MessageID: LocalMessageID(normalizedChatJID, remoteID),
+		RemoteID:  remoteID,
+		Status:    "sent",
+		Timestamp: timestamp,
+	}, nil
+}
+
+func ForwardedMessageFromPayload(payload []byte) (*waE2E.Message, error) {
+	if len(payload) == 0 {
+		return nil, fmt.Errorf("forward payload is required")
+	}
+	var message waE2E.Message
+	if err := proto.Unmarshal(payload, &message); err != nil {
+		return nil, fmt.Errorf("decode forward payload: %w", err)
+	}
+	if messageForwardContext(&message) == nil {
+		return nil, fmt.Errorf("message type cannot be forwarded exactly")
+	}
+	markMessageForwarded(&message)
+	return &message, nil
+}
+
+func markMessageForwarded(message *waE2E.Message) {
+	contextInfo := messageForwardContext(message)
+	if contextInfo == nil {
+		return
+	}
+	score := contextInfo.GetForwardingScore() + 1
+	contextInfo.ForwardingScore = proto.Uint32(score)
+	contextInfo.IsForwarded = proto.Bool(true)
+}
+
+func messageForwardContext(message *waE2E.Message) *waE2E.ContextInfo {
+	if message == nil {
+		return nil
+	}
+	if body := message.GetConversation(); body != "" {
+		message.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
+			Text:        proto.String(body),
+			ContextInfo: &waE2E.ContextInfo{},
+		}
+		message.Conversation = nil
+		return message.ExtendedTextMessage.ContextInfo
+	}
+	if text := message.GetExtendedTextMessage(); text != nil {
+		if text.ContextInfo == nil {
+			text.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return text.ContextInfo
+	}
+	if image := message.GetImageMessage(); image != nil {
+		if image.ContextInfo == nil {
+			image.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return image.ContextInfo
+	}
+	if video := message.GetVideoMessage(); video != nil {
+		if video.ContextInfo == nil {
+			video.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return video.ContextInfo
+	}
+	if audio := message.GetAudioMessage(); audio != nil {
+		if audio.ContextInfo == nil {
+			audio.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return audio.ContextInfo
+	}
+	if document := message.GetDocumentMessage(); document != nil {
+		if document.ContextInfo == nil {
+			document.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return document.ContextInfo
+	}
+	if sticker := message.GetStickerMessage(); sticker != nil {
+		if sticker.ContextInfo == nil {
+			sticker.ContextInfo = &waE2E.ContextInfo{}
+		}
+		return sticker.ContextInfo
+	}
+	return nil
 }
 
 func (c *Client) MarkRead(ctx context.Context, targets []ReadReceiptTarget) error {
@@ -1354,6 +1479,7 @@ type MessageEvent struct {
 	Status              string
 	QuotedMessageID     string
 	QuotedRemoteID      string
+	ForwardPayload      []byte
 	Historical          bool
 }
 

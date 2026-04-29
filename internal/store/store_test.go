@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 9 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=9", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 10 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=10", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -759,6 +759,67 @@ func TestMessageMediaAndLocalDelete(t *testing.T) {
 	}
 }
 
+func TestMessagePayloadRoundTripAndCascadeDelete(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "forwardable",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	payload := MessagePayload{
+		MessageID: "m-1",
+		Payload:   []byte{1, 2, 3},
+		UpdatedAt: time.Unix(1_700_000_010, 0),
+	}
+	if err := store.UpsertMessagePayload(ctx, payload); err != nil {
+		t.Fatalf("UpsertMessagePayload() error = %v", err)
+	}
+	got, ok, err := store.MessagePayload(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MessagePayload() error = %v", err)
+	}
+	if !ok || got.MessageID != payload.MessageID || string(got.Payload) != string(payload.Payload) || !got.UpdatedAt.Equal(payload.UpdatedAt) {
+		t.Fatalf("MessagePayload() = %+v ok=%v, want %+v", got, ok, payload)
+	}
+	got.Payload[0] = 9
+	got, ok, err = store.MessagePayload(ctx, "m-1")
+	if err != nil {
+		t.Fatalf("MessagePayload() after mutation error = %v", err)
+	}
+	if !ok || got.Payload[0] != 1 {
+		t.Fatalf("MessagePayload() leaked mutable payload = %+v ok=%v", got, ok)
+	}
+	if err := store.DeleteMessage(ctx, "m-1"); err != nil {
+		t.Fatalf("DeleteMessage() error = %v", err)
+	}
+	if _, ok, err := store.MessagePayload(ctx, "m-1"); err != nil || !ok {
+		t.Fatalf("MessagePayload() after local delete ok=%v err=%v, want preserved", ok, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, "m-1"); err != nil {
+		t.Fatalf("hard delete message error = %v", err)
+	}
+	if _, ok, err := store.MessagePayload(ctx, "m-1"); err != nil || ok {
+		t.Fatalf("MessagePayload() after hard delete ok=%v err=%v, want missing", ok, err)
+	}
+}
+
 func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
@@ -1307,8 +1368,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 9 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want nine applied and none pending", applied, pending)
+	if len(applied) != 10 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want ten applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

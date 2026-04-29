@@ -26,6 +26,7 @@ type WhatsAppLiveSession interface {
 	SendText(context.Context, whatsapp.TextSendRequest) (whatsapp.SendResult, error)
 	SendMedia(context.Context, whatsapp.MediaSendRequest) (whatsapp.SendResult, error)
 	SendSticker(context.Context, whatsapp.StickerSendRequest) (whatsapp.SendResult, error)
+	ForwardMessage(context.Context, whatsapp.ForwardMessageRequest) (whatsapp.SendResult, error)
 	MarkRead(context.Context, []whatsapp.ReadReceiptTarget) error
 	SendReaction(context.Context, whatsapp.ReactionSendRequest) (whatsapp.SendResult, error)
 	DeleteMessageForEveryone(context.Context, whatsapp.DeleteForEveryoneRequest) (whatsapp.SendResult, error)

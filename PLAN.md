@@ -96,7 +96,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
 ### Modal interaction model
 
 - Modes:
-  `normal`, `insert`, `visual`, `command`, `search`.
+  `normal`, `insert`, `visual`, `forward`, `command`, `search`.
 - `normal` mode:
   motion across chats/messages,
   window focus movement,
@@ -111,7 +111,9 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   user can stay here for all messages if desired.
 - `visual` mode:
   message-wise selection only in v1, not character-wise text editing inside a message;
-  selection supports yank, copy to register, export, forward-ready buffer later, and batch download of attachments.
+  selection supports yank, copy to register, forwarding, export, and batch download of attachments.
+- `forward` mode:
+  recipient picker for selected visual-mode messages, with configurable movement, toggle, send, and cancel bindings.
 - `command` mode:
   `:` command line for app actions such as open chat, filter unread, sync, doctor, switch backend, compose in editor, export, clear preview cache, quit.
 - `search` mode:
@@ -155,6 +157,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   receive/send common attachments,
   quoted replies,
   own outgoing text edits and own-message revoke,
+  forwarding selected messages from visual mode,
   reactions,
   read receipts handling,
   typing presence display if exposed cleanly,
@@ -265,7 +268,15 @@ The recent-sticker send milestone now has an implemented first pass:
 - Send selected stickers through a dedicated WhatsApp sticker message rather than as generic image attachments, preserving the composer/draft state.
 - Keep Lottie/TGS stickers out of picker/send until a compatible render/send path exists.
 
-The next protocol milestone is live validation/polish of the completed notification and media-send paths, especially Linux desktop delivery, audio uploads, recent-sticker send on real synced accounts, and follow-on resend/draft UX around failed outgoing attachments.
+The composer, forwarding, and presence polish milestone now has an implemented first pass:
+
+- `Shift+Enter` is the generated default alternate newline binding for insert mode, with `ctrl+j` retained as the portable fallback and all bindings kept editable through config.
+- Visual mode can forward the selected message range through a dedicated recipient picker, defaulting to `f` in visual mode and configurable `forward`-mode keys for search text, selection, movement, cancel, and send.
+- WhatsApp message protobuf payloads are persisted for ingested messages so forwarding can resend the original supported message shape instead of reconstructing from rendered text/media metadata.
+- Forwarded messages are persisted locally as outgoing `sending` rows before protocol send, then transition to sent/failed through the same live-update path as other sends.
+- Typing presence is shown in the active chat header and chat-list previews, and presence subscriptions are refreshed when the live connection returns online.
+
+The next protocol milestone is live validation/polish of the completed notification, media-send, recent-sticker, and forwarding paths, especially Linux desktop delivery, audio uploads, recent-sticker send on real synced accounts, visual forward behavior on mixed text/media selections, and follow-on resend/draft UX around failed outgoing attachments.
 
 ### Data model and lazy loading
 

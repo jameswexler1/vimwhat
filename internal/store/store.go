@@ -201,6 +201,16 @@ var migrations = []migration{
 				ON recent_stickers (last_used_at DESC, weight DESC, updated_at DESC, id ASC)`,
 		},
 	},
+	{
+		name: "0010_message_payloads",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS message_payloads (
+				message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+				payload BLOB NOT NULL DEFAULT X'',
+				updated_at INTEGER NOT NULL
+			)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

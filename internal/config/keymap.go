@@ -12,6 +12,7 @@ const (
 	KeyModeNormal  = "normal"
 	KeyModeInsert  = "insert"
 	KeyModeVisual  = "visual"
+	KeyModeForward = "forward"
 	KeyModeCommand = "command"
 	KeyModeSearch  = "search"
 	KeyModeConfirm = "confirm"
@@ -68,6 +69,15 @@ type Keymap struct {
 	VisualMoveDown string
 	VisualMoveUp   string
 	VisualYank     string
+	VisualForward  string
+
+	ForwardCancel       string
+	ForwardSend         string
+	ForwardToggle       string
+	ForwardMoveDown     string
+	ForwardMoveUp       string
+	ForwardBackspace    string
+	ForwardBackspaceAlt string
 
 	CommandCancel       string
 	CommandRun          string
@@ -133,7 +143,7 @@ func DefaultKeymap() Keymap {
 		InsertPasteImage:       "ctrl+v",
 		InsertRemoveAttachment: "ctrl+x",
 		InsertNewline:          "ctrl+j",
-		InsertNewlineAlt:       "alt+enter",
+		InsertNewlineAlt:       "shift+enter",
 		InsertCancel:           "esc",
 		InsertSend:             "enter",
 		InsertBackspace:        "backspace",
@@ -143,6 +153,15 @@ func DefaultKeymap() Keymap {
 		VisualMoveDown: "j",
 		VisualMoveUp:   "k",
 		VisualYank:     "y",
+		VisualForward:  "f",
+
+		ForwardCancel:       "esc",
+		ForwardSend:         "enter",
+		ForwardToggle:       "space",
+		ForwardMoveDown:     "tab",
+		ForwardMoveUp:       "shift+tab",
+		ForwardBackspace:    "backspace",
+		ForwardBackspaceAlt: "ctrl+h",
 
 		CommandCancel:       "esc",
 		CommandRun:          "enter",
@@ -302,6 +321,30 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.VisualYank == "" {
 		input.VisualYank = defaults.VisualYank
 	}
+	if input.VisualForward == "" {
+		input.VisualForward = defaults.VisualForward
+	}
+	if input.ForwardCancel == "" {
+		input.ForwardCancel = defaults.ForwardCancel
+	}
+	if input.ForwardSend == "" {
+		input.ForwardSend = defaults.ForwardSend
+	}
+	if input.ForwardToggle == "" {
+		input.ForwardToggle = defaults.ForwardToggle
+	}
+	if input.ForwardMoveDown == "" {
+		input.ForwardMoveDown = defaults.ForwardMoveDown
+	}
+	if input.ForwardMoveUp == "" {
+		input.ForwardMoveUp = defaults.ForwardMoveUp
+	}
+	if input.ForwardBackspace == "" {
+		input.ForwardBackspace = defaults.ForwardBackspace
+	}
+	if input.ForwardBackspaceAlt == "" {
+		input.ForwardBackspaceAlt = defaults.ForwardBackspaceAlt
+	}
 	if input.CommandCancel == "" {
 		input.CommandCancel = defaults.CommandCancel
 	}
@@ -390,6 +433,14 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_visual_move_down", Mode: KeyModeVisual, Value: k.VisualMoveDown},
 		{Name: "key_visual_move_up", Mode: KeyModeVisual, Value: k.VisualMoveUp},
 		{Name: "key_visual_yank", Mode: KeyModeVisual, Value: k.VisualYank},
+		{Name: "key_visual_forward", Mode: KeyModeVisual, Value: k.VisualForward},
+		{Name: "key_forward_cancel", Mode: KeyModeForward, Value: k.ForwardCancel},
+		{Name: "key_forward_send", Mode: KeyModeForward, Value: k.ForwardSend},
+		{Name: "key_forward_toggle", Mode: KeyModeForward, Value: k.ForwardToggle},
+		{Name: "key_forward_move_down", Mode: KeyModeForward, Value: k.ForwardMoveDown},
+		{Name: "key_forward_move_up", Mode: KeyModeForward, Value: k.ForwardMoveUp},
+		{Name: "key_forward_backspace", Mode: KeyModeForward, Value: k.ForwardBackspace},
+		{Name: "key_forward_backspace_alt", Mode: KeyModeForward, Value: k.ForwardBackspaceAlt},
 		{Name: "key_command_cancel", Mode: KeyModeCommand, Value: k.CommandCancel},
 		{Name: "key_command_run", Mode: KeyModeCommand, Value: k.CommandRun},
 		{Name: "key_command_backspace", Mode: KeyModeCommand, Value: k.CommandBackspace},
@@ -504,6 +555,22 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.VisualMoveUp = normalized
 	case "key_visual_yank":
 		k.VisualYank = normalized
+	case "key_visual_forward":
+		k.VisualForward = normalized
+	case "key_forward_cancel":
+		k.ForwardCancel = normalized
+	case "key_forward_send":
+		k.ForwardSend = normalized
+	case "key_forward_toggle":
+		k.ForwardToggle = normalized
+	case "key_forward_move_down":
+		k.ForwardMoveDown = normalized
+	case "key_forward_move_up":
+		k.ForwardMoveUp = normalized
+	case "key_forward_backspace":
+		k.ForwardBackspace = normalized
+	case "key_forward_backspace_alt":
+		k.ForwardBackspaceAlt = normalized
 	case "key_command_cancel":
 		k.CommandCancel = normalized
 	case "key_command_run":
@@ -581,7 +648,7 @@ func ParseKeyToken(value string) (string, error) {
 	}
 	lower := strings.ToLower(value)
 	switch lower {
-	case "enter", "esc", "tab", "shift+tab", "backspace":
+	case "enter", "shift+enter", "esc", "tab", "shift+tab", "backspace":
 		return lower, nil
 	case "leader":
 		return "", fmt.Errorf("leader is only valid in key bindings, not as a key token")
@@ -640,7 +707,7 @@ func ValidateKeymap(cfg Config) error {
 			}
 		}
 		if binding.Mode == KeyModeGlobal {
-			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
+			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeForward, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
 				modeBindings[mode] = append(modeBindings[mode], binding)
 			}
 			continue

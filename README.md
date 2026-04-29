@@ -182,12 +182,21 @@ key_normal_delete_for_everybody = "leader d e"
 
 key_insert_send = "enter"
 key_insert_newline = "ctrl+j"
-key_insert_newline_alt = "alt+enter"
+key_insert_newline_alt = "shift+enter"
 key_insert_attach = "ctrl+f"
 key_insert_paste_image = "ctrl+v"
 key_insert_remove_attachment = "ctrl+x"
 
 key_visual_yank = "y"
+key_visual_forward = "f"
+
+key_forward_send = "enter"
+key_forward_toggle = "space"
+key_forward_cancel = "esc"
+key_forward_move_down = "tab"
+key_forward_move_up = "shift+tab"
+key_forward_backspace = "backspace"
+key_forward_backspace_alt = "ctrl+h"
 key_confirm_run = "enter"
 key_confirm_cancel = "esc"
 ```
@@ -227,7 +236,7 @@ Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the cu
 
 Sticker sending uses `key_normal_pick_sticker` or `:sticker`. Linux defaults to `sticker_picker_command = "nsxiv -t -o -p {files}"`; commands may use `{files}` for the temporary sticker file list, `{dir}` for the picker directory, and `{chooser}` for a chooser-output file. WebP stickers are selectable in v1; Lottie/TGS stickers are cached as metadata but skipped by the current picker/send path.
 
-All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<action>` variables. Bindings accept printable single keys plus named tokens such as `space`, `enter`, `esc`, `tab`, `shift+tab`, `backspace`, `ctrl+x`, `alt+x`, `alt+enter`, and leader sequences. Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.
+All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<action>` variables. Bindings accept printable single keys plus named tokens such as `space`, `enter`, `shift+enter`, `esc`, `tab`, `shift+tab`, `backspace`, `ctrl+x`, `alt+x`, `alt+enter`, and leader sequences. Duplicate bindings in the same mode and prefix conflicts such as binding both `space` and `leader s` are rejected at startup with a config error.
 
 ## Media and previews
 

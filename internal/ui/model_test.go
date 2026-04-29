@@ -21,6 +21,12 @@ import (
 	"vimwhat/internal/store"
 )
 
+type rawStringMsg string
+
+func (m rawStringMsg) String() string {
+	return string(m)
+}
+
 func TestInsertBackspacePreservesUTF8(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -1797,6 +1803,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"j/k",
 		"r/l",
 		"pick recent sticker",
+		"forward selected messages",
 		"retry failed media",
 		"retry-message|retry",
 		"delete-message-everybody",
@@ -6137,6 +6144,25 @@ func TestCustomInsertSendAndNewlineKeys(t *testing.T) {
 	}
 }
 
+func TestShiftEnterAddsComposerNewline(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "hello"
+
+	updated, _ := model.Update(rawStringMsg("\x1b[13;2u"))
+	model = updated.(Model)
+	if model.composer != "hello\n" {
+		t.Fatalf("composer after shift+enter = %q, want newline", model.composer)
+	}
+}
+
 func TestCustomVisualCommandAndSearchKeys(t *testing.T) {
 	keymap := config.DefaultKeymap()
 	keymap.VisualMoveDown = "x"
@@ -6186,6 +6212,58 @@ func TestCustomVisualCommandAndSearchKeys(t *testing.T) {
 	model = searched.(Model)
 	if model.mode != ModeNormal || model.activeSearch != "two" || model.messageCursor != 1 {
 		t.Fatalf("custom search run = mode %s active %q cursor %d", model.mode, model.activeSearch, model.messageCursor)
+	}
+}
+
+func TestVisualForwardPickerSelectsRecipientsAndSends(t *testing.T) {
+	var queued ForwardMessagesRequest
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+				{ID: "chat-3", Title: "Carol"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			queued = request
+			return func() tea.Msg {
+				return ForwardMessagesFinishedMsg{Sent: len(request.Messages) * len(request.Recipients)}
+			}
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 1
+
+	forwarding, cmd := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = forwarding.(Model)
+	if cmd != nil || model.mode != ModeForward || len(model.forwardSourceMessages) != 2 {
+		t.Fatalf("forward picker state = mode %s sources %d cmd %T", model.mode, len(model.forwardSourceMessages), cmd)
+	}
+	moved, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyTab})
+	model = moved.(Model)
+	toggled, _ := model.updateForward(tea.KeyMsg{Type: tea.KeySpace})
+	model = toggled.(Model)
+	submitted, cmd := model.updateForward(tea.KeyMsg{Type: tea.KeyEnter})
+	model = submitted.(Model)
+	if cmd == nil || model.mode != ModeNormal {
+		t.Fatalf("forward submit = cmd %T mode %s", cmd, model.mode)
+	}
+	if len(queued.Messages) != 2 || len(queued.Recipients) != 1 || queued.Recipients[0].ID != "chat-2" {
+		t.Fatalf("queued forward = %+v", queued)
+	}
+	handled, _ := model.Update(cmd())
+	model = handled.(Model)
+	if !strings.Contains(model.status, "forwarded 2 message") {
+		t.Fatalf("forward finished status = %q", model.status)
 	}
 }
 

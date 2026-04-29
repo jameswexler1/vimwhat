@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/proto"
+
 	"vimwhat/internal/config"
 	"vimwhat/internal/notify"
 	"vimwhat/internal/store"
@@ -64,6 +67,7 @@ type fakeLiveWhatsAppSession struct {
 	sends             chan fakeSendRequest
 	mediaSends        chan whatsapp.MediaSendRequest
 	stickerSends      chan whatsapp.StickerSendRequest
+	forwards          chan whatsapp.ForwardMessageRequest
 	readReceipts      chan []whatsapp.ReadReceiptTarget
 	reactions         chan whatsapp.ReactionSendRequest
 	deletes           chan whatsapp.DeleteForEveryoneRequest
@@ -217,6 +221,24 @@ func (s *fakeLiveWhatsAppSession) SendMedia(_ context.Context, request whatsapp.
 func (s *fakeLiveWhatsAppSession) SendSticker(_ context.Context, request whatsapp.StickerSendRequest) (whatsapp.SendResult, error) {
 	if s.stickerSends != nil {
 		s.stickerSends <- request
+	}
+	if s.sendErr != nil {
+		return whatsapp.SendResult{}, s.sendErr
+	}
+	if request.RemoteID == "" {
+		request.RemoteID = s.GenerateMessageID()
+	}
+	return whatsapp.SendResult{
+		MessageID: whatsapp.LocalMessageID(request.ChatJID, request.RemoteID),
+		RemoteID:  request.RemoteID,
+		Status:    "sent",
+		Timestamp: time.Now(),
+	}, nil
+}
+
+func (s *fakeLiveWhatsAppSession) ForwardMessage(_ context.Context, request whatsapp.ForwardMessageRequest) (whatsapp.SendResult, error) {
+	if s.forwards != nil {
+		s.forwards <- request
 	}
 	if s.sendErr != nil {
 		return whatsapp.SendResult{}, s.sendErr
@@ -396,7 +418,7 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, historyRequests, make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -480,7 +502,7 @@ func TestRunLiveWhatsAppSyncsStickersAfterConnect(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -548,7 +570,7 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -706,7 +728,7 @@ func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -907,6 +929,77 @@ func TestHandleEditMessageRequestUsesProtocolAndUpdatesLocalMessage(t *testing.T
 	}
 }
 
+func TestHandleForwardMessagesRequestQueuesForwardedMessages(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	sourceChat := store.Chat{ID: "11111@s.whatsapp.net", JID: "11111@s.whatsapp.net", Title: "Alice"}
+	recipient := store.Chat{ID: "22222@s.whatsapp.net", JID: "22222@s.whatsapp.net", Title: "Bob"}
+	for _, chat := range []store.Chat{sourceChat, recipient} {
+		if err := db.UpsertChat(ctx, chat); err != nil {
+			t.Fatalf("UpsertChat(%s) error = %v", chat.ID, err)
+		}
+	}
+	source := store.Message{
+		ID:        "11111@s.whatsapp.net/source-1",
+		RemoteID:  "source-1",
+		ChatID:    sourceChat.ID,
+		ChatJID:   sourceChat.JID,
+		Sender:    "Alice",
+		SenderJID: "11111@s.whatsapp.net",
+		Body:      "forward this",
+		Timestamp: time.Unix(1_700_000_000, 0),
+		Status:    "sent",
+	}
+	if err := db.AddMessage(ctx, source); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	payload, err := proto.Marshal(&waE2E.Message{Conversation: proto.String("forward this")})
+	if err != nil {
+		t.Fatalf("marshal forward payload error = %v", err)
+	}
+	if err := db.UpsertMessagePayload(ctx, store.MessagePayload{
+		MessageID: source.ID,
+		Payload:   payload,
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertMessagePayload() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		forwards:    make(chan whatsapp.ForwardMessageRequest, 1),
+		generatedID: "forward-1",
+	}
+	updates := make(chan ui.LiveUpdate, 4)
+	result := make(chan forwardMessagesResult, 1)
+	handleForwardMessagesRequest(ctx, db, session, updates, nil, true, forwardMessagesRequest{
+		Messages:   []store.Message{source},
+		Recipients: []store.Chat{recipient},
+		Result:     result,
+	})
+
+	gotResult := <-result
+	if gotResult.Err != nil || gotResult.Sent != 1 || gotResult.Skipped != 0 || gotResult.Failed != 0 {
+		t.Fatalf("forward result = %+v", gotResult)
+	}
+	gotRequest := <-session.forwards
+	if gotRequest.ChatJID != recipient.JID || gotRequest.RemoteID != "forward-1" || !bytes.Equal(gotRequest.Payload, payload) {
+		t.Fatalf("forward request = %+v", gotRequest)
+	}
+	messages, err := db.ListMessages(ctx, recipient.ID, 10)
+	if err != nil {
+		t.Fatalf("ListMessages(recipient) error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Body != source.Body || messages[0].Status != "sent" || !messages[0].IsOutgoing {
+		t.Fatalf("recipient messages = %+v", messages)
+	}
+}
+
 func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -954,7 +1047,7 @@ func TestRunLiveWhatsAppRefreshesChatMetadata(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1012,7 +1105,7 @@ func TestRunLiveWhatsAppNotifiesInactiveIncomingMessageWhileFocused(t *testing.T
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
 	}()
 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1123,7 +1216,7 @@ func TestRunLiveWhatsAppSuppressesActiveChatNotificationsOnlyWhenFocused(t *test
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1239,7 +1332,7 @@ func TestRunLiveWhatsAppSuppressesNotificationsForMutedAndDuplicateMessages(t *t
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -1385,7 +1478,7 @@ func TestRunLiveWhatsAppSuppressesHistoricalOutgoingAndReactionNotifications(t *
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+				runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
 			}()
 
 			waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {

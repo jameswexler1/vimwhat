@@ -23,6 +23,7 @@ const (
 	ModeNormal  Mode = "normal"
 	ModeInsert  Mode = "insert"
 	ModeVisual  Mode = "visual"
+	ModeForward Mode = "forward"
 	ModeCommand Mode = "command"
 	ModeSearch  Mode = "search"
 	ModeConfirm Mode = "confirm"
@@ -83,6 +84,11 @@ type OutgoingMessage struct {
 	Body        string
 	Attachments []Attachment
 	Quote       *store.Message
+}
+
+type ForwardMessagesRequest struct {
+	Messages   []store.Message
+	Recipients []store.Chat
 }
 
 type liveUpdateMsg struct {
@@ -204,6 +210,13 @@ type MessageEditedMsg struct {
 	Err       error
 }
 
+type ForwardMessagesFinishedMsg struct {
+	Sent    int
+	Skipped int
+	Failed  int
+	Err     error
+}
+
 type AudioProcess interface {
 	Wait() error
 	Stop() error
@@ -233,6 +246,7 @@ type Options struct {
 	SaveDraft                func(chatID, body string) error
 	SearchChats              func(query string) ([]store.Chat, error)
 	SearchMessages           func(chatID, query string, limit int) ([]store.Message, error)
+	ForwardMessages          func(ForwardMessagesRequest) tea.Cmd
 	CopyToClipboard          func(text string) error
 	PasteImageFromClipboard  func() tea.Cmd
 	CopyImageToClipboard     func(media store.MediaMetadata) tea.Cmd
@@ -292,6 +306,12 @@ type Model struct {
 	connectionState            ConnectionState
 	commandLine                string
 	searchLine                 string
+	forwardQuery               string
+	forwardSourceMessages      []store.Message
+	forwardCandidates          []store.Chat
+	forwardCursor              int
+	forwardSelected            map[string]bool
+	forwardSelectedOrder       []string
 	confirmLine                string
 	composer                   string
 	attachments                []Attachment
@@ -340,6 +360,7 @@ type Model struct {
 	saveDraft                  func(chatID, body string) error
 	searchChats                func(query string) ([]store.Chat, error)
 	searchMessages             func(chatID, query string, limit int) ([]store.Message, error)
+	forwardMessages            func(ForwardMessagesRequest) tea.Cmd
 	copyToClipboard            func(text string) error
 	pasteImageFromClipboard    func() tea.Cmd
 	copyImageToClipboard       func(media store.MediaMetadata) tea.Cmd
@@ -441,6 +462,7 @@ func NewModel(opts Options) Model {
 		saveDraft:                opts.SaveDraft,
 		searchChats:              opts.SearchChats,
 		searchMessages:           opts.SearchMessages,
+		forwardMessages:          opts.ForwardMessages,
 		copyToClipboard:          opts.CopyToClipboard,
 		pasteImageFromClipboard:  opts.PasteImageFromClipboard,
 		copyImageToClipboard:     opts.CopyImageToClipboard,
@@ -467,6 +489,7 @@ func NewModel(opts Options) Model {
 		unfilteredByChat:         map[string][]store.Message{},
 		newMessagesBelowByChat:   map[string]bool{},
 		presenceByChat:           map[string]PresenceUpdate{},
+		forwardSelected:          map[string]bool{},
 		readReceiptInflight:      map[string]bool{},
 		presenceSubscribed:       map[string]bool{},
 		messageLimitsByChat:      map[string]int{},
@@ -558,7 +581,14 @@ func (m Model) waitForLiveUpdateCmd() tea.Cmd {
 func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	if update.ConnectionState != "" {
+		previous := m.connectionState
 		m.connectionState = update.ConnectionState
+		if update.ConnectionState != ConnectionOnline {
+			m.presenceSubscribed = map[string]bool{}
+			m.presenceByChat = map[string]PresenceUpdate{}
+		} else if previous != ConnectionOnline {
+			m.subscribeCurrentChatPresence()
+		}
 	}
 	if strings.TrimSpace(update.Status) != "" {
 		m.status = update.Status
@@ -736,6 +766,14 @@ func (m *Model) nextQueuedRefreshCmd() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if token, ok := shiftedEnterTokenFromMsg(msg); ok {
+		updated, cmd := m.handleSpecialKeyToken(token)
+		if next, ok := updated.(Model); ok {
+			return next.withPreviewCmd(cmd)
+		}
+		return updated, cmd
+	}
+
 	switch msg := msg.(type) {
 	case liveUpdateMsg:
 		if !msg.OK {
@@ -835,6 +873,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MessageEditedMsg:
 		m.handleMessageEdited(msg)
 		return m.withPreviewCmd(nil)
+	case ForwardMessagesFinishedMsg:
+		m.handleForwardMessagesFinished(msg)
+		return m.withPreviewCmd(nil)
 	case mediaOverlayMsg:
 		if msg.Err != nil {
 			m.overlaySignature = ""
@@ -895,11 +936,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateSearch(msg)
 	case ModeConfirm:
 		return m.updateConfirm(msg)
+	case ModeForward:
+		return m.updateForward(msg)
 	case ModeVisual:
 		return m.updateVisual(msg)
 	default:
 		return m.updateNormal(msg)
 	}
+}
+
+func (m Model) handleSpecialKeyToken(token string) (tea.Model, tea.Cmd) {
+	if token == "shift+enter" && m.mode == ModeInsert {
+		keys := m.config.Keymap
+		if m.keyTokenMatches(token, keys.InsertNewline) || m.keyTokenMatches(token, keys.InsertNewlineAlt) {
+			m.composer += "\n"
+			m.sendOwnPresence(m.currentChat().ID, true)
+			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
+		}
+	}
+	return m, nil
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1704,6 +1759,59 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.ForwardCancel):
+		m.clearForwardPicker()
+		m.mode = ModeNormal
+		m.status = "forward cancelled"
+	case m.keyMatches(msg, keys.ForwardSend):
+		recipients := m.forwardSelectedRecipients()
+		if len(recipients) == 0 {
+			m.status = "no forward recipients selected"
+			return m, nil
+		}
+		if len(m.forwardSourceMessages) == 0 {
+			m.clearForwardPicker()
+			m.mode = ModeNormal
+			m.status = "no messages selected"
+			return m, nil
+		}
+		request := ForwardMessagesRequest{
+			Messages:   slices.Clone(m.forwardSourceMessages),
+			Recipients: recipients,
+		}
+		count := len(request.Messages)
+		recipientCount := len(request.Recipients)
+		forward := m.forwardMessages
+		m.clearForwardPicker()
+		m.mode = ModeNormal
+		if forward == nil {
+			m.status = "forwarding unavailable"
+			return m, nil
+		}
+		m.status = fmt.Sprintf("forwarding %d message(s) to %d chat(s)", count, recipientCount)
+		return m, forward(request)
+	case m.keyMatches(msg, keys.ForwardToggle):
+		m.toggleForwardRecipient()
+	case m.keyMatches(msg, keys.ForwardMoveDown):
+		m.moveForwardCursor(1)
+	case m.keyMatches(msg, keys.ForwardMoveUp):
+		m.moveForwardCursor(-1)
+	case m.keyMatches(msg, keys.ForwardBackspace) || m.keyMatches(msg, keys.ForwardBackspaceAlt):
+		m.forwardQuery = trimLastCluster(m.forwardQuery)
+		m.rebuildForwardCandidates()
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.forwardQuery += msg.String()
+			m.rebuildForwardCandidates()
+		}
+	}
+
+	return m, nil
+}
+
 func (m Model) handleInlineFallbackPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
 	switch {
@@ -1733,6 +1841,8 @@ func (m Model) updateVisual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCursor(-1)
 	case m.keyMatches(msg, keys.VisualYank):
 		return m.yankMessages(m.selectedMessages())
+	case m.keyMatches(msg, keys.VisualForward):
+		return m.startForwardPicker(m.selectedMessages())
 	}
 
 	return m, nil
@@ -4483,6 +4593,21 @@ func (m *Model) handleMessageEdited(msg MessageEditedMsg) {
 	m.status = "edited message"
 }
 
+func (m *Model) handleForwardMessagesFinished(msg ForwardMessagesFinishedMsg) {
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("forward failed: %s", shortError(msg.Err))
+		return
+	}
+	parts := []string{fmt.Sprintf("forwarded %d message(s)", msg.Sent)}
+	if msg.Skipped > 0 {
+		parts = append(parts, fmt.Sprintf("%d unavailable", msg.Skipped))
+	}
+	if msg.Failed > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", msg.Failed))
+	}
+	m.status = strings.Join(parts, "; ")
+}
+
 func (m *Model) updateLoadedMessageBody(messageID, body string, editedAt time.Time) bool {
 	if strings.TrimSpace(messageID) == "" {
 		return false
@@ -4888,6 +5013,128 @@ func (m Model) selectedMessages() []store.Message {
 	start := min(m.visualAnchor, m.messageCursor)
 	end := max(m.visualAnchor, m.messageCursor)
 	return slices.Clone(messages[start : end+1])
+}
+
+func (m Model) startForwardPicker(messages []store.Message) (tea.Model, tea.Cmd) {
+	if len(messages) == 0 {
+		m.status = "no messages selected"
+		return m, nil
+	}
+	if m.forwardMessages == nil {
+		m.status = "forwarding unavailable"
+		return m, nil
+	}
+	m.mode = ModeForward
+	m.forwardSourceMessages = slices.Clone(messages)
+	m.forwardQuery = ""
+	m.forwardSelected = map[string]bool{}
+	m.forwardSelectedOrder = nil
+	m.forwardCursor = 0
+	m.rebuildForwardCandidates()
+	m.status = fmt.Sprintf("forward %d message(s)", len(messages))
+	return m, nil
+}
+
+func (m *Model) clearForwardPicker() {
+	m.forwardQuery = ""
+	m.forwardSourceMessages = nil
+	m.forwardCandidates = nil
+	m.forwardCursor = 0
+	m.forwardSelected = map[string]bool{}
+	m.forwardSelectedOrder = nil
+}
+
+func (m *Model) rebuildForwardCandidates() {
+	query := strings.ToLower(strings.TrimSpace(m.forwardQuery))
+	candidates := make([]store.Chat, 0, len(m.allChats))
+	for _, chat := range m.allChats {
+		if strings.TrimSpace(chat.ID) == "" {
+			continue
+		}
+		if query == "" {
+			candidates = append(candidates, chat)
+			continue
+		}
+		haystack := strings.ToLower(strings.Join([]string{chat.DisplayTitle(), chat.JID, chat.ID}, " "))
+		if strings.Contains(haystack, query) {
+			candidates = append(candidates, chat)
+		}
+	}
+	m.forwardCandidates = candidates
+	if len(m.forwardCandidates) == 0 {
+		m.forwardCursor = 0
+		return
+	}
+	m.forwardCursor = clamp(m.forwardCursor, 0, len(m.forwardCandidates)-1)
+}
+
+func (m *Model) moveForwardCursor(delta int) {
+	if len(m.forwardCandidates) == 0 {
+		m.forwardCursor = 0
+		return
+	}
+	m.forwardCursor = clamp(m.forwardCursor+delta, 0, len(m.forwardCandidates)-1)
+}
+
+func (m *Model) toggleForwardRecipient() {
+	if len(m.forwardCandidates) == 0 {
+		m.status = "no matching chats"
+		return
+	}
+	chat := m.forwardCandidates[clamp(m.forwardCursor, 0, len(m.forwardCandidates)-1)]
+	if strings.TrimSpace(chat.ID) == "" {
+		return
+	}
+	if m.forwardSelected == nil {
+		m.forwardSelected = map[string]bool{}
+	}
+	if m.forwardSelected[chat.ID] {
+		delete(m.forwardSelected, chat.ID)
+		m.forwardSelectedOrder = removeString(m.forwardSelectedOrder, chat.ID)
+		return
+	}
+	m.forwardSelected[chat.ID] = true
+	m.forwardSelectedOrder = append(m.forwardSelectedOrder, chat.ID)
+}
+
+func (m Model) forwardSelectedRecipients() []store.Chat {
+	if len(m.forwardSelected) == 0 {
+		return nil
+	}
+	byID := make(map[string]store.Chat, len(m.allChats))
+	for _, chat := range m.allChats {
+		if strings.TrimSpace(chat.ID) != "" {
+			byID[chat.ID] = chat
+		}
+	}
+	recipients := make([]store.Chat, 0, len(m.forwardSelected))
+	for _, id := range m.forwardSelectedOrder {
+		if !m.forwardSelected[id] {
+			continue
+		}
+		if chat, ok := byID[id]; ok {
+			recipients = append(recipients, chat)
+		}
+	}
+	for id := range m.forwardSelected {
+		if slices.Contains(m.forwardSelectedOrder, id) {
+			continue
+		}
+		if chat, ok := byID[id]; ok {
+			recipients = append(recipients, chat)
+		}
+	}
+	return recipients
+}
+
+func removeString(values []string, target string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != target {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func clamp(value, low, high int) int {

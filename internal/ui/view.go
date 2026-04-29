@@ -69,6 +69,9 @@ func (m Model) renderBody(height int) string {
 	if m.inlineFallbackPrompt {
 		return m.renderInlineFallbackPrompt(m.width, height)
 	}
+	if m.mode == ModeForward {
+		return m.renderForwardPicker(m.width, height)
+	}
 	if m.helpVisible {
 		style := m.panelStyle(m.focus)
 		return m.renderPanel(m.focus, m.width, height, m.renderHelp(panelContentWidth(style, m.width)))
@@ -229,6 +232,77 @@ func (m Model) renderInlineFallbackPrompt(width, height int) string {
 		panel,
 		lipgloss.WithWhitespaceChars(" "),
 	)
+}
+
+func (m Model) renderForwardPicker(width, height int) string {
+	panelWidth := min(max(52, width*2/3), max(1, width-4))
+	if width < 56 {
+		panelWidth = max(1, width)
+	}
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(activeBorder).
+		Padding(1, 2).
+		Width(max(1, panelWidth-2))
+
+	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
+	title := fmt.Sprintf("Forward %d message(s)", len(m.forwardSourceMessages))
+	query := strings.TrimSpace(m.forwardQuery)
+	if query == "" {
+		query = "all chats"
+	}
+	lines := []string{
+		lipgloss.NewStyle().Foreground(accentFG).Bold(true).Render(truncateDisplay(title, contentWidth)),
+		lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay("to: "+query, contentWidth)),
+		lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay(fmt.Sprintf("%d selected", len(m.forwardSelected)), contentWidth)),
+		"",
+	}
+	rows := m.forwardPickerRows(contentWidth, max(1, height-8))
+	if len(rows) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay("No matching chats", contentWidth)))
+	} else {
+		lines = append(lines, rows...)
+	}
+	panel := style.Render(strings.Join(lines, "\n"))
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		panel,
+		lipgloss.WithWhitespaceChars(" "),
+	)
+}
+
+func (m Model) forwardPickerRows(width, height int) []string {
+	height = max(1, height)
+	if len(m.forwardCandidates) == 0 {
+		return nil
+	}
+	cursor := clamp(m.forwardCursor, 0, len(m.forwardCandidates)-1)
+	start := clamp(cursor-height/2, 0, max(0, len(m.forwardCandidates)-height))
+	end := min(len(m.forwardCandidates), start+height)
+	rows := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		chat := m.forwardCandidates[i]
+		marker := " "
+		if m.forwardSelected[chat.ID] {
+			marker = "x"
+		}
+		prefix := " "
+		style := lipgloss.NewStyle().Foreground(primaryFG)
+		if i == cursor {
+			prefix = ">"
+			style = style.Foreground(accentFG).Bold(true)
+		}
+		title := m.sanitizeDisplayLine(chat.DisplayTitle())
+		if title == "" {
+			title = chat.ID
+		}
+		row := fmt.Sprintf("%s [%s] %s", prefix, marker, title)
+		rows = append(rows, style.Render(truncateDisplay(row, width)))
+	}
+	return rows
 }
 
 func (m Model) renderPanel(focus Focus, width, height int, content string) string {
@@ -1015,6 +1089,9 @@ func chatInitials(title string) string {
 }
 
 func (m Model) chatPreview(chat store.Chat) string {
+	if presence := m.chatPresenceText(chat.ID); presence != "" {
+		return presence
+	}
 	preview := strings.TrimSpace(m.sanitizeDisplayBody(chat.LastPreview))
 	if chat.HasDraft {
 		if draft := strings.TrimSpace(m.sanitizeDisplayBody(m.draftsByChat[chat.ID])); draft != "" {
@@ -1955,7 +2032,10 @@ func (m Model) renderStatus() string {
 }
 
 func (m Model) currentPresenceText() string {
-	chatID := m.currentChat().ID
+	return m.chatPresenceText(m.currentChat().ID)
+}
+
+func (m Model) chatPresenceText(chatID string) string {
 	if chatID == "" || len(m.presenceByChat) == 0 {
 		return ""
 	}
@@ -2066,6 +2146,8 @@ func defaultModeStatusColor(mode Mode) lipgloss.Color {
 		return activeBorder
 	case ModeSearch:
 		return warnFG
+	case ModeForward:
+		return activeBorder
 	case ModeConfirm:
 		return warnFG
 	default:
@@ -2336,6 +2418,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
 			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste image, remove"},
 			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
+			{Key: keysFor(keys.VisualForward, keys.ForwardToggle, keys.ForwardSend), Action: "forward selected messages"},
 			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
 		},
 	}

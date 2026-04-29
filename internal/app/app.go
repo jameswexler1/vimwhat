@@ -144,6 +144,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	reactionRequests := make(chan reactionRequest, reactionQueueSize)
 	deleteEveryoneRequests := make(chan deleteEveryoneRequest, deleteEveryoneQueueSize)
 	editMessageRequests := make(chan editMessageRequest, editMessageQueueSize)
+	forwardRequests := make(chan forwardMessagesRequest, forwardMessageQueueSize)
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
@@ -159,7 +160,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, editMessageRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, stickerSyncRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, editMessageRequests, forwardRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, stickerSyncRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -378,6 +379,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		EditMessage: func(message store.Message, body string) tea.Cmd {
 			return editMessageCmd(liveEnabled, editMessageRequests, message, body)
 		},
+		ForwardMessages: func(request ui.ForwardMessagesRequest) tea.Cmd {
+			return forwardMessagesCmd(liveEnabled, forwardRequests, request)
+		},
 		SaveMedia: func(media store.MediaMetadata) error {
 			return env.Store.UpsertMediaMetadata(context.Background(), media)
 		},
@@ -472,6 +476,9 @@ const (
 	editMessageQueueSize       = 16
 	editMessageQueueTimeout    = 5 * time.Second
 	editMessageTimeout         = 90 * time.Second
+	forwardMessageQueueSize    = 16
+	forwardMessageQueueTimeout = 5 * time.Second
+	forwardMessageTimeout      = 90 * time.Second
 	presenceQueueSize          = 32
 	presenceSendTimeout        = 5 * time.Second
 	mediaDownloadWorkers       = 2
@@ -591,6 +598,20 @@ type editMessageResult struct {
 	Err       error
 }
 
+type forwardMessagesRequest struct {
+	Context    context.Context
+	Messages   []store.Message
+	Recipients []store.Chat
+	Result     chan<- forwardMessagesResult
+}
+
+type forwardMessagesResult struct {
+	Sent    int
+	Skipped int
+	Failed  int
+	Err     error
+}
+
 func deleteMessageForEveryoneCmd(liveEnabled bool, requests chan<- deleteEveryoneRequest, message store.Message) tea.Cmd {
 	return func() tea.Msg {
 		if !liveEnabled {
@@ -655,6 +676,67 @@ func editMessageCmd(liveEnabled bool, requests chan<- editMessageRequest, messag
 	}
 }
 
+func forwardMessagesCmd(liveEnabled bool, requests chan<- forwardMessagesRequest, request ui.ForwardMessagesRequest) tea.Cmd {
+	return func() tea.Msg {
+		if !liveEnabled {
+			return ui.ForwardMessagesFinishedMsg{Err: fmt.Errorf("whatsapp is not paired")}
+		}
+		if requests == nil {
+			return ui.ForwardMessagesFinishedMsg{Err: fmt.Errorf("forward queue is unavailable")}
+		}
+		result := make(chan forwardMessagesResult, 1)
+		messages := slices.Clone(request.Messages)
+		recipients := uniqueForwardRecipients(request.Recipients)
+		workCtx, cancelWork := context.WithTimeout(context.Background(), forwardMessageTimeout)
+		defer cancelWork()
+		queued := forwardMessagesRequest{
+			Context:    workCtx,
+			Messages:   messages,
+			Recipients: recipients,
+			Result:     result,
+		}
+
+		queueCtx, cancelQueue := context.WithTimeout(context.Background(), forwardMessageQueueTimeout)
+		defer cancelQueue()
+		select {
+		case requests <- queued:
+		case <-queueCtx.Done():
+			return ui.ForwardMessagesFinishedMsg{Err: fmt.Errorf("forward queue timed out")}
+		default:
+			return ui.ForwardMessagesFinishedMsg{Err: fmt.Errorf("forward request queue is full")}
+		}
+
+		select {
+		case forwarded := <-result:
+			return ui.ForwardMessagesFinishedMsg{
+				Sent:    forwarded.Sent,
+				Skipped: forwarded.Skipped,
+				Failed:  forwarded.Failed,
+				Err:     forwarded.Err,
+			}
+		case <-workCtx.Done():
+			return ui.ForwardMessagesFinishedMsg{Err: fmt.Errorf("forward timed out")}
+		}
+	}
+}
+
+func uniqueForwardRecipients(recipients []store.Chat) []store.Chat {
+	out := make([]store.Chat, 0, len(recipients))
+	seen := map[string]bool{}
+	for _, recipient := range recipients {
+		key := strings.TrimSpace(recipient.ID)
+		if key == "" {
+			key = strings.TrimSpace(recipient.JID)
+		}
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, recipient)
+	}
+	return out
+}
+
 type presenceRequest struct {
 	ChatID    string
 	Composing bool
@@ -707,6 +789,7 @@ func runLiveWhatsApp(
 	reactionRequests <-chan reactionRequest,
 	deleteEveryoneRequests <-chan deleteEveryoneRequest,
 	editMessageRequests <-chan editMessageRequest,
+	forwardRequests <-chan forwardMessagesRequest,
 	presenceRequests <-chan presenceRequest,
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
@@ -1030,6 +1113,11 @@ func runLiveWhatsApp(
 				return
 			}
 			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+		case request, ok := <-forwardRequests:
+			if !ok {
+				return
+			}
+			handleForwardMessagesRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
 		case request, ok := <-presenceRequests:
 			if !ok {
 				return
@@ -2303,6 +2391,214 @@ func completeEditMessage(ctx context.Context, db *store.Store, live WhatsAppLive
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		Refresh: true,
 		Status:  "edited message",
+	})
+}
+
+func handleForwardMessagesRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request forwardMessagesRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if request.Context != nil {
+		select {
+		case <-request.Context.Done():
+			return
+		default:
+		}
+	}
+	if db == nil {
+		sendForwardMessagesResult(ctx, request, forwardMessagesResult{Err: fmt.Errorf("store is required")})
+		return
+	}
+	if live == nil {
+		sendForwardMessagesResult(ctx, request, forwardMessagesResult{Err: fmt.Errorf("whatsapp live session unavailable")})
+		return
+	}
+	if !online {
+		sendForwardMessagesResult(ctx, request, forwardMessagesResult{Err: fmt.Errorf("forwarding needs WhatsApp online")})
+		return
+	}
+	if len(request.Messages) == 0 {
+		sendForwardMessagesResult(ctx, request, forwardMessagesResult{Err: fmt.Errorf("no messages selected")})
+		return
+	}
+	recipients := uniqueForwardRecipients(request.Recipients)
+	if len(recipients) == 0 {
+		sendForwardMessagesResult(ctx, request, forwardMessagesResult{Err: fmt.Errorf("no forward recipients selected")})
+		return
+	}
+
+	var result forwardMessagesResult
+	for _, source := range request.Messages {
+		if err := forwardRequestContextErr(request); err != nil {
+			result.Err = err
+			sendForwardMessagesResult(ctx, request, result)
+			return
+		}
+		payload, ok, err := db.MessagePayload(ctx, source.ID)
+		if err != nil {
+			result.Failed++
+			continue
+		}
+		if !ok || len(payload.Payload) == 0 {
+			result.Skipped++
+			continue
+		}
+		if _, err := whatsapp.ForwardedMessageFromPayload(payload.Payload); err != nil {
+			result.Skipped++
+			continue
+		}
+		for _, recipient := range recipients {
+			if err := forwardRequestContextErr(request); err != nil {
+				result.Err = err
+				sendForwardMessagesResult(ctx, request, result)
+				return
+			}
+			message, err := queueForwardedMessage(ctx, db, live, source, payload.Payload, recipient)
+			if err != nil {
+				result.Failed++
+				continue
+			}
+			result.Sent++
+			if wg != nil {
+				wg.Add(1)
+				go func(message store.Message, payload []byte) {
+					defer wg.Done()
+					completeQueuedForwardSend(ctx, db, live, updates, message, payload)
+				}(message, cloneBytes(payload.Payload))
+				continue
+			}
+			completeQueuedForwardSend(ctx, db, live, updates, message, payload.Payload)
+		}
+	}
+	if result.Sent == 0 && result.Failed > 0 {
+		result.Err = fmt.Errorf("forward failed for all available targets")
+	}
+	sendForwardMessagesResult(ctx, request, result)
+}
+
+func forwardRequestContextErr(request forwardMessagesRequest) error {
+	if request.Context == nil {
+		return nil
+	}
+	select {
+	case <-request.Context.Done():
+		return request.Context.Err()
+	default:
+		return nil
+	}
+}
+
+func queueForwardedMessage(ctx context.Context, db *store.Store, live WhatsAppLiveSession, source store.Message, payload []byte, recipient store.Chat) (store.Message, error) {
+	if len(payload) == 0 {
+		return store.Message{}, fmt.Errorf("forward payload is required")
+	}
+	chatID := strings.TrimSpace(recipient.JID)
+	if chatID == "" {
+		chatID = strings.TrimSpace(recipient.ID)
+	}
+	chatJID, err := canonicalizeLiveChatID(ctx, live, chatID)
+	if err != nil {
+		return store.Message{}, err
+	}
+	remoteID := strings.TrimSpace(live.GenerateMessageID())
+	if remoteID == "" {
+		return store.Message{}, fmt.Errorf("generate message id failed")
+	}
+	message := forwardedLocalMessage(source, chatJID, remoteID, time.Now())
+	if message.ID == "" {
+		return store.Message{}, fmt.Errorf("message id is required")
+	}
+	if err := db.AddMessageWithMedia(ctx, message, message.Media); err != nil {
+		return store.Message{}, err
+	}
+	if err := db.UpsertMessagePayload(ctx, store.MessagePayload{
+		MessageID: message.ID,
+		Payload:   payload,
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		return store.Message{}, err
+	}
+	return message, nil
+}
+
+func forwardedLocalMessage(source store.Message, chatJID, remoteID string, now time.Time) store.Message {
+	messageID := whatsapp.LocalMessageID(chatJID, remoteID)
+	return store.Message{
+		ID:         messageID,
+		RemoteID:   remoteID,
+		ChatID:     chatJID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       source.Body,
+		Timestamp:  now,
+		IsOutgoing: true,
+		Status:     "sending",
+		Media:      cloneForwardedMedia(messageID, source.Media, now),
+	}
+}
+
+func cloneForwardedMedia(messageID string, mediaItems []store.MediaMetadata, updatedAt time.Time) []store.MediaMetadata {
+	if len(mediaItems) == 0 {
+		return nil
+	}
+	out := make([]store.MediaMetadata, 0, len(mediaItems))
+	for _, item := range mediaItems {
+		item.MessageID = messageID
+		item.UpdatedAt = updatedAt
+		out = append(out, item)
+	}
+	return out
+}
+
+func sendForwardMessagesResult(ctx context.Context, request forwardMessagesRequest, result forwardMessagesResult) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- result:
+	case <-ctx.Done():
+	}
+}
+
+func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, payload []byte) {
+	sendCtx, cancel := context.WithTimeout(ctx, forwardMessageTimeout)
+	defer cancel()
+	result, err := live.ForwardMessage(sendCtx, whatsapp.ForwardMessageRequest{
+		ChatJID:  message.ChatJID,
+		Payload:  payload,
+		RemoteID: message.RemoteID,
+	})
+	if err != nil {
+		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("forward failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	status := strings.TrimSpace(result.Status)
+	if status == "" {
+		status = "sent"
+	}
+	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: true,
+			Status:  fmt.Sprintf("forward status failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: true,
+		Status:  "forwarded message",
 	})
 }
 

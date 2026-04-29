@@ -1563,6 +1563,54 @@ func (s *Store) MediaDownloadDescriptor(ctx context.Context, messageID string) (
 	return descriptor, true, nil
 }
 
+func (s *Store) UpsertMessagePayload(ctx context.Context, payload MessagePayload) error {
+	payload.MessageID = strings.TrimSpace(payload.MessageID)
+	if payload.MessageID == "" {
+		return fmt.Errorf("message id is required")
+	}
+	if len(payload.Payload) == 0 {
+		return fmt.Errorf("message payload is required")
+	}
+	if payload.UpdatedAt.IsZero() {
+		payload.UpdatedAt = time.Now()
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO message_payloads (message_id, payload, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(message_id) DO UPDATE SET
+			payload = excluded.payload,
+			updated_at = excluded.updated_at
+	`, payload.MessageID, blobOrEmpty(payload.Payload), payload.UpdatedAt.Unix()); err != nil {
+		return fmt.Errorf("upsert message payload for %s: %w", payload.MessageID, err)
+	}
+	return nil
+}
+
+func (s *Store) MessagePayload(ctx context.Context, messageID string) (MessagePayload, bool, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return MessagePayload{}, false, nil
+	}
+	var (
+		payload     MessagePayload
+		updatedUnix int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT message_id, payload, updated_at
+		FROM message_payloads
+		WHERE message_id = ?
+	`, messageID).Scan(&payload.MessageID, &payload.Payload, &updatedUnix)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return MessagePayload{}, false, nil
+		}
+		return MessagePayload{}, false, fmt.Errorf("load message payload for %s: %w", messageID, err)
+	}
+	payload.Payload = cloneBytes(payload.Payload)
+	payload.UpdatedAt = time.Unix(updatedUnix, 0)
+	return payload, true, nil
+}
+
 func (s *Store) attachMessageDetails(ctx context.Context, messages []Message) ([]Message, error) {
 	var err error
 	messages, err = s.attachMediaMetadata(ctx, messages)

@@ -40,6 +40,12 @@ type Message struct {
 	Reactions       []Reaction
 }
 
+type MessagePayload struct {
+	MessageID string
+	Payload   []byte
+	UpdatedAt time.Time
+}
+
 type Reaction struct {
 	MessageID  string
 	SenderJID  string

@@ -53,8 +53,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q visual-forward %q forward-send %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ConfirmRun)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -360,6 +360,9 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`key_normal_delete_for_everybody = "leader d e"`,
 		`key_insert_attach = "ctrl+f"`,
 		`key_insert_paste_image = "ctrl+v"`,
+		`key_insert_newline_alt = "shift+enter"`,
+		`key_visual_forward = "f"`,
+		`key_forward_send = "enter"`,
 		`key_confirm_run = "enter"`,
 		`downloads_dir = "~/Downloads"`,
 	} {
@@ -408,6 +411,15 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.InsertPasteImage != "ctrl+v" {
 		t.Fatalf("InsertPasteImage = %q, want ctrl+v", cfg.Keymap.InsertPasteImage)
+	}
+	if cfg.Keymap.InsertNewlineAlt != "shift+enter" {
+		t.Fatalf("InsertNewlineAlt = %q, want shift+enter", cfg.Keymap.InsertNewlineAlt)
+	}
+	if cfg.Keymap.VisualForward != "f" {
+		t.Fatalf("VisualForward = %q, want f", cfg.Keymap.VisualForward)
+	}
+	if cfg.Keymap.ForwardSend != "enter" {
+		t.Fatalf("ForwardSend = %q, want enter", cfg.Keymap.ForwardSend)
 	}
 	if cfg.Keymap.ConfirmRun != "enter" {
 		t.Fatalf("ConfirmRun = %q, want enter", cfg.Keymap.ConfirmRun)

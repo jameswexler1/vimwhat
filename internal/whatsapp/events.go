@@ -13,6 +13,7 @@ import (
 	waSyncAction "go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
@@ -527,6 +528,7 @@ func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.
 				Status:              initialMessageStatus(event.Info.IsFromMe),
 				QuotedMessageID:     quotedMessageID,
 				QuotedRemoteID:      quotedRemoteID,
+				ForwardPayload:      messageForwardPayload(event.Message),
 			},
 		})
 	}
@@ -748,6 +750,7 @@ func normalizeMessageEvent(event *events.Message) []Event {
 				Status:              initialMessageStatus(event.Info.IsFromMe),
 				QuotedMessageID:     quotedMessageID,
 				QuotedRemoteID:      quotedRemoteID,
+				ForwardPayload:      messageForwardPayload(event.Message),
 			},
 		})
 	}
@@ -1336,6 +1339,17 @@ func mediaDownloadDescriptor(
 		FileLength:    int64(fileLength),
 		UpdatedAt:     updatedAt,
 	}
+}
+
+func messageForwardPayload(message *waE2E.Message) []byte {
+	if message == nil {
+		return nil
+	}
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		return nil
+	}
+	return payload
 }
 
 func cloneBytes(input []byte) []byte {

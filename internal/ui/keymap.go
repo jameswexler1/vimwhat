@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,6 +30,55 @@ func (m Model) keyMatches(msg tea.KeyMsg, binding string) bool {
 		return false
 	}
 	return keyTokenFromMsg(msg) == tokens[0]
+}
+
+func (m Model) keyTokenMatches(token, binding string) bool {
+	tokens := strings.Fields(binding)
+	if len(tokens) != 1 {
+		return false
+	}
+	return token == tokens[0]
+}
+
+func shiftedEnterTokenFromMsg(msg tea.Msg) (string, bool) {
+	stringer, ok := msg.(interface{ String() string })
+	if !ok {
+		return "", false
+	}
+	seq, ok := unknownCSISequenceFromString(stringer.String())
+	if !ok {
+		return "", false
+	}
+	switch seq {
+	case "13;2u", "13;2~", "27;2;13~":
+		return "shift+enter", true
+	default:
+		return "", false
+	}
+}
+
+func unknownCSISequenceFromString(value string) (string, bool) {
+	if strings.HasPrefix(value, "\x1b[") {
+		return strings.TrimPrefix(value, "\x1b["), true
+	}
+	const prefix = "?CSI["
+	const suffix = "]?"
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, suffix) {
+		return "", false
+	}
+	fields := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(value, prefix), suffix))
+	if len(fields) == 0 {
+		return "", false
+	}
+	var out strings.Builder
+	for _, field := range fields {
+		value, err := strconv.Atoi(field)
+		if err != nil || value < 0 || value > 255 {
+			return "", false
+		}
+		out.WriteByte(byte(value))
+	}
+	return out.String(), true
 }
 
 func (m Model) keyMatchesLeaderStart(msg tea.KeyMsg) bool {

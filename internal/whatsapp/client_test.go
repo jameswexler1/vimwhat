@@ -11,7 +11,9 @@ import (
 
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waAdv"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestSessionURIUsesModernCSQLitePragmas(t *testing.T) {
@@ -58,6 +60,26 @@ func TestHistoryAnchorMessageInfo(t *testing.T) {
 		!info.IsFromMe ||
 		!info.Timestamp.Equal(when) {
 		t.Fatalf("history anchor info = %+v", info)
+	}
+}
+
+func TestForwardedMessageFromPayloadMarksTextForwarded(t *testing.T) {
+	payload, err := proto.Marshal(&waE2E.Message{Conversation: proto.String("hello")})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+
+	message, err := ForwardedMessageFromPayload(payload)
+	if err != nil {
+		t.Fatalf("ForwardedMessageFromPayload() error = %v", err)
+	}
+	text := message.GetExtendedTextMessage()
+	if text == nil || text.GetText() != "hello" || message.GetConversation() != "" {
+		t.Fatalf("forwarded text message = %+v", message)
+	}
+	contextInfo := text.GetContextInfo()
+	if contextInfo == nil || !contextInfo.GetIsForwarded() || contextInfo.GetForwardingScore() != 1 {
+		t.Fatalf("forward context = %+v", contextInfo)
 	}
 }
 

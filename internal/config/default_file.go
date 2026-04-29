@@ -45,7 +45,7 @@ func DefaultFileContent(paths Paths) string {
 	b.WriteString("# - Linux: $XDG_CONFIG_HOME/vimwhat/config.toml\n")
 	b.WriteString("# - Windows: %APPDATA%\\vimwhat\\config.toml\n")
 	b.WriteString("# Leave command fields empty to use built-in platform auto defaults.\n")
-	b.WriteString("# Key tokens: printable single keys, space, enter, esc, tab, shift+tab, backspace, ctrl+x, alt+x, alt+enter, and leader sequences.\n\n")
+	b.WriteString("# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, ctrl+x, alt+x, alt+enter, and leader sequences.\n\n")
 
 	fmt.Fprintf(&b, "editor = %q\n", cfg.Editor)
 	fmt.Fprintf(&b, "preview_backend = %q\n", cfg.PreviewBackend)
@@ -84,6 +84,7 @@ func DefaultFileContent(paths Paths) string {
 	writeKeyGroup(&b, "Normal mode", keyBindingsForMode(bindings, KeyModeNormal))
 	writeKeyGroup(&b, "Insert mode", keyBindingsForMode(bindings, KeyModeInsert))
 	writeKeyGroup(&b, "Visual mode", keyBindingsForMode(bindings, KeyModeVisual))
+	writeKeyGroup(&b, "Forward picker", keyBindingsForMode(bindings, KeyModeForward))
 	writeKeyGroup(&b, "Command mode", keyBindingsForMode(bindings, KeyModeCommand))
 	writeKeyGroup(&b, "Search mode", keyBindingsForMode(bindings, KeyModeSearch))
 	writeKeyGroup(&b, "Confirm mode", keyBindingsForMode(bindings, KeyModeConfirm))
