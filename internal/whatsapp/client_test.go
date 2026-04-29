@@ -5,9 +5,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/types"
 )
@@ -66,6 +68,12 @@ func TestChatAvatarProfilePictureParamsRequestsFullImage(t *testing.T) {
 	}
 	if params.ExistingID != "avatar-1" {
 		t.Fatalf("ExistingID = %q, want trimmed avatar id", params.ExistingID)
+	}
+}
+
+func TestStickerSyncUsesAllAppStatePatchNames(t *testing.T) {
+	if !slices.Equal(stickerAppStatePatchNames[:], appstate.AllPatchNames[:]) {
+		t.Fatalf("sticker app-state patches = %#v, want all WhatsApp patch names %#v", stickerAppStatePatchNames, appstate.AllPatchNames)
 	}
 }
 

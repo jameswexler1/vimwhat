@@ -420,23 +420,10 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 	})
 }
 
-func pickSticker(paths config.Paths, cfg config.Config, db *store.Store, preload func(context.Context) error) tea.Cmd {
+func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd {
 	return func() tea.Msg {
-		var preloadErr error
-		preloaded := preload != nil
-		if preload != nil {
-			preloadCtx, cancel := context.WithTimeout(context.Background(), stickerSyncTimeout)
-			preloadErr = preload(preloadCtx)
-			cancel()
-		}
 		cmd, err := stickerPickerCommand(paths, cfg, db)
 		if err != nil {
-			if preloadErr != nil {
-				return ui.StickerPickedMsg{Err: fmt.Errorf("sticker sync failed: %w", preloadErr)}
-			}
-			if preloaded && strings.Contains(err.Error(), "no cached recent stickers") {
-				return ui.StickerPickedMsg{Err: fmt.Errorf("no WhatsApp sticker favorites available after sync")}
-			}
 			return ui.StickerPickedMsg{Err: err}
 		}
 		return cmd()
@@ -444,12 +431,12 @@ func pickSticker(paths config.Paths, cfg config.Config, db *store.Store, preload
 }
 
 func stickerPickerCommand(paths config.Paths, cfg config.Config, db *store.Store) (tea.Cmd, error) {
-	stickers, err := stickerPickerCandidates(context.Background(), db, 96)
+	stickers, err := stickerPickerCandidates(context.Background(), db, 0)
 	if err != nil {
 		return nil, err
 	}
 	if len(stickers) == 0 {
-		return nil, fmt.Errorf("no cached recent stickers available")
+		return nil, fmt.Errorf("no cached stickers yet; startup sync may still be running")
 	}
 	pickerDir, pickerFiles, stickersByPath, err := prepareStickerPickerFiles(paths, stickers)
 	if err != nil {
@@ -513,7 +500,13 @@ func stickerPickerCandidates(ctx context.Context, db *store.Store, limit int) ([
 	if db == nil {
 		return nil, fmt.Errorf("store is required")
 	}
-	stickers, err := db.ListRecentStickers(ctx, limit)
+	var stickers []store.RecentSticker
+	var err error
+	if limit > 0 {
+		stickers, err = db.ListRecentStickers(ctx, limit)
+	} else {
+		stickers, err = db.ListAllRecentStickers(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}

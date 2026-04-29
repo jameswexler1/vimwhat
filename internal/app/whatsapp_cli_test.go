@@ -449,6 +449,69 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	}
 }
 
+func TestRunLiveWhatsAppSyncsStickersAfterConnect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events:      make(chan whatsapp.Event, 1),
+		downloads:   make(chan fakeDownloadRequest, 1),
+		stickerSync: []whatsapp.Event{recentStickerSyncEvent("startup-favorite-sticker", "/v/t62.15575-24/startup.enc")},
+	}
+	env := Environment{
+		Paths: config.Paths{
+			SessionFile:  "/tmp/vimwhat-session.sqlite3",
+			TransientDir: filepath.Join(t.TempDir(), "transient"),
+		},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+	}
+	updates := make(chan ui.LiveUpdate, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "synced 1")
+	})
+	if session.stickerSyncCalls != 1 {
+		t.Fatalf("sticker sync calls = %d, want startup sync once", session.stickerSyncCalls)
+	}
+	download := <-session.downloads
+	if download.descriptor.Kind != "sticker" || download.targetPath == "" {
+		t.Fatalf("download request = %+v, want startup sticker cache download", download)
+	}
+	recent, ok, err := db.RecentSticker(ctx, "startup-favorite-sticker")
+	if err != nil {
+		t.Fatalf("RecentSticker() error = %v", err)
+	}
+	if !ok || recent.LocalPath == "" || !mediaPathAvailable(recent.LocalPath) {
+		t.Fatalf("recent sticker = %+v ok=%v, want cached startup favorite", recent, ok)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
 func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

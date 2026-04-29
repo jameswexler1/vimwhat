@@ -30,11 +30,7 @@ var errSessionRejected = errors.New("whatsapp session was rejected")
 
 const authTimeout = 45 * time.Second
 
-var stickerAppStatePatchNames = [...]appstate.WAPatchName{
-	appstate.WAPatchRegularHigh,
-	appstate.WAPatchRegular,
-	appstate.WAPatchRegularLow,
-}
+var stickerAppStatePatchNames = appstate.AllPatchNames
 
 type QRHandler = func(code string)
 

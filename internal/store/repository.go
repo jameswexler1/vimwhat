@@ -1971,7 +1971,7 @@ func (s *Store) ListRecentStickers(ctx context.Context, limit int) ([]RecentStic
 	if limit <= 0 {
 		limit = 64
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	return s.listRecentStickers(ctx, `
 		SELECT id, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
 			mime_type, file_name, local_path, width, height, weight, last_used_at,
 			is_favorite, is_animated, is_lottie, is_avatar, image_hash, updated_at
@@ -1979,6 +1979,20 @@ func (s *Store) ListRecentStickers(ctx context.Context, limit int) ([]RecentStic
 		ORDER BY last_used_at DESC, weight DESC, updated_at DESC, id ASC
 		LIMIT ?
 	`, limit)
+}
+
+func (s *Store) ListAllRecentStickers(ctx context.Context) ([]RecentSticker, error) {
+	return s.listRecentStickers(ctx, `
+		SELECT id, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+			mime_type, file_name, local_path, width, height, weight, last_used_at,
+			is_favorite, is_animated, is_lottie, is_avatar, image_hash, updated_at
+		FROM recent_stickers
+		ORDER BY last_used_at DESC, weight DESC, updated_at DESC, id ASC
+	`)
+}
+
+func (s *Store) listRecentStickers(ctx context.Context, query string, args ...any) ([]RecentSticker, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list recent stickers: %w", err)
 	}

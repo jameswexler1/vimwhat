@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,7 +174,62 @@ func TestStickerPickerCandidatesUseCachedRenderableStickers(t *testing.T) {
 	}
 }
 
-func TestPickStickerUsesExistingCacheWhenPreloadFails(t *testing.T) {
+func TestStickerPickerCandidatesCanListMoreThanNinetySixCachedStickers(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	dir := t.TempDir()
+	cached := filepath.Join(dir, "cached.webp")
+	if err := os.WriteFile(cached, []byte("webp"), 0o644); err != nil {
+		t.Fatalf("WriteFile(cached) error = %v", err)
+	}
+	for i := 0; i < 120; i++ {
+		if err := db.UpsertRecentSticker(ctx, store.RecentSticker{
+			ID:         fmt.Sprintf("sticker-%03d", i),
+			MIMEType:   "image/webp",
+			FileName:   "sticker.webp",
+			LocalPath:  cached,
+			LastUsedAt: time.Unix(int64(1_700_000_000+i), 0),
+		}); err != nil {
+			t.Fatalf("UpsertRecentSticker(%d) error = %v", i, err)
+		}
+	}
+
+	candidates, err := stickerPickerCandidates(ctx, db, 0)
+	if err != nil {
+		t.Fatalf("stickerPickerCandidates() error = %v", err)
+	}
+	if len(candidates) != 120 {
+		t.Fatalf("candidates = %d, want all 120 cached stickers", len(candidates))
+	}
+}
+
+func TestStickerPickerEmptyCacheMentionsStartupSync(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	_, err = stickerPickerCommand(
+		config.Paths{TransientDir: filepath.Join(t.TempDir(), "transient")},
+		config.Config{StickerPickerCommand: "true"},
+		db,
+	)
+	if err == nil || !strings.Contains(err.Error(), "startup sync") {
+		t.Fatalf("stickerPickerCommand() error = %v, want startup sync hint", err)
+	}
+}
+
+func TestPickStickerUsesExistingCacheWithoutSync(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {
@@ -203,7 +258,6 @@ func TestPickStickerUsesExistingCacheWhenPreloadFails(t *testing.T) {
 		config.Paths{TransientDir: filepath.Join(t.TempDir(), "transient")},
 		config.Config{StickerPickerCommand: "true"},
 		db,
-		func(context.Context) error { return errors.New("sync failed") },
 	)()
 	if picked, ok := msg.(ui.StickerPickedMsg); ok && picked.Err != nil {
 		t.Fatalf("pickSticker() returned immediate error %v, want picker command from existing cache", picked.Err)

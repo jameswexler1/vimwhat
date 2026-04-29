@@ -361,12 +361,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 			return pickAttachment(env.Config.FilePickerCommand)
 		},
 		PickSticker: func() tea.Cmd {
-			return pickSticker(env.Paths, env.Config, env.Store, func(ctx context.Context) error {
-				if !liveEnabled {
-					return fmt.Errorf("whatsapp is not paired")
-				}
-				return queueStickerSyncRequest(ctx, stickerSyncRequests)
-			})
+			return pickSticker(env.Paths, env.Config, env.Store)
 		},
 		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
 			return openMedia(env.Config, media)
@@ -809,6 +804,7 @@ func runLiveWhatsApp(
 	online := true
 	pendingPreferredChatID := ""
 	offlineSync := offlineSyncState{}
+	startStickerSync(ctx, env.Store, live, env.Paths, updates, &protocolWG, online)
 	var offlineSyncIdleTimer *time.Timer
 	var offlineSyncIdleTimerC <-chan time.Time
 	var offlineSyncMaxTimer *time.Timer
@@ -2376,6 +2372,14 @@ func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, 
 	case request.Result <- mediaDownloadResult{Media: media, Err: err}:
 	case <-ctx.Done():
 	}
+}
+
+func startStickerSync(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, updates chan<- ui.LiveUpdate, wg *sync.WaitGroup, online bool) {
+	result := make(chan stickerSyncResult, 1)
+	handleStickerSyncRequest(ctx, db, live, paths, updates, wg, online, stickerSyncRequest{
+		Context: ctx,
+		Result:  result,
+	})
 }
 
 func handleStickerSyncRequest(
