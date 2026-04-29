@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"vimwhat/internal/config"
 	"vimwhat/internal/store"
+	"vimwhat/internal/ui"
 )
 
 func TestReadImageFromClipboardStdoutCommandStagesAttachment(t *testing.T) {
@@ -169,6 +171,42 @@ func TestStickerPickerCandidatesUseCachedRenderableStickers(t *testing.T) {
 	selected, ok := selectedStickerForPath(files[0], byPath)
 	if !ok || selected.ID != "sticker-1" {
 		t.Fatalf("selected sticker = %+v ok=%v", selected, ok)
+	}
+}
+
+func TestPickStickerUsesExistingCacheWhenPreloadFails(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	dir := t.TempDir()
+	cached := filepath.Join(dir, "cached.webp")
+	if err := os.WriteFile(cached, []byte("webp"), 0o644); err != nil {
+		t.Fatalf("WriteFile(cached) error = %v", err)
+	}
+	if err := db.UpsertRecentSticker(ctx, store.RecentSticker{
+		ID:         "sticker-1",
+		MIMEType:   "image/webp",
+		FileName:   "sticker.webp",
+		LocalPath:  cached,
+		LastUsedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertRecentSticker(cached) error = %v", err)
+	}
+
+	msg := pickSticker(
+		config.Paths{TransientDir: filepath.Join(t.TempDir(), "transient")},
+		config.Config{StickerPickerCommand: "true"},
+		db,
+		func(context.Context) error { return errors.New("sync failed") },
+	)()
+	if picked, ok := msg.(ui.StickerPickedMsg); ok && picked.Err != nil {
+		t.Fatalf("pickSticker() returned immediate error %v, want picker command from existing cache", picked.Err)
 	}
 }
 

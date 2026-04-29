@@ -58,36 +58,37 @@ func (s *fakeWhatsAppSession) Close() error {
 
 type fakeLiveWhatsAppSession struct {
 	fakeWhatsAppSession
-	events           chan whatsapp.Event
-	historyRequests  chan fakeHistoryRequest
-	downloads        chan fakeDownloadRequest
-	sends            chan fakeSendRequest
-	mediaSends       chan whatsapp.MediaSendRequest
-	stickerSends     chan whatsapp.StickerSendRequest
-	readReceipts     chan []whatsapp.ReadReceiptTarget
-	reactions        chan whatsapp.ReactionSendRequest
-	deletes          chan whatsapp.DeleteForEveryoneRequest
-	edits            chan whatsapp.EditMessageRequest
-	presences        chan fakePresenceRequest
-	subscriptions    chan string
-	historyErr       error
-	downloadErr      error
-	sendErr          error
-	readErr          error
-	reactionErr      error
-	deleteErr        error
-	editErr          error
-	presenceErr      error
-	canonicalErr     error
-	stickerSyncErr   error
-	generatedID      string
-	connectErr       error
-	subscribeErr     error
-	connectCalled    bool
-	subscribeCalled  bool
-	canonicalChatID  map[string]string
-	stickerSync      []whatsapp.Event
-	stickerSyncCalls int
+	events            chan whatsapp.Event
+	historyRequests   chan fakeHistoryRequest
+	downloads         chan fakeDownloadRequest
+	sends             chan fakeSendRequest
+	mediaSends        chan whatsapp.MediaSendRequest
+	stickerSends      chan whatsapp.StickerSendRequest
+	readReceipts      chan []whatsapp.ReadReceiptTarget
+	reactions         chan whatsapp.ReactionSendRequest
+	deletes           chan whatsapp.DeleteForEveryoneRequest
+	edits             chan whatsapp.EditMessageRequest
+	presences         chan fakePresenceRequest
+	subscriptions     chan string
+	historyErr        error
+	downloadErr       error
+	sendErr           error
+	readErr           error
+	reactionErr       error
+	deleteErr         error
+	editErr           error
+	presenceErr       error
+	canonicalErr      error
+	stickerSyncErr    error
+	downloadErrByPath map[string]error
+	generatedID       string
+	connectErr        error
+	subscribeErr      error
+	connectCalled     bool
+	subscribeCalled   bool
+	canonicalChatID   map[string]string
+	stickerSync       []whatsapp.Event
+	stickerSyncCalls  int
 }
 
 type fakeHistoryRequest struct {
@@ -307,6 +308,11 @@ func (s *fakeLiveWhatsAppSession) DownloadMedia(_ context.Context, descriptor wh
 	}
 	if s.downloadErr != nil {
 		return s.downloadErr
+	}
+	if s.downloadErrByPath != nil {
+		if err := s.downloadErrByPath[descriptor.DirectPath]; err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(targetPath, []byte("downloaded media"), 0o644)
 }
@@ -1810,6 +1816,129 @@ func TestHandleStickerSyncRequestFetchesAndCachesWhatsAppStickers(t *testing.T) 
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "synced 1")
 	})
+}
+
+func TestHandleStickerSyncRequestKeepsUsableStickersWhenOneDownloadFails(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		downloads: make(chan fakeDownloadRequest, 2),
+		downloadErrByPath: map[string]error{
+			"/v/t62.15575-24/bad.enc": errors.New("expired media"),
+		},
+		stickerSync: []whatsapp.Event{
+			recentStickerSyncEvent("favorite-sticker-bad", "/v/t62.15575-24/bad.enc"),
+			recentStickerSyncEvent("favorite-sticker-good", "/v/t62.15575-24/good.enc"),
+		},
+	}
+	updates := make(chan ui.LiveUpdate, 4)
+	result := make(chan stickerSyncResult, 1)
+
+	handleStickerSyncRequest(ctx, db, session, config.Paths{TransientDir: filepath.Join(t.TempDir(), "transient")}, updates, nil, true, stickerSyncRequest{
+		Context: ctx,
+		Result:  result,
+	})
+
+	synced := <-result
+	if synced.Err != nil || synced.Stickers != 1 {
+		t.Fatalf("sticker sync result = %+v, want one usable sticker and no fatal error", synced)
+	}
+	bad, ok, err := db.RecentSticker(ctx, "favorite-sticker-bad")
+	if err != nil {
+		t.Fatalf("RecentSticker(bad) error = %v", err)
+	}
+	if !ok || bad.LocalPath != "" || !bad.IsFavorite {
+		t.Fatalf("bad sticker = %+v ok=%v, want metadata-only favorite", bad, ok)
+	}
+	good, ok, err := db.RecentSticker(ctx, "favorite-sticker-good")
+	if err != nil {
+		t.Fatalf("RecentSticker(good) error = %v", err)
+	}
+	if !ok || good.LocalPath == "" || !mediaPathAvailable(good.LocalPath) {
+		t.Fatalf("good sticker = %+v ok=%v, want cached sticker file", good, ok)
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "synced 1") && strings.Contains(update.Status, "1 unavailable")
+	})
+}
+
+func TestHandleStickerSyncRequestReportsConciseErrorWhenAllDownloadsFail(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		downloads: make(chan fakeDownloadRequest, 2),
+		downloadErrByPath: map[string]error{
+			"/v/t62.15575-24/bad-1.enc": errors.New("expired media 1"),
+			"/v/t62.15575-24/bad-2.enc": errors.New("expired media 2"),
+		},
+		stickerSync: []whatsapp.Event{
+			recentStickerSyncEvent("favorite-sticker-bad-1", "/v/t62.15575-24/bad-1.enc"),
+			recentStickerSyncEvent("favorite-sticker-bad-2", "/v/t62.15575-24/bad-2.enc"),
+		},
+	}
+	updates := make(chan ui.LiveUpdate, 4)
+	result := make(chan stickerSyncResult, 1)
+
+	handleStickerSyncRequest(ctx, db, session, config.Paths{TransientDir: filepath.Join(t.TempDir(), "transient")}, updates, nil, true, stickerSyncRequest{
+		Context: ctx,
+		Result:  result,
+	})
+
+	synced := <-result
+	if synced.Err == nil || synced.Stickers != 0 {
+		t.Fatalf("sticker sync result = %+v, want concise fatal error with no cached stickers", synced)
+	}
+	want := "no sticker files cached; 2 metadata record(s) synced, 2 download(s) failed"
+	if synced.Err.Error() != want {
+		t.Fatalf("sticker sync error = %q, want %q", synced.Err.Error(), want)
+	}
+	for _, id := range []string{"favorite-sticker-bad-1", "favorite-sticker-bad-2"} {
+		recent, ok, err := db.RecentSticker(ctx, id)
+		if err != nil {
+			t.Fatalf("RecentSticker(%s) error = %v", id, err)
+		}
+		if !ok || recent.LocalPath != "" || !recent.IsFavorite {
+			t.Fatalf("recent sticker %s = %+v ok=%v, want metadata persisted without local file", id, recent, ok)
+		}
+	}
+	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "sticker sync failed")
+	})
+	if strings.Contains(update.Status, "expired media") || strings.Contains(update.Status, "cache sticker") {
+		t.Fatalf("status = %q, want concise sync failure", update.Status)
+	}
+}
+
+func recentStickerSyncEvent(id, directPath string) whatsapp.Event {
+	return whatsapp.Event{
+		Kind: whatsapp.EventRecentSticker,
+		Sticker: whatsapp.RecentStickerEvent{
+			ID:            id,
+			URL:           "https://mmg.whatsapp.net/sticker",
+			DirectPath:    directPath,
+			MediaKey:      []byte("media-key-" + id),
+			FileEncSHA256: []byte("file-enc-sha-" + id),
+			MIMEType:      "image/webp",
+			FileName:      "sticker.webp",
+			LastUsedAt:    time.Unix(1_700_000_000, 0),
+			IsFavorite:    true,
+			UpdatedAt:     time.Unix(1_700_000_000, 0),
+		},
+	}
 }
 
 func TestHandleMediaSendRequestRejectsAudioCaption(t *testing.T) {

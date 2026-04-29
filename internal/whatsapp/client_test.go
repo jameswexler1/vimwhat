@@ -69,6 +69,27 @@ func TestChatAvatarProfilePictureParamsRequestsFullImage(t *testing.T) {
 	}
 }
 
+func TestMediaDownloadValidationLengthRequiresPlaintextSHA(t *testing.T) {
+	withoutPlaintextSHA := MediaDownloadDescriptor{FileLength: 123}
+	if !mediaDownloadNeedsBufferedWrite(withoutPlaintextSHA) {
+		t.Fatal("mediaDownloadNeedsBufferedWrite() = false, want true without plaintext SHA")
+	}
+	if got := mediaDownloadValidationLength(withoutPlaintextSHA); got != -1 {
+		t.Fatalf("mediaDownloadValidationLength(without SHA) = %d, want -1", got)
+	}
+
+	withPlaintextSHA := MediaDownloadDescriptor{
+		FileSHA256: []byte("01234567890123456789012345678901"),
+		FileLength: 123,
+	}
+	if mediaDownloadNeedsBufferedWrite(withPlaintextSHA) {
+		t.Fatal("mediaDownloadNeedsBufferedWrite() = true, want false with plaintext SHA")
+	}
+	if got := mediaDownloadValidationLength(withPlaintextSHA); got != 123 {
+		t.Fatalf("mediaDownloadValidationLength(with SHA) = %d, want 123", got)
+	}
+}
+
 func TestCheckSessionStatusMissingDoesNotCreateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sqlite3")
 

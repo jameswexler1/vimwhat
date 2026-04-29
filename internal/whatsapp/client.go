@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -965,18 +966,24 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 		}
 	}()
 
-	if strings.TrimSpace(descriptor.DirectPath) != "" {
-		fileLength := -1
-		if descriptor.FileLength > 0 {
-			fileLength = int(descriptor.FileLength)
+	if mediaDownloadNeedsBufferedWrite(descriptor) {
+		var data []byte
+		data, err = c.downloadMediaBytes(ctx, descriptor, mediaType)
+		if err == nil {
+			var written int
+			written, err = file.Write(data)
+			if err == nil && written != len(data) {
+				err = io.ErrShortWrite
+			}
 		}
+	} else if strings.TrimSpace(descriptor.DirectPath) != "" {
 		err = c.client.DownloadMediaWithPathToFile(
 			ctx,
 			descriptor.DirectPath,
 			descriptor.FileEncSHA256,
 			descriptor.FileSHA256,
 			descriptor.MediaKey,
-			fileLength,
+			mediaDownloadValidationLength(descriptor),
 			mediaType,
 			"",
 			file,
@@ -992,6 +999,40 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 	}
 	ok = true
 	return nil
+}
+
+func (c *Client) downloadMediaBytes(ctx context.Context, descriptor MediaDownloadDescriptor, mediaType whatsmeow.MediaType) ([]byte, error) {
+	if strings.TrimSpace(descriptor.DirectPath) != "" {
+		return c.client.DownloadMediaWithPath(
+			ctx,
+			descriptor.DirectPath,
+			descriptor.FileEncSHA256,
+			descriptor.FileSHA256,
+			descriptor.MediaKey,
+			mediaDownloadValidationLength(descriptor),
+			mediaType,
+			"",
+		)
+	}
+	return c.client.Download(ctx, downloadableMedia{
+		descriptor: descriptor,
+		mediaType:  mediaType,
+	})
+}
+
+func mediaDownloadNeedsBufferedWrite(descriptor MediaDownloadDescriptor) bool {
+	return len(descriptor.FileSHA256) == 0
+}
+
+func mediaDownloadValidationLength(descriptor MediaDownloadDescriptor) int {
+	if descriptor.FileLength <= 0 || len(descriptor.FileSHA256) == 0 {
+		return -1
+	}
+	maxInt := int64(int(^uint(0) >> 1))
+	if descriptor.FileLength > maxInt {
+		return -1
+	}
+	return int(descriptor.FileLength)
 }
 
 func (c *Client) GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error) {

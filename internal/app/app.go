@@ -2437,25 +2437,26 @@ func completeStickerSyncRequest(
 
 	events, syncErr := live.SyncRecentStickers(syncCtx)
 	ingestor := whatsapp.Ingestor{Store: db}
-	renderable := 0
+	cached := 0
+	metadataSynced := 0
+	cacheFailures := 0
 	var applyErr error
 	for _, event := range events {
+		cacheUsable := false
 		switch event.Kind {
 		case whatsapp.EventRecentSticker:
 			prepared, err := prepareRecentStickerEvent(syncCtx, db, live, paths, event.Sticker)
 			if err != nil {
-				applyErr = errors.Join(applyErr, fmt.Errorf("cache sticker: %w", err))
-				continue
-			}
-			event.Sticker = prepared
-			if stickerPickerUsable(store.RecentSticker{
-				ID:        prepared.ID,
-				MIMEType:  prepared.MIMEType,
-				FileName:  prepared.FileName,
-				LocalPath: prepared.LocalPath,
-				IsLottie:  prepared.IsLottie,
-			}) {
-				renderable++
+				cacheFailures++
+			} else {
+				event.Sticker = prepared
+				cacheUsable = stickerPickerUsable(store.RecentSticker{
+					ID:        prepared.ID,
+					MIMEType:  prepared.MIMEType,
+					FileName:  prepared.FileName,
+					LocalPath: prepared.LocalPath,
+					IsLottie:  prepared.IsLottie,
+				})
 			}
 		case whatsapp.EventRecentStickerRemove:
 		default:
@@ -2463,26 +2464,55 @@ func completeStickerSyncRequest(
 		}
 		if _, err := ingestor.Apply(syncCtx, event); err != nil {
 			applyErr = errors.Join(applyErr, fmt.Errorf("apply sticker event: %w", err))
+			continue
+		}
+		if event.Kind == whatsapp.EventRecentSticker {
+			metadataSynced++
+			if cacheUsable {
+				cached++
+			}
 		}
 	}
 
-	err := errors.Join(syncErr, applyErr)
-	sendStickerSyncResult(ctx, request, renderable, err)
+	err := stickerSyncResultError(cached, metadataSynced, cacheFailures, syncErr, applyErr)
+	sendStickerSyncResult(ctx, request, cached, err)
 	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-			Refresh: renderable > 0,
+			Refresh: metadataSynced > 0,
 			Status:  fmt.Sprintf("sticker sync failed: %s", shortStatusError(err)),
 		})
 		return
 	}
-	status := "no WhatsApp sticker favorites found"
-	if renderable > 0 {
-		status = fmt.Sprintf("synced %d WhatsApp sticker(s)", renderable)
-	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-		Refresh: renderable > 0,
-		Status:  status,
+		Refresh: metadataSynced > 0,
+		Status:  stickerSyncStatus(cached, metadataSynced, cacheFailures, errors.Join(syncErr, applyErr)),
 	})
+}
+
+func stickerSyncResultError(cached, metadataSynced, cacheFailures int, syncErr, applyErr error) error {
+	if cached > 0 {
+		return nil
+	}
+	if metadataSynced > 0 && cacheFailures > 0 {
+		return fmt.Errorf("no sticker files cached; %d metadata record(s) synced, %d download(s) failed", metadataSynced, cacheFailures)
+	}
+	return errors.Join(syncErr, applyErr)
+}
+
+func stickerSyncStatus(cached, metadataSynced, cacheFailures int, warning error) string {
+	if cached > 0 {
+		if cacheFailures > 0 {
+			return fmt.Sprintf("synced %d WhatsApp sticker(s); %d unavailable", cached, cacheFailures)
+		}
+		if warning != nil {
+			return fmt.Sprintf("synced %d WhatsApp sticker(s); sync warnings", cached)
+		}
+		return fmt.Sprintf("synced %d WhatsApp sticker(s)", cached)
+	}
+	if metadataSynced > 0 {
+		return fmt.Sprintf("synced %d sticker metadata record(s); no renderable stickers cached", metadataSynced)
+	}
+	return "no WhatsApp sticker favorites found"
 }
 
 func stickerSyncContext(parent, request context.Context) (context.Context, context.CancelFunc) {
