@@ -248,7 +248,9 @@ func (m Model) renderForwardPicker(width, height int) string {
 	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
 	title := fmt.Sprintf("Forward %d message(s)", len(m.forwardSourceMessages))
 	query := strings.TrimSpace(m.forwardQuery)
-	if query == "" {
+	if m.forwardSearchActive {
+		query = "/" + query
+	} else if query == "" {
 		query = "all chats"
 	}
 	lines := []string{
@@ -2418,7 +2420,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
 			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste image, remove"},
 			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
-			{Key: keysFor(keys.VisualForward, keys.ForwardToggle, keys.ForwardSend), Action: "forward selected messages"},
+			{Key: keysFor(keys.VisualForward, keys.ForwardSearch, keys.ForwardToggle, keys.ForwardSend), Action: "forward selected messages"},
 			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
 		},
 	}

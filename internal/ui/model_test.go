@@ -6248,7 +6248,7 @@ func TestVisualForwardPickerSelectsRecipientsAndSends(t *testing.T) {
 	if cmd != nil || model.mode != ModeForward || len(model.forwardSourceMessages) != 2 {
 		t.Fatalf("forward picker state = mode %s sources %d cmd %T", model.mode, len(model.forwardSourceMessages), cmd)
 	}
-	moved, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyTab})
+	moved, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	model = moved.(Model)
 	toggled, _ := model.updateForward(tea.KeyMsg{Type: tea.KeySpace})
 	model = toggled.(Model)
@@ -6264,6 +6264,93 @@ func TestVisualForwardPickerSelectsRecipientsAndSends(t *testing.T) {
 	model = handled.(Model)
 	if !strings.Contains(model.status, "forwarded 2 message") {
 		t.Fatalf("forward finished status = %q", model.status)
+	}
+}
+
+func TestCustomVisualForwardKeyStartsPicker(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.VisualForward = "F"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			return nil
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+
+	unchanged, _ := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = unchanged.(Model)
+	if model.mode != ModeVisual {
+		t.Fatalf("default visual forward key started picker with custom binding: mode %s", model.mode)
+	}
+	forwarding, cmd := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("F")})
+	model = forwarding.(Model)
+	if cmd != nil || model.mode != ModeForward || len(model.forwardSourceMessages) != 1 {
+		t.Fatalf("custom visual forward key state = mode %s sources %d cmd %T", model.mode, len(model.forwardSourceMessages), cmd)
+	}
+}
+
+func TestForwardPickerUsesSlashSearchSubmode(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+				{ID: "chat-3", Title: "Carol"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			return nil
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+
+	forwarding, _ := model.updateVisual(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = forwarding.(Model)
+	typed, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	model = typed.(Model)
+	if model.forwardQuery != "" || len(model.forwardCandidates) != 3 {
+		t.Fatalf("typing in forward picker changed query %q candidates %d", model.forwardQuery, len(model.forwardCandidates))
+	}
+
+	searching, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	model = searching.(Model)
+	if !model.forwardSearchActive {
+		t.Fatal("slash did not enter forward search")
+	}
+	filtered, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
+	model = filtered.(Model)
+	if model.forwardQuery != "b" || len(model.forwardCandidates) != 1 || model.forwardCandidates[0].Title != "Bob" {
+		t.Fatalf("forward search state = query %q candidates %+v", model.forwardQuery, model.forwardCandidates)
+	}
+	exited, cmd := model.updateForward(tea.KeyMsg{Type: tea.KeyEnter})
+	model = exited.(Model)
+	if cmd != nil || model.forwardSearchActive || model.mode != ModeForward {
+		t.Fatalf("forward search enter = active %v mode %s cmd %T", model.forwardSearchActive, model.mode, cmd)
+	}
+	cleared, _ := model.updateForward(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	model = cleared.(Model)
+	cleared, _ = model.updateForward(tea.KeyMsg{Type: tea.KeyEsc})
+	model = cleared.(Model)
+	if model.forwardSearchActive || model.forwardQuery != "" || len(model.forwardCandidates) != 3 {
+		t.Fatalf("forward search escape = active %v query %q candidates %d", model.forwardSearchActive, model.forwardQuery, len(model.forwardCandidates))
 	}
 }
 

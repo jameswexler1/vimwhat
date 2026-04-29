@@ -2455,6 +2455,7 @@ func handleForwardMessagesRequest(
 			result.Skipped++
 			continue
 		}
+		markForwarded := !source.IsOutgoing
 		for _, recipient := range recipients {
 			if err := forwardRequestContextErr(request); err != nil {
 				result.Err = err
@@ -2469,13 +2470,13 @@ func handleForwardMessagesRequest(
 			result.Sent++
 			if wg != nil {
 				wg.Add(1)
-				go func(message store.Message, payload []byte) {
+				go func(message store.Message, payload []byte, markForwarded bool) {
 					defer wg.Done()
-					completeQueuedForwardSend(ctx, db, live, updates, message, payload)
-				}(message, cloneBytes(payload.Payload))
+					completeQueuedForwardSend(ctx, db, live, updates, message, payload, markForwarded)
+				}(message, cloneBytes(payload.Payload), markForwarded)
 				continue
 			}
-			completeQueuedForwardSend(ctx, db, live, updates, message, payload.Payload)
+			completeQueuedForwardSend(ctx, db, live, updates, message, payload.Payload, markForwarded)
 		}
 	}
 	if result.Sent == 0 && result.Failed > 0 {
@@ -2569,13 +2570,14 @@ func sendForwardMessagesResult(ctx context.Context, request forwardMessagesReque
 	}
 }
 
-func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, payload []byte) {
+func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, payload []byte, markForwarded bool) {
 	sendCtx, cancel := context.WithTimeout(ctx, forwardMessageTimeout)
 	defer cancel()
 	result, err := live.ForwardMessage(sendCtx, whatsapp.ForwardMessageRequest{
-		ChatJID:  message.ChatJID,
-		Payload:  payload,
-		RemoteID: message.RemoteID,
+		ChatJID:       message.ChatJID,
+		Payload:       payload,
+		RemoteID:      message.RemoteID,
+		MarkForwarded: markForwarded,
 	})
 	if err != nil {
 		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")

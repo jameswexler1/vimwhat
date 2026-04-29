@@ -485,9 +485,10 @@ type TextSendRequest struct {
 }
 
 type ForwardMessageRequest struct {
-	ChatJID  string
-	Payload  []byte
-	RemoteID string
+	ChatJID       string
+	Payload       []byte
+	RemoteID      string
+	MarkForwarded bool
 }
 
 type ReadReceiptTarget struct {
@@ -620,7 +621,7 @@ func (c *Client) ForwardMessage(ctx context.Context, request ForwardMessageReque
 	if err != nil {
 		return SendResult{}, fmt.Errorf("parse forward chat jid: %w", err)
 	}
-	message, err := ForwardedMessageFromPayload(request.Payload)
+	message, err := messageFromForwardPayload(request.Payload, request.MarkForwarded)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -651,6 +652,10 @@ func (c *Client) ForwardMessage(ctx context.Context, request ForwardMessageReque
 }
 
 func ForwardedMessageFromPayload(payload []byte) (*waE2E.Message, error) {
+	return messageFromForwardPayload(payload, true)
+}
+
+func messageFromForwardPayload(payload []byte, markForwarded bool) (*waE2E.Message, error) {
 	if len(payload) == 0 {
 		return nil, fmt.Errorf("forward payload is required")
 	}
@@ -658,15 +663,19 @@ func ForwardedMessageFromPayload(payload []byte) (*waE2E.Message, error) {
 	if err := proto.Unmarshal(payload, &message); err != nil {
 		return nil, fmt.Errorf("decode forward payload: %w", err)
 	}
-	if messageForwardContext(&message) == nil {
+	contextInfo, ok := messageForwardContext(&message, markForwarded)
+	if !ok {
 		return nil, fmt.Errorf("message type cannot be forwarded exactly")
 	}
-	markMessageForwarded(&message)
+	if markForwarded {
+		markMessageForwarded(contextInfo)
+	} else {
+		clearMessageForwarded(contextInfo)
+	}
 	return &message, nil
 }
 
-func markMessageForwarded(message *waE2E.Message) {
-	contextInfo := messageForwardContext(message)
+func markMessageForwarded(contextInfo *waE2E.ContextInfo) {
 	if contextInfo == nil {
 		return
 	}
@@ -675,55 +684,66 @@ func markMessageForwarded(message *waE2E.Message) {
 	contextInfo.IsForwarded = proto.Bool(true)
 }
 
-func messageForwardContext(message *waE2E.Message) *waE2E.ContextInfo {
+func clearMessageForwarded(contextInfo *waE2E.ContextInfo) {
+	if contextInfo == nil {
+		return
+	}
+	contextInfo.ForwardingScore = nil
+	contextInfo.IsForwarded = nil
+}
+
+func messageForwardContext(message *waE2E.Message, create bool) (*waE2E.ContextInfo, bool) {
 	if message == nil {
-		return nil
+		return nil, false
 	}
 	if body := message.GetConversation(); body != "" {
+		if !create {
+			return nil, true
+		}
 		message.ExtendedTextMessage = &waE2E.ExtendedTextMessage{
 			Text:        proto.String(body),
 			ContextInfo: &waE2E.ContextInfo{},
 		}
 		message.Conversation = nil
-		return message.ExtendedTextMessage.ContextInfo
+		return message.ExtendedTextMessage.ContextInfo, true
 	}
 	if text := message.GetExtendedTextMessage(); text != nil {
-		if text.ContextInfo == nil {
+		if text.ContextInfo == nil && create {
 			text.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return text.ContextInfo
+		return text.ContextInfo, true
 	}
 	if image := message.GetImageMessage(); image != nil {
-		if image.ContextInfo == nil {
+		if image.ContextInfo == nil && create {
 			image.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return image.ContextInfo
+		return image.ContextInfo, true
 	}
 	if video := message.GetVideoMessage(); video != nil {
-		if video.ContextInfo == nil {
+		if video.ContextInfo == nil && create {
 			video.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return video.ContextInfo
+		return video.ContextInfo, true
 	}
 	if audio := message.GetAudioMessage(); audio != nil {
-		if audio.ContextInfo == nil {
+		if audio.ContextInfo == nil && create {
 			audio.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return audio.ContextInfo
+		return audio.ContextInfo, true
 	}
 	if document := message.GetDocumentMessage(); document != nil {
-		if document.ContextInfo == nil {
+		if document.ContextInfo == nil && create {
 			document.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return document.ContextInfo
+		return document.ContextInfo, true
 	}
 	if sticker := message.GetStickerMessage(); sticker != nil {
-		if sticker.ContextInfo == nil {
+		if sticker.ContextInfo == nil && create {
 			sticker.ContextInfo = &waE2E.ContextInfo{}
 		}
-		return sticker.ContextInfo
+		return sticker.ContextInfo, true
 	}
-	return nil
+	return nil, false
 }
 
 func (c *Client) MarkRead(ctx context.Context, targets []ReadReceiptTarget) error {

@@ -83,6 +83,46 @@ func TestForwardedMessageFromPayloadMarksTextForwarded(t *testing.T) {
 	}
 }
 
+func TestMessageFromForwardPayloadCanSkipForwardMetadata(t *testing.T) {
+	payload, err := proto.Marshal(&waE2E.Message{Conversation: proto.String("hello")})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+
+	message, err := messageFromForwardPayload(payload, false)
+	if err != nil {
+		t.Fatalf("messageFromForwardPayload() error = %v", err)
+	}
+	if message.GetConversation() != "hello" || message.GetExtendedTextMessage() != nil {
+		t.Fatalf("self forward text message = %+v", message)
+	}
+}
+
+func TestMessageFromForwardPayloadStripsExistingForwardMetadata(t *testing.T) {
+	payload, err := proto.Marshal(&waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("hello"),
+			ContextInfo: &waE2E.ContextInfo{
+				IsForwarded:     proto.Bool(true),
+				ForwardingScore: proto.Uint32(3),
+				StanzaID:        proto.String("quoted-1"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("proto.Marshal() error = %v", err)
+	}
+
+	message, err := messageFromForwardPayload(payload, false)
+	if err != nil {
+		t.Fatalf("messageFromForwardPayload() error = %v", err)
+	}
+	contextInfo := message.GetExtendedTextMessage().GetContextInfo()
+	if contextInfo == nil || contextInfo.GetIsForwarded() || contextInfo.GetForwardingScore() != 0 || contextInfo.GetStanzaID() != "quoted-1" {
+		t.Fatalf("self forward context = %+v", contextInfo)
+	}
+}
+
 func TestChatAvatarProfilePictureParamsRequestsFullImage(t *testing.T) {
 	params := chatAvatarProfilePictureParams(" avatar-1 ")
 	if params.Preview {

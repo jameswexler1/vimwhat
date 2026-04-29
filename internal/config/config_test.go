@@ -53,8 +53,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q visual-forward %q forward-send %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ForwardSearch != "/" || cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q visual-forward %q forward-send %q forward-search %q forward-down %q forward-up %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ForwardSearch, cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp, cfg.Keymap.ConfirmRun)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -95,6 +95,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_normal_save_media = "leader y"`,
 		`key_insert_paste_image = "ctrl+p"`,
 		`key_insert_send = "ctrl+s"`,
+		`key_visual_forward = "F"`,
+		`key_forward_search = "s"`,
 		`preview_max_width = 44`,
 		`preview_max_height = 10`,
 		`preview_delay_ms = 0`,
@@ -158,8 +160,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" {
-		t.Fatalf("keymap = quit %q yank %q edit %q sticker %q copy-image %q save %q paste-image %q send %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.ForwardSearch != "s" {
+		t.Fatalf("keymap = quit %q yank %q edit %q sticker %q copy-image %q save %q paste-image %q send %q visual-forward %q forward-search %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSearch)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -363,6 +365,9 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`key_insert_newline_alt = "shift+enter"`,
 		`key_visual_forward = "f"`,
 		`key_forward_send = "enter"`,
+		`key_forward_search = "/"`,
+		`key_forward_move_down = "j"`,
+		`key_forward_move_up = "k"`,
 		`key_confirm_run = "enter"`,
 		`downloads_dir = "~/Downloads"`,
 	} {
@@ -420,6 +425,12 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.ForwardSend != "enter" {
 		t.Fatalf("ForwardSend = %q, want enter", cfg.Keymap.ForwardSend)
+	}
+	if cfg.Keymap.ForwardSearch != "/" {
+		t.Fatalf("ForwardSearch = %q, want /", cfg.Keymap.ForwardSearch)
+	}
+	if cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" {
+		t.Fatalf("forward movement = down %q up %q, want j/k", cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp)
 	}
 	if cfg.Keymap.ConfirmRun != "enter" {
 		t.Fatalf("ConfirmRun = %q, want enter", cfg.Keymap.ConfirmRun)

@@ -74,6 +74,7 @@ type Keymap struct {
 	ForwardCancel       string
 	ForwardSend         string
 	ForwardToggle       string
+	ForwardSearch       string
 	ForwardMoveDown     string
 	ForwardMoveUp       string
 	ForwardBackspace    string
@@ -158,8 +159,9 @@ func DefaultKeymap() Keymap {
 		ForwardCancel:       "esc",
 		ForwardSend:         "enter",
 		ForwardToggle:       "space",
-		ForwardMoveDown:     "tab",
-		ForwardMoveUp:       "shift+tab",
+		ForwardSearch:       "/",
+		ForwardMoveDown:     "j",
+		ForwardMoveUp:       "k",
 		ForwardBackspace:    "backspace",
 		ForwardBackspaceAlt: "ctrl+h",
 
@@ -333,6 +335,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.ForwardToggle == "" {
 		input.ForwardToggle = defaults.ForwardToggle
 	}
+	if input.ForwardSearch == "" {
+		input.ForwardSearch = defaults.ForwardSearch
+	}
 	if input.ForwardMoveDown == "" {
 		input.ForwardMoveDown = defaults.ForwardMoveDown
 	}
@@ -437,6 +442,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_forward_cancel", Mode: KeyModeForward, Value: k.ForwardCancel},
 		{Name: "key_forward_send", Mode: KeyModeForward, Value: k.ForwardSend},
 		{Name: "key_forward_toggle", Mode: KeyModeForward, Value: k.ForwardToggle},
+		{Name: "key_forward_search", Mode: KeyModeForward, Value: k.ForwardSearch},
 		{Name: "key_forward_move_down", Mode: KeyModeForward, Value: k.ForwardMoveDown},
 		{Name: "key_forward_move_up", Mode: KeyModeForward, Value: k.ForwardMoveUp},
 		{Name: "key_forward_backspace", Mode: KeyModeForward, Value: k.ForwardBackspace},
@@ -563,6 +569,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.ForwardSend = normalized
 	case "key_forward_toggle":
 		k.ForwardToggle = normalized
+	case "key_forward_search":
+		k.ForwardSearch = normalized
 	case "key_forward_move_down":
 		k.ForwardMoveDown = normalized
 	case "key_forward_move_up":

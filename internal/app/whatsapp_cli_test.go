@@ -988,7 +988,7 @@ func TestHandleForwardMessagesRequestQueuesForwardedMessages(t *testing.T) {
 		t.Fatalf("forward result = %+v", gotResult)
 	}
 	gotRequest := <-session.forwards
-	if gotRequest.ChatJID != recipient.JID || gotRequest.RemoteID != "forward-1" || !bytes.Equal(gotRequest.Payload, payload) {
+	if gotRequest.ChatJID != recipient.JID || gotRequest.RemoteID != "forward-1" || !bytes.Equal(gotRequest.Payload, payload) || !gotRequest.MarkForwarded {
 		t.Fatalf("forward request = %+v", gotRequest)
 	}
 	messages, err := db.ListMessages(ctx, recipient.ID, 10)
@@ -997,6 +997,70 @@ func TestHandleForwardMessagesRequestQueuesForwardedMessages(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].Body != source.Body || messages[0].Status != "sent" || !messages[0].IsOutgoing {
 		t.Fatalf("recipient messages = %+v", messages)
+	}
+}
+
+func TestHandleForwardMessagesRequestDoesNotMarkOutgoingSourcesForwarded(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	sourceChat := store.Chat{ID: "11111@s.whatsapp.net", JID: "11111@s.whatsapp.net", Title: "Alice"}
+	recipient := store.Chat{ID: "22222@s.whatsapp.net", JID: "22222@s.whatsapp.net", Title: "Bob"}
+	for _, chat := range []store.Chat{sourceChat, recipient} {
+		if err := db.UpsertChat(ctx, chat); err != nil {
+			t.Fatalf("UpsertChat(%s) error = %v", chat.ID, err)
+		}
+	}
+	source := store.Message{
+		ID:         "11111@s.whatsapp.net/source-1",
+		RemoteID:   "source-1",
+		ChatID:     sourceChat.ID,
+		ChatJID:    sourceChat.JID,
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       "send again",
+		Timestamp:  time.Unix(1_700_000_000, 0),
+		IsOutgoing: true,
+		Status:     "sent",
+	}
+	if err := db.AddMessage(ctx, source); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+	payload, err := proto.Marshal(&waE2E.Message{Conversation: proto.String("send again")})
+	if err != nil {
+		t.Fatalf("marshal forward payload error = %v", err)
+	}
+	if err := db.UpsertMessagePayload(ctx, store.MessagePayload{
+		MessageID: source.ID,
+		Payload:   payload,
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertMessagePayload() error = %v", err)
+	}
+
+	session := &fakeLiveWhatsAppSession{
+		forwards:    make(chan whatsapp.ForwardMessageRequest, 1),
+		generatedID: "forward-1",
+	}
+	result := make(chan forwardMessagesResult, 1)
+	handleForwardMessagesRequest(ctx, db, session, make(chan ui.LiveUpdate, 4), nil, true, forwardMessagesRequest{
+		Messages:   []store.Message{source},
+		Recipients: []store.Chat{recipient},
+		Result:     result,
+	})
+
+	gotResult := <-result
+	if gotResult.Err != nil || gotResult.Sent != 1 || gotResult.Skipped != 0 || gotResult.Failed != 0 {
+		t.Fatalf("forward result = %+v", gotResult)
+	}
+	gotRequest := <-session.forwards
+	if gotRequest.MarkForwarded {
+		t.Fatalf("outgoing source forward request was marked forwarded: %+v", gotRequest)
 	}
 }
 

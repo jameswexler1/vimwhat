@@ -307,6 +307,7 @@ type Model struct {
 	commandLine                string
 	searchLine                 string
 	forwardQuery               string
+	forwardSearchActive        bool
 	forwardSourceMessages      []store.Message
 	forwardCandidates          []store.Chat
 	forwardCursor              int
@@ -1761,11 +1762,35 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
+	if m.forwardSearchActive {
+		switch {
+		case m.keyMatches(msg, keys.ForwardCancel):
+			m.forwardSearchActive = false
+			m.forwardQuery = ""
+			m.rebuildForwardCandidates()
+			m.status = "forward search cleared"
+		case m.keyMatches(msg, keys.ForwardSend):
+			m.forwardSearchActive = false
+		case m.keyMatches(msg, keys.ForwardBackspace) || m.keyMatches(msg, keys.ForwardBackspaceAlt):
+			m.forwardQuery = trimLastCluster(m.forwardQuery)
+			m.rebuildForwardCandidates()
+		default:
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				m.forwardQuery += msg.String()
+				m.rebuildForwardCandidates()
+			}
+		}
+		return m, nil
+	}
+
 	switch {
 	case m.keyMatches(msg, keys.ForwardCancel):
 		m.clearForwardPicker()
 		m.mode = ModeNormal
 		m.status = "forward cancelled"
+	case m.keyMatches(msg, keys.ForwardSearch):
+		m.forwardSearchActive = true
+		m.status = "forward search"
 	case m.keyMatches(msg, keys.ForwardSend):
 		recipients := m.forwardSelectedRecipients()
 		if len(recipients) == 0 {
@@ -1799,14 +1824,6 @@ func (m Model) updateForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveForwardCursor(1)
 	case m.keyMatches(msg, keys.ForwardMoveUp):
 		m.moveForwardCursor(-1)
-	case m.keyMatches(msg, keys.ForwardBackspace) || m.keyMatches(msg, keys.ForwardBackspaceAlt):
-		m.forwardQuery = trimLastCluster(m.forwardQuery)
-		m.rebuildForwardCandidates()
-	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.forwardQuery += msg.String()
-			m.rebuildForwardCandidates()
-		}
 	}
 
 	return m, nil
@@ -5027,6 +5044,7 @@ func (m Model) startForwardPicker(messages []store.Message) (tea.Model, tea.Cmd)
 	m.mode = ModeForward
 	m.forwardSourceMessages = slices.Clone(messages)
 	m.forwardQuery = ""
+	m.forwardSearchActive = false
 	m.forwardSelected = map[string]bool{}
 	m.forwardSelectedOrder = nil
 	m.forwardCursor = 0
@@ -5037,6 +5055,7 @@ func (m Model) startForwardPicker(messages []store.Message) (tea.Model, tea.Cmd)
 
 func (m *Model) clearForwardPicker() {
 	m.forwardQuery = ""
+	m.forwardSearchActive = false
 	m.forwardSourceMessages = nil
 	m.forwardCandidates = nil
 	m.forwardCursor = 0
