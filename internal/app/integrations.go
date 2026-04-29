@@ -420,22 +420,45 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 	})
 }
 
-func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd {
+func pickSticker(paths config.Paths, cfg config.Config, db *store.Store, preload func(context.Context) error) tea.Cmd {
+	return func() tea.Msg {
+		var preloadErr error
+		preloaded := preload != nil
+		if preload != nil {
+			preloadCtx, cancel := context.WithTimeout(context.Background(), stickerSyncTimeout)
+			preloadErr = preload(preloadCtx)
+			cancel()
+		}
+		cmd, err := stickerPickerCommand(paths, cfg, db)
+		if err != nil {
+			if preloadErr != nil {
+				return ui.StickerPickedMsg{Err: fmt.Errorf("sticker sync failed: %w", preloadErr)}
+			}
+			if preloaded && strings.Contains(err.Error(), "no cached recent stickers") {
+				return ui.StickerPickedMsg{Err: fmt.Errorf("no WhatsApp sticker favorites available after sync")}
+			}
+			return ui.StickerPickedMsg{Err: err}
+		}
+		return cmd()
+	}
+}
+
+func stickerPickerCommand(paths config.Paths, cfg config.Config, db *store.Store) (tea.Cmd, error) {
 	stickers, err := stickerPickerCandidates(context.Background(), db, 96)
 	if err != nil {
-		return stickerPickerError(err)
+		return nil, err
 	}
 	if len(stickers) == 0 {
-		return stickerPickerError(fmt.Errorf("no cached recent stickers available"))
+		return nil, fmt.Errorf("no cached recent stickers available")
 	}
 	pickerDir, pickerFiles, stickersByPath, err := prepareStickerPickerFiles(paths, stickers)
 	if err != nil {
-		return stickerPickerError(err)
+		return nil, err
 	}
 	chooserPath, err := createStickerChooserFile(paths)
 	if err != nil {
 		_ = os.RemoveAll(pickerDir)
-		return stickerPickerError(err)
+		return nil, err
 	}
 
 	commandTemplate := strings.TrimSpace(cfg.StickerPickerCommand)
@@ -446,18 +469,18 @@ func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd
 	if err != nil {
 		_ = os.RemoveAll(pickerDir)
 		_ = os.Remove(chooserPath)
-		return stickerPickerError(err)
+		return nil, err
 	}
 	argv = expandStickerPickerArgs(argv, chooserPath, pickerDir, pickerFiles)
 	if len(argv) == 0 {
 		_ = os.RemoveAll(pickerDir)
 		_ = os.Remove(chooserPath)
-		return stickerPickerError(fmt.Errorf("sticker picker command is empty"))
+		return nil, fmt.Errorf("sticker picker command is empty")
 	}
 	if _, err := exec.LookPath(argv[0]); err != nil {
 		_ = os.RemoveAll(pickerDir)
 		_ = os.Remove(chooserPath)
-		return stickerPickerError(fmt.Errorf("sticker picker %q not found", argv[0]))
+		return nil, fmt.Errorf("sticker picker %q not found", argv[0])
 	}
 
 	var stdout bytes.Buffer
@@ -483,7 +506,7 @@ func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd
 			return ui.StickerPickedMsg{Err: fmt.Errorf("selected sticker is not from the picker set")}
 		}
 		return ui.StickerPickedMsg{Sticker: sticker}
-	})
+	}), nil
 }
 
 func stickerPickerCandidates(ctx context.Context, db *store.Store, limit int) ([]store.RecentSticker, error) {
@@ -776,12 +799,6 @@ func autoOpenCommand(item store.MediaMetadata, path string) ([]string, error) {
 func attachmentPickerError(err error) tea.Cmd {
 	return func() tea.Msg {
 		return ui.AttachmentPickedMsg{Err: err}
-	}
-}
-
-func stickerPickerError(err error) tea.Cmd {
-	return func() tea.Msg {
-		return ui.StickerPickedMsg{Err: err}
 	}
 }
 

@@ -259,6 +259,7 @@ The recent-sticker send milestone now has an implemented first pass:
 - Normalize WhatsApp history-sync `recentStickers` and app-state sticker actions into internal recent-sticker events.
 - Persist recent sticker metadata in SQLite and cache renderable WebP sticker files in the transient app directory when remote download descriptors are available.
 - Add a configurable normal-mode sticker picker binding, defaulting to `leader t`, plus `:sticker` / `:pick-sticker` commands.
+- Fetch WhatsApp sticker app-state on demand before opening the picker, so favorite/recent stickers are populated into the transient cache even on a fresh local database.
 - Use `nsxiv -t -o -p {files}` as the Linux default picker and a native Windows file picker fallback against the temporary sticker directory.
 - Send selected stickers through a dedicated WhatsApp sticker message rather than as generic image attachments, preserving the composer/draft state.
 - Keep Lottie/TGS stickers out of picker/send until a compatible render/send path exists.

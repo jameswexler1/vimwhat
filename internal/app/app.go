@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -146,6 +147,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 	presenceRequests := make(chan presenceRequest, presenceQueueSize)
 	presenceSubscribeRequests := make(chan presenceSubscribeRequest, presenceQueueSize)
 	mediaDownloadRequests := make(chan mediaDownloadRequest, mediaDownloadQueueSize)
+	stickerSyncRequests := make(chan stickerSyncRequest, stickerSyncQueueSize)
 	activeChatNotifications := make(chan string, 16)
 	appFocusNotifications := make(chan bool, 16)
 	visibleChatNotifications := make(chan []string, 16)
@@ -157,7 +159,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, editMessageRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
+			runLiveWhatsApp(ctx, env, liveUpdates, historyRequests, textSendRequests, mediaSendRequests, readReceiptRequests, reactionRequests, deleteEveryoneRequests, editMessageRequests, presenceRequests, presenceSubscribeRequests, mediaDownloadRequests, stickerSyncRequests, activeChatNotifications, appFocusNotifications, visibleChatNotifications)
 		}()
 	}
 	defer func() {
@@ -359,7 +361,12 @@ func runTUI(env Environment, stderr io.Writer) int {
 			return pickAttachment(env.Config.FilePickerCommand)
 		},
 		PickSticker: func() tea.Cmd {
-			return pickSticker(env.Paths, env.Config, env.Store)
+			return pickSticker(env.Paths, env.Config, env.Store, func(ctx context.Context) error {
+				if !liveEnabled {
+					return fmt.Errorf("whatsapp is not paired")
+				}
+				return queueStickerSyncRequest(ctx, stickerSyncRequests)
+			})
 		},
 		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
 			return openMedia(env.Config, media)
@@ -475,6 +482,8 @@ const (
 	mediaDownloadWorkers       = 2
 	mediaDownloadQueueSize     = 16
 	mediaDownloadTimeout       = 5 * time.Minute
+	stickerSyncQueueSize       = 4
+	stickerSyncTimeout         = 90 * time.Second
 	avatarRefreshQueueSize     = 32
 	avatarRefreshTimeout       = 30 * time.Second
 )
@@ -527,6 +536,28 @@ func queueMediaSendRequest(ctx context.Context, requests chan<- mediaSendRequest
 		return queued.Message, queued.Err
 	case <-ctx.Done():
 		return store.Message{}, fmt.Errorf("media send queue timed out")
+	}
+}
+
+func queueStickerSyncRequest(ctx context.Context, requests chan<- stickerSyncRequest) error {
+	if requests == nil {
+		return fmt.Errorf("sticker sync queue is unavailable")
+	}
+	result := make(chan stickerSyncResult, 1)
+	request := stickerSyncRequest{Context: ctx, Result: result}
+	select {
+	case requests <- request:
+	case <-ctx.Done():
+		return fmt.Errorf("sticker sync queue timed out")
+	default:
+		return fmt.Errorf("sticker sync queue is full")
+	}
+
+	select {
+	case synced := <-result:
+		return synced.Err
+	case <-ctx.Done():
+		return fmt.Errorf("sticker sync timed out")
 	}
 }
 
@@ -649,6 +680,16 @@ type mediaDownloadResult struct {
 	Err   error
 }
 
+type stickerSyncRequest struct {
+	Context context.Context
+	Result  chan<- stickerSyncResult
+}
+
+type stickerSyncResult struct {
+	Stickers int
+	Err      error
+}
+
 type avatarRefreshRequest struct {
 	ChatID string
 }
@@ -674,6 +715,7 @@ func runLiveWhatsApp(
 	presenceRequests <-chan presenceRequest,
 	presenceSubscribeRequests <-chan presenceSubscribeRequest,
 	mediaDownloadRequests <-chan mediaDownloadRequest,
+	stickerSyncRequests <-chan stickerSyncRequest,
 	activeChatUpdates <-chan string,
 	appFocusUpdates <-chan bool,
 	visibleChatUpdates <-chan []string,
@@ -1032,6 +1074,11 @@ func runLiveWhatsApp(
 				return
 			}
 			enqueueMediaDownload(ctx, downloadJobs, online, request)
+		case request, ok := <-stickerSyncRequests:
+			if !ok {
+				return
+			}
+			handleStickerSyncRequest(ctx, env.Store, live, env.Paths, updates, &protocolWG, online, request)
 		case chatID, ok := <-activeChatUpdates:
 			if !ok {
 				activeChatUpdates = nil
@@ -2327,6 +2374,146 @@ func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, 
 	}
 	select {
 	case request.Result <- mediaDownloadResult{Media: media, Err: err}:
+	case <-ctx.Done():
+	}
+}
+
+func handleStickerSyncRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	paths config.Paths,
+	updates chan<- ui.LiveUpdate,
+	wg *sync.WaitGroup,
+	online bool,
+	request stickerSyncRequest,
+) {
+	if request.Result == nil {
+		return
+	}
+	if request.Context != nil {
+		select {
+		case <-request.Context.Done():
+			sendStickerSyncResult(ctx, request, 0, request.Context.Err())
+			return
+		default:
+		}
+	}
+	if db == nil {
+		sendStickerSyncResult(ctx, request, 0, fmt.Errorf("store is required"))
+		return
+	}
+	if live == nil {
+		sendStickerSyncResult(ctx, request, 0, fmt.Errorf("whatsapp live session unavailable"))
+		return
+	}
+	if !online {
+		sendStickerSyncResult(ctx, request, 0, fmt.Errorf("sticker sync needs WhatsApp online"))
+		return
+	}
+
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{Status: "syncing WhatsApp stickers"})
+	if wg != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			completeStickerSyncRequest(ctx, db, live, paths, updates, request)
+		}()
+		return
+	}
+	completeStickerSyncRequest(ctx, db, live, paths, updates, request)
+}
+
+func completeStickerSyncRequest(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	paths config.Paths,
+	updates chan<- ui.LiveUpdate,
+	request stickerSyncRequest,
+) {
+	syncCtx, cancel := stickerSyncContext(ctx, request.Context)
+	defer cancel()
+
+	events, syncErr := live.SyncRecentStickers(syncCtx)
+	ingestor := whatsapp.Ingestor{Store: db}
+	renderable := 0
+	var applyErr error
+	for _, event := range events {
+		switch event.Kind {
+		case whatsapp.EventRecentSticker:
+			prepared, err := prepareRecentStickerEvent(syncCtx, db, live, paths, event.Sticker)
+			if err != nil {
+				applyErr = errors.Join(applyErr, fmt.Errorf("cache sticker: %w", err))
+				continue
+			}
+			event.Sticker = prepared
+			if stickerPickerUsable(store.RecentSticker{
+				ID:        prepared.ID,
+				MIMEType:  prepared.MIMEType,
+				FileName:  prepared.FileName,
+				LocalPath: prepared.LocalPath,
+				IsLottie:  prepared.IsLottie,
+			}) {
+				renderable++
+			}
+		case whatsapp.EventRecentStickerRemove:
+		default:
+			continue
+		}
+		if _, err := ingestor.Apply(syncCtx, event); err != nil {
+			applyErr = errors.Join(applyErr, fmt.Errorf("apply sticker event: %w", err))
+		}
+	}
+
+	err := errors.Join(syncErr, applyErr)
+	sendStickerSyncResult(ctx, request, renderable, err)
+	if err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Refresh: renderable > 0,
+			Status:  fmt.Sprintf("sticker sync failed: %s", shortStatusError(err)),
+		})
+		return
+	}
+	status := "no WhatsApp sticker favorites found"
+	if renderable > 0 {
+		status = fmt.Sprintf("synced %d WhatsApp sticker(s)", renderable)
+	}
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		Refresh: renderable > 0,
+		Status:  status,
+	})
+}
+
+func stickerSyncContext(parent, request context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, stickerSyncTimeout)
+	if request == nil {
+		return ctx, cancel
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-request.Done():
+			cancel()
+		case <-ctx.Done():
+		case <-done:
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
+}
+
+func sendStickerSyncResult(ctx context.Context, request stickerSyncRequest, stickers int, err error) {
+	if request.Result == nil {
+		return
+	}
+	select {
+	case request.Result <- stickerSyncResult{Stickers: stickers, Err: err}:
 	case <-ctx.Done():
 	}
 }

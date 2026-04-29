@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -27,6 +28,12 @@ var ErrClientNotOpen = errors.New("whatsapp client is not open")
 var errSessionRejected = errors.New("whatsapp session was rejected")
 
 const authTimeout = 45 * time.Second
+
+var stickerAppStatePatchNames = [...]appstate.WAPatchName{
+	appstate.WAPatchRegularHigh,
+	appstate.WAPatchRegular,
+	appstate.WAPatchRegularLow,
+}
 
 type QRHandler = func(code string)
 
@@ -75,6 +82,7 @@ type Adapter interface {
 	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
+	SyncRecentStickers(ctx context.Context) ([]Event, error)
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
 	GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error)
 	RefreshChatMetadata(ctx context.Context) ([]Event, error)
@@ -892,6 +900,40 @@ func (c *Client) RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor,
 		return fmt.Errorf("request whatsapp history before %s: %w", anchor.MessageID, err)
 	}
 	return nil
+}
+
+func (c *Client) SyncRecentStickers(ctx context.Context) ([]Event, error) {
+	if c == nil || c.client == nil {
+		return nil, ErrClientNotOpen
+	}
+
+	previousEmitFullSync := c.client.EmitAppStateEventsOnFullSync
+	c.client.EmitAppStateEventsOnFullSync = true
+	defer func() {
+		c.client.EmitAppStateEventsOnFullSync = previousEmitFullSync
+	}()
+
+	var out []Event
+	var syncErr error
+	for _, name := range stickerAppStatePatchNames {
+		rawEvents, err := c.client.DangerousInternals().FetchAppState(ctx, name, true, false)
+		if err != nil {
+			if ctx.Err() != nil {
+				return out, ctx.Err()
+			}
+			syncErr = errors.Join(syncErr, fmt.Errorf("fetch whatsapp sticker app state %s: %w", name, err))
+			continue
+		}
+		for _, raw := range rawEvents {
+			for _, event := range c.normalizeWhatsmeowEvent(ctx, raw) {
+				switch event.Kind {
+				case EventRecentSticker, EventRecentStickerRemove:
+					out = append(out, event)
+				}
+			}
+		}
+	}
+	return out, syncErr
 }
 
 func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error {
