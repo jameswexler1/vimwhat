@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"vimwhat/internal/textmatch"
 )
 
 const (
@@ -396,47 +398,22 @@ func (s *Store) SearchChats(ctx context.Context, query string, limit int) ([]Cha
 		limit = 100
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			c.id,
-			c.jid,
-			c.title,
-			c.title_source,
-			c.kind,
-			c.avatar_id,
-			c.avatar_path,
-			c.avatar_thumb_path,
-			c.avatar_updated_at,
-			c.unread_count,
-			c.pinned,
-			c.muted,
-			c.last_message_at,
-			`+chatLastPreviewSQL+`,
-			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
-		FROM chats c
-		LEFT JOIN drafts d ON d.chat_id = c.id
-		WHERE lower(c.title) LIKE '%' || lower(?) || '%' ESCAPE '\'
-		ORDER BY c.pinned DESC, c.last_message_at DESC, c.title ASC
-		LIMIT ?
-	`, escapeLike(query), limit)
+	chats, err := s.ListChats(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("search chats: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
 
-	var chats []Chat
-	for rows.Next() {
-		chat, err := scanChat(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan searched chat: %w", err)
+	filtered := make([]Chat, 0, min(limit, len(chats)))
+	for _, chat := range chats {
+		if textmatch.ContainsAny([]string{chat.DisplayTitle(), chat.JID, chat.ID}, query) {
+			filtered = append(filtered, chat)
+			if len(filtered) >= limit {
+				break
+			}
 		}
-		chats = append(chats, chat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate searched chats: %w", err)
 	}
 
-	return chats, nil
+	return filtered, nil
 }
 
 func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit int) ([]Message, error) {
@@ -452,18 +429,15 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
-			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
-			m.deleted_at, m.deleted_reason, m.edited_at
-			FROM message_fts
-			JOIN messages m ON m.id = message_fts.message_id
-			WHERE message_fts.chat_id = ?
-				AND m.deleted_at = 0
-				AND `+renderableMessageWhereSQL+`
-				AND message_fts MATCH ?
-			ORDER BY m.timestamp_unix ASC, m.id ASC
-		LIMIT ?
-	`, chatID, quoteFTSQuery(query), limit)
+		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+			deleted_at, deleted_reason, edited_at
+		FROM messages m
+		WHERE m.chat_id = ?
+			AND m.deleted_at = 0
+			AND `+renderableMessageWhereSQL+`
+		ORDER BY m.timestamp_unix ASC, m.id ASC
+	`, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("search messages for %s: %w", chatID, err)
 	}
@@ -475,7 +449,12 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 		if err != nil {
 			return nil, fmt.Errorf("scan searched message: %w", err)
 		}
-		messages = append(messages, message)
+		if textmatch.Contains(message.Body, query) {
+			messages = append(messages, message)
+			if len(messages) >= limit {
+				break
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate searched messages: %w", err)
@@ -794,6 +773,12 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	for _, media := range message.Media {
 		media.MessageID = message.ID
 		if err := upsertMediaMetadata(ctx, tx, media); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
+	}
+	if message.Mentions != nil {
+		if err := replaceMessageMentions(ctx, tx, message.ID, message.Mentions); err != nil {
 			_ = tx.Rollback()
 			return false, err
 		}
@@ -1303,6 +1288,338 @@ func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {
 	return contact, nil
 }
 
+func (s *Store) ReplaceGroupParticipants(ctx context.Context, chatID string, participants []GroupParticipant) error {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return fmt.Errorf("chat id is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin replace group participants: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM group_participants WHERE chat_id = ?`, chatID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("clear group participants for %s: %w", chatID, err)
+	}
+	for _, participant := range participants {
+		participant.ChatID = chatID
+		if err := upsertGroupParticipant(ctx, tx, participant); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit replace group participants: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpsertGroupParticipants(ctx context.Context, chatID string, participants []GroupParticipant) error {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return fmt.Errorf("chat id is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert group participants: %w", err)
+	}
+	for _, participant := range participants {
+		participant.ChatID = chatID
+		if err := upsertGroupParticipant(ctx, tx, participant); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert group participants: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RemoveGroupParticipants(ctx context.Context, chatID string, participantJIDs []string) error {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" || len(participantJIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin remove group participants: %w", err)
+	}
+	for _, jid := range participantJIDs {
+		jid = strings.TrimSpace(jid)
+		if jid == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM group_participants
+			WHERE chat_id = ?
+				AND (jid = ? OR phone_jid = ? OR lid_jid = ?)
+		`, chatID, jid, jid, jid); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("remove group participant %s/%s: %w", chatID, jid, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit remove group participants: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SearchMentionCandidates(ctx context.Context, chatID, query string, limit int) ([]MentionCandidate, error) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			gp.chat_id,
+			gp.jid,
+			gp.phone_jid,
+			gp.lid_jid,
+			gp.display_name,
+			gp.is_admin,
+			gp.is_super_admin,
+			gp.updated_at,
+			COALESCE(c.display_name, ''),
+			COALESCE(c.notify_name, ''),
+			COALESCE(c.phone, ''),
+			COALESCE(cp.display_name, ''),
+			COALESCE(cp.notify_name, ''),
+			COALESCE(cp.phone, ''),
+			COALESCE(cl.display_name, ''),
+			COALESCE(cl.notify_name, ''),
+			COALESCE(cl.phone, '')
+		FROM group_participants gp
+		LEFT JOIN contacts c ON c.jid = gp.jid
+		LEFT JOIN contacts cp ON cp.jid = gp.phone_jid
+		LEFT JOIN contacts cl ON cl.jid = gp.lid_jid
+		WHERE gp.chat_id = ?
+		ORDER BY gp.display_name ASC, gp.jid ASC
+	`, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("search mention candidates for %s: %w", chatID, err)
+	}
+	defer rows.Close()
+
+	var candidates []MentionCandidate
+	for rows.Next() {
+		var (
+			participant       GroupParticipant
+			updatedUnix       int64
+			isAdmin           int
+			isSuperAdmin      int
+			displayName       string
+			notifyName        string
+			phone             string
+			phoneDisplayName  string
+			phoneNotifyName   string
+			phoneContactPhone string
+			lidDisplayName    string
+			lidNotifyName     string
+			lidPhone          string
+		)
+		if err := rows.Scan(
+			&participant.ChatID,
+			&participant.JID,
+			&participant.PhoneJID,
+			&participant.LIDJID,
+			&participant.DisplayName,
+			&isAdmin,
+			&isSuperAdmin,
+			&updatedUnix,
+			&displayName,
+			&notifyName,
+			&phone,
+			&phoneDisplayName,
+			&phoneNotifyName,
+			&phoneContactPhone,
+			&lidDisplayName,
+			&lidNotifyName,
+			&lidPhone,
+		); err != nil {
+			return nil, fmt.Errorf("scan mention candidate: %w", err)
+		}
+		participant.IsAdmin = isAdmin == 1
+		participant.IsSuperAdmin = isSuperAdmin == 1
+		if updatedUnix > 0 {
+			participant.UpdatedAt = time.Unix(updatedUnix, 0)
+		}
+		candidate := mentionCandidateForParticipant(participant, []Contact{
+			{JID: participant.JID, DisplayName: displayName, NotifyName: notifyName, Phone: phone},
+			{JID: participant.PhoneJID, DisplayName: phoneDisplayName, NotifyName: phoneNotifyName, Phone: phoneContactPhone},
+			{JID: participant.LIDJID, DisplayName: lidDisplayName, NotifyName: lidNotifyName, Phone: lidPhone},
+		})
+		if candidate.JID == "" {
+			continue
+		}
+		if strings.TrimSpace(query) != "" && !textmatch.Contains(candidate.SearchText, query) {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mention candidates: %w", err)
+	}
+
+	sortMentionCandidates(candidates, query)
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+type groupParticipantExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func upsertGroupParticipant(ctx context.Context, execer groupParticipantExecer, participant GroupParticipant) error {
+	if strings.TrimSpace(participant.ChatID) == "" {
+		return fmt.Errorf("participant chat id is required")
+	}
+	if strings.TrimSpace(participant.JID) == "" {
+		return nil
+	}
+	if participant.UpdatedAt.IsZero() {
+		participant.UpdatedAt = time.Now()
+	}
+	if _, err := execer.ExecContext(ctx, `
+		INSERT INTO group_participants (
+			chat_id, jid, phone_jid, lid_jid, display_name,
+			is_admin, is_super_admin, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, jid) DO UPDATE SET
+			phone_jid = CASE WHEN excluded.phone_jid <> '' THEN excluded.phone_jid ELSE group_participants.phone_jid END,
+			lid_jid = CASE WHEN excluded.lid_jid <> '' THEN excluded.lid_jid ELSE group_participants.lid_jid END,
+			display_name = CASE WHEN excluded.display_name <> '' THEN excluded.display_name ELSE group_participants.display_name END,
+			is_admin = excluded.is_admin,
+			is_super_admin = excluded.is_super_admin,
+			updated_at = excluded.updated_at
+	`, participant.ChatID, participant.JID, participant.PhoneJID, participant.LIDJID, participant.DisplayName, boolToInt(participant.IsAdmin), boolToInt(participant.IsSuperAdmin), participant.UpdatedAt.Unix()); err != nil {
+		return fmt.Errorf("upsert group participant %s/%s: %w", participant.ChatID, participant.JID, err)
+	}
+	return nil
+}
+
+func mentionCandidateForParticipant(participant GroupParticipant, contacts []Contact) MentionCandidate {
+	display := ""
+	var searchParts []string
+	for _, contact := range contacts {
+		for _, value := range []string{contact.DisplayName, contact.NotifyName, contact.Phone, contact.JID} {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			searchParts = append(searchParts, value)
+			if display == "" && (value == contact.DisplayName || value == contact.NotifyName) {
+				display = value
+			}
+		}
+	}
+	if display == "" {
+		display = strings.TrimSpace(participant.DisplayName)
+	}
+	if display == "" {
+		display = mentionJIDUser(participant.PhoneJID)
+	}
+	if display == "" {
+		display = mentionJIDUser(participant.JID)
+	}
+	if display == "" {
+		display = strings.TrimSpace(participant.JID)
+	}
+	searchParts = append(searchParts, participant.DisplayName, participant.JID, participant.PhoneJID, participant.LIDJID, display)
+	return MentionCandidate{
+		JID:          strings.TrimSpace(participant.JID),
+		DisplayName:  display,
+		SearchText:   strings.Join(searchParts, " "),
+		IsAdmin:      participant.IsAdmin,
+		IsSuperAdmin: participant.IsSuperAdmin,
+	}
+}
+
+func mentionJIDUser(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(jid, "@"); ok {
+		return before
+	}
+	return jid
+}
+
+func sortMentionCandidates(candidates []MentionCandidate, query string) {
+	query = strings.TrimSpace(query)
+	slices.SortStableFunc(candidates, func(left, right MentionCandidate) int {
+		leftRank := mentionCandidateRank(left, query)
+		rightRank := mentionCandidateRank(right, query)
+		if leftRank != rightRank {
+			return leftRank - rightRank
+		}
+		leftName := textmatch.Fold(left.DisplayName)
+		rightName := textmatch.Fold(right.DisplayName)
+		if leftName < rightName {
+			return -1
+		}
+		if leftName > rightName {
+			return 1
+		}
+		return strings.Compare(left.JID, right.JID)
+	})
+}
+
+func mentionCandidateRank(candidate MentionCandidate, query string) int {
+	if query == "" {
+		return 0
+	}
+	foldedName := textmatch.Fold(candidate.DisplayName)
+	foldedQuery := textmatch.Fold(query)
+	if strings.HasPrefix(foldedName, foldedQuery) {
+		return 0
+	}
+	if textmatch.Contains(candidate.DisplayName, query) {
+		return 1
+	}
+	return 2
+}
+
+func replaceMessageMentions(ctx context.Context, execer groupParticipantExecer, messageID string, mentions []MessageMention) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return fmt.Errorf("message id is required")
+	}
+	if _, err := execer.ExecContext(ctx, `DELETE FROM message_mentions WHERE message_id = ?`, messageID); err != nil {
+		return fmt.Errorf("clear message mentions for %s: %w", messageID, err)
+	}
+	now := time.Now()
+	seen := map[string]bool{}
+	for _, mention := range mentions {
+		mention.MessageID = messageID
+		mention.JID = strings.TrimSpace(mention.JID)
+		if mention.JID == "" || seen[mention.JID] {
+			continue
+		}
+		seen[mention.JID] = true
+		if mention.UpdatedAt.IsZero() {
+			mention.UpdatedAt = now
+		}
+		if mention.EndByte < mention.StartByte {
+			mention.EndByte = mention.StartByte
+		}
+		if _, err := execer.ExecContext(ctx, `
+			INSERT INTO message_mentions (
+				message_id, jid, display_name, start_byte, end_byte, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?)
+		`, mention.MessageID, mention.JID, mention.DisplayName, mention.StartByte, mention.EndByte, mention.UpdatedAt.Unix()); err != nil {
+			return fmt.Errorf("insert message mention %s/%s: %w", messageID, mention.JID, err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) error {
 	return s.UpsertMediaMetadataWithDownload(ctx, media, nil)
 }
@@ -1617,7 +1934,11 @@ func (s *Store) attachMessageDetails(ctx context.Context, messages []Message) ([
 	if err != nil {
 		return nil, err
 	}
-	return s.attachMessageReactions(ctx, messages)
+	messages, err = s.attachMessageReactions(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachMessageMentions(ctx, messages)
 }
 
 func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]Message, error) {
@@ -1751,6 +2072,62 @@ func (s *Store) attachMessageReactions(ctx context.Context, messages []Message) 
 
 	for i := range messages {
 		messages[i].Reactions = byMessage[messages[i].ID]
+	}
+	return messages, nil
+}
+
+func (s *Store) attachMessageMentions(ctx context.Context, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+
+	ids := make([]string, 0, len(messages))
+	seen := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if message.ID == "" {
+			continue
+		}
+		if _, ok := seen[message.ID]; ok {
+			continue
+		}
+		seen[message.ID] = struct{}{}
+		ids = append(ids, message.ID)
+	}
+	if len(ids) == 0 {
+		return messages, nil
+	}
+
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT message_id, jid, display_name, start_byte, end_byte, updated_at
+		FROM message_mentions
+		WHERE message_id IN (`+placeholders+`)
+		ORDER BY start_byte ASC, jid ASC
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list message mentions: %w", err)
+	}
+	defer rows.Close()
+
+	byMessage := make(map[string][]MessageMention, len(messages))
+	for rows.Next() {
+		mention, err := scanMessageMention(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan message mention: %w", err)
+		}
+		byMessage[mention.MessageID] = append(byMessage[mention.MessageID], mention)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message mentions: %w", err)
+	}
+
+	for i := range messages {
+		messages[i].Mentions = byMessage[messages[i].ID]
 	}
 	return messages, nil
 }
@@ -1937,6 +2314,27 @@ func scanReaction(row scanner) (Reaction, error) {
 	}
 	reaction.IsOutgoing = isOutgoing == 1
 	return reaction, nil
+}
+
+func scanMessageMention(row scanner) (MessageMention, error) {
+	var (
+		mention     MessageMention
+		updatedUnix int64
+	)
+	if err := row.Scan(
+		&mention.MessageID,
+		&mention.JID,
+		&mention.DisplayName,
+		&mention.StartByte,
+		&mention.EndByte,
+		&updatedUnix,
+	); err != nil {
+		return MessageMention{}, err
+	}
+	if updatedUnix > 0 {
+		mention.UpdatedAt = time.Unix(updatedUnix, 0)
+	}
+	return mention, nil
 }
 
 func (s *Store) UpsertRecentSticker(ctx context.Context, sticker RecentSticker) error {

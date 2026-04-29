@@ -148,6 +148,31 @@ func TestMediaMessageFromUploadIncludesReplyContext(t *testing.T) {
 	}
 }
 
+func TestMediaMessageFromUploadIncludesMentionContext(t *testing.T) {
+	client := &Client{}
+	message := client.mediaMessageFromUpload(outgoingMediaImage, localMediaDetails{
+		MIMEType: "image/png",
+	}, "hi @Ana", whatsmeow.UploadResponse{
+		URL:           "https://example.com/image",
+		DirectPath:    "/v/t62.7118-24/image",
+		MediaKey:      []byte{1},
+		FileSHA256:    []byte{2},
+		FileEncSHA256: []byte{3},
+		FileLength:    42,
+	}, MediaSendRequest{
+		MentionedJIDs: []string{"222@s.whatsapp.net"},
+	})
+
+	image := message.GetImageMessage()
+	if image == nil {
+		t.Fatalf("message = %+v, want image message", message)
+	}
+	mentions := image.GetContextInfo().GetMentionedJID()
+	if len(mentions) != 1 || mentions[0] != "222@s.whatsapp.net" {
+		t.Fatalf("MentionedJID = %+v, want participant", mentions)
+	}
+}
+
 func TestMediaMessageFromUploadBuildsAudioMessage(t *testing.T) {
 	client := &Client{}
 	message := client.mediaMessageFromUpload(outgoingMediaAudio, localMediaDetails{

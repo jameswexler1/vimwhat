@@ -64,6 +64,9 @@ type Keymap struct {
 	InsertSend             string
 	InsertBackspace        string
 	InsertBackspaceAlt     string
+	InsertMentionSelectAlt string
+	InsertMentionMoveDown  string
+	InsertMentionMoveUp    string
 
 	VisualCancel   string
 	VisualMoveDown string
@@ -149,6 +152,9 @@ func DefaultKeymap() Keymap {
 		InsertSend:             "enter",
 		InsertBackspace:        "backspace",
 		InsertBackspaceAlt:     "ctrl+h",
+		InsertMentionSelectAlt: "tab",
+		InsertMentionMoveDown:  "down",
+		InsertMentionMoveUp:    "up",
 
 		VisualCancel:   "esc",
 		VisualMoveDown: "j",
@@ -311,6 +317,15 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.InsertBackspaceAlt == "" {
 		input.InsertBackspaceAlt = defaults.InsertBackspaceAlt
 	}
+	if input.InsertMentionSelectAlt == "" {
+		input.InsertMentionSelectAlt = defaults.InsertMentionSelectAlt
+	}
+	if input.InsertMentionMoveDown == "" {
+		input.InsertMentionMoveDown = defaults.InsertMentionMoveDown
+	}
+	if input.InsertMentionMoveUp == "" {
+		input.InsertMentionMoveUp = defaults.InsertMentionMoveUp
+	}
 	if input.VisualCancel == "" {
 		input.VisualCancel = defaults.VisualCancel
 	}
@@ -434,6 +449,9 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_insert_send", Mode: KeyModeInsert, Value: k.InsertSend},
 		{Name: "key_insert_backspace", Mode: KeyModeInsert, Value: k.InsertBackspace},
 		{Name: "key_insert_backspace_alt", Mode: KeyModeInsert, Value: k.InsertBackspaceAlt},
+		{Name: "key_insert_mention_select_alt", Mode: KeyModeInsert, Value: k.InsertMentionSelectAlt},
+		{Name: "key_insert_mention_move_down", Mode: KeyModeInsert, Value: k.InsertMentionMoveDown},
+		{Name: "key_insert_mention_move_up", Mode: KeyModeInsert, Value: k.InsertMentionMoveUp},
 		{Name: "key_visual_cancel", Mode: KeyModeVisual, Value: k.VisualCancel},
 		{Name: "key_visual_move_down", Mode: KeyModeVisual, Value: k.VisualMoveDown},
 		{Name: "key_visual_move_up", Mode: KeyModeVisual, Value: k.VisualMoveUp},
@@ -553,6 +571,12 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.InsertBackspace = normalized
 	case "key_insert_backspace_alt":
 		k.InsertBackspaceAlt = normalized
+	case "key_insert_mention_select_alt":
+		k.InsertMentionSelectAlt = normalized
+	case "key_insert_mention_move_down":
+		k.InsertMentionMoveDown = normalized
+	case "key_insert_mention_move_up":
+		k.InsertMentionMoveUp = normalized
 	case "key_visual_cancel":
 		k.VisualCancel = normalized
 	case "key_visual_move_down":
@@ -656,7 +680,7 @@ func ParseKeyToken(value string) (string, error) {
 	}
 	lower := strings.ToLower(value)
 	switch lower {
-	case "enter", "shift+enter", "esc", "tab", "shift+tab", "backspace":
+	case "enter", "shift+enter", "esc", "tab", "shift+tab", "backspace", "up", "down":
 		return lower, nil
 	case "leader":
 		return "", fmt.Errorf("leader is only valid in key bindings, not as a key token")

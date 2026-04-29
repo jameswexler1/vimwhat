@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/rivo/uniseg"
@@ -15,6 +16,7 @@ import (
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
+	"vimwhat/internal/textmatch"
 )
 
 type Mode string
@@ -84,6 +86,7 @@ type OutgoingMessage struct {
 	Body        string
 	Attachments []Attachment
 	Quote       *store.Message
+	Mentions    []store.MessageMention
 }
 
 type ForwardMessagesRequest struct {
@@ -246,6 +249,7 @@ type Options struct {
 	SaveDraft                func(chatID, body string) error
 	SearchChats              func(query string) ([]store.Chat, error)
 	SearchMessages           func(chatID, query string, limit int) ([]store.Message, error)
+	SearchMentionCandidates  func(chatID, query string, limit int) ([]store.MentionCandidate, error)
 	ForwardMessages          func(ForwardMessagesRequest) tea.Cmd
 	CopyToClipboard          func(text string) error
 	PasteImageFromClipboard  func() tea.Cmd
@@ -315,6 +319,13 @@ type Model struct {
 	forwardSelectedOrder       []string
 	confirmLine                string
 	composer                   string
+	composerMentions           []store.MessageMention
+	composerMentionsByChat     map[string][]store.MessageMention
+	mentionActive              bool
+	mentionStart               int
+	mentionQuery               string
+	mentionCandidates          []store.MentionCandidate
+	mentionCursor              int
 	attachments                []Attachment
 	lastSearch                 string
 	lastSearchFocus            Focus
@@ -361,6 +372,7 @@ type Model struct {
 	saveDraft                  func(chatID, body string) error
 	searchChats                func(query string) ([]store.Chat, error)
 	searchMessages             func(chatID, query string, limit int) ([]store.Message, error)
+	searchMentionCandidates    func(chatID, query string, limit int) ([]store.MentionCandidate, error)
 	forwardMessages            func(ForwardMessagesRequest) tea.Cmd
 	copyToClipboard            func(text string) error
 	pasteImageFromClipboard    func() tea.Cmd
@@ -463,6 +475,7 @@ func NewModel(opts Options) Model {
 		saveDraft:                opts.SaveDraft,
 		searchChats:              opts.SearchChats,
 		searchMessages:           opts.SearchMessages,
+		searchMentionCandidates:  opts.SearchMentionCandidates,
 		forwardMessages:          opts.ForwardMessages,
 		copyToClipboard:          opts.CopyToClipboard,
 		pasteImageFromClipboard:  opts.PasteImageFromClipboard,
@@ -489,6 +502,7 @@ func NewModel(opts Options) Model {
 		requireOnlineForSend:     opts.RequireOnlineForSend,
 		unfilteredByChat:         map[string][]store.Message{},
 		newMessagesBelowByChat:   map[string]bool{},
+		composerMentionsByChat:   map[string][]store.MessageMention{},
 		presenceByChat:           map[string]PresenceUpdate{},
 		forwardSelected:          map[string]bool{},
 		readReceiptInflight:      map[string]bool{},
@@ -950,6 +964,7 @@ func (m Model) handleSpecialKeyToken(token string) (tea.Model, tea.Cmd) {
 	if token == "shift+enter" && m.mode == ModeInsert {
 		keys := m.config.Keymap
 		if m.keyTokenMatches(token, keys.InsertNewline) || m.keyTokenMatches(token, keys.InsertNewlineAlt) {
+			m.clearMentionState()
 			m.composer += "\n"
 			m.sendOwnPresence(m.currentChat().ID, true)
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
@@ -1343,6 +1358,8 @@ func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
 	m.mode = ModeInsert
 	m.focus = FocusMessages
 	m.composer = m.draftsByChat[m.currentChat().ID]
+	m.composerMentions = slices.Clone(m.composerMentionsByChat[m.currentChat().ID])
+	m.clearMentionState()
 	if quote != nil {
 		quoted := *quote
 		m.replyTo = &quoted
@@ -1506,6 +1523,9 @@ func (m Model) handleLeaderKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
+	if updated, cmd, handled := m.handleMentionKey(msg); handled {
+		return updated, cmd
+	}
 	if m.keyMatches(msg, keys.InsertAttach) {
 		if m.editTarget != nil {
 			m.status = "attachments cannot be used while editing"
@@ -1535,6 +1555,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.keyMatches(msg, keys.InsertNewline) || m.keyMatches(msg, keys.InsertNewlineAlt) {
+		m.clearMentionState()
 		m.composer += "\n"
 		m.sendOwnPresence(m.currentChat().ID, true)
 		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
@@ -1545,6 +1566,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.editTarget != nil {
 			chatID := m.currentChat().ID
 			m.composer = ""
+			m.composerMentions = nil
+			m.clearMentionState()
 			m.attachments = nil
 			m.replyTo = nil
 			m.editTarget = nil
@@ -1558,6 +1581,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sendOwnPresence(m.currentChat().ID, false)
+		m.clearMentionState()
 		m.replyTo = nil
 		m.mode = ModeNormal
 	case m.keyMatches(msg, keys.InsertSend):
@@ -1612,6 +1636,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			Body:       body,
 			Timestamp:  time.Now(),
 			IsOutgoing: true,
+			Mentions:   m.mentionsForSend(body),
 		}
 		if m.replyTo != nil {
 			message.QuotedMessageID = m.replyTo.ID
@@ -1623,6 +1648,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				ChatID:      chatID,
 				Body:        body,
 				Attachments: slices.Clone(m.attachments),
+				Mentions:    slices.Clone(message.Mentions),
 			}
 			if m.replyTo != nil {
 				quote := *m.replyTo
@@ -1649,6 +1675,9 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messageCursor = len(m.messagesByChat[chatID]) - 1
 		m.messageScrollTop = m.messageCursor
 		m.composer = ""
+		m.composerMentions = nil
+		delete(m.composerMentionsByChat, chatID)
+		m.clearMentionState()
 		m.attachments = nil
 		m.replyTo = nil
 		m.sendOwnPresence(chatID, false)
@@ -1660,16 +1689,245 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = FocusMessages
 		m.status = "message queued"
 	case m.keyMatches(msg, keys.InsertBackspace) || m.keyMatches(msg, keys.InsertBackspaceAlt):
-		m.composer = trimLastCluster(m.composer)
+		m.backspaceComposer()
 	default:
 		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.composer += msg.String()
+			m.appendComposerText(msg.String())
 			m.sendOwnPresence(m.currentChat().ID, true)
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
 	}
 
 	return m, nil
+}
+
+const mentionCandidateLimit = 8
+
+func (m Model) handleMentionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	if !m.mentionActive {
+		return m, nil, false
+	}
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.InsertCancel):
+		m.clearMentionState()
+		m.status = "mention cancelled"
+		return m, nil, true
+	case m.keyMatches(msg, keys.InsertSend) || m.keyMatches(msg, keys.InsertMentionSelectAlt):
+		if len(m.mentionCandidates) == 0 {
+			m.clearMentionState()
+			m.status = "no mention match"
+			return m, nil, true
+		}
+		m.completeMention()
+		m.sendOwnPresence(m.currentChat().ID, true)
+		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration), true
+	case m.keyMatches(msg, keys.InsertMentionMoveDown):
+		m.moveMentionCursor(1)
+		return m, nil, true
+	case m.keyMatches(msg, keys.InsertMentionMoveUp):
+		m.moveMentionCursor(-1)
+		return m, nil, true
+	case m.keyMatches(msg, keys.InsertBackspace) || m.keyMatches(msg, keys.InsertBackspaceAlt):
+		m.backspaceComposer()
+		m.updateActiveMentionFromComposer()
+		m.sendOwnPresence(m.currentChat().ID, true)
+		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration), true
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.appendComposerText(msg.String())
+			m.updateActiveMentionFromComposer()
+			m.sendOwnPresence(m.currentChat().ID, true)
+			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration), true
+		}
+		return m, nil, true
+	}
+}
+
+func (m *Model) appendComposerText(text string) {
+	if text == "" {
+		return
+	}
+	start := len(m.composer)
+	m.composer += text
+	if text == "@" && m.canStartMention() {
+		m.startMention(start)
+		return
+	}
+	m.pruneComposerMentions()
+}
+
+func (m *Model) backspaceComposer() {
+	m.composer = trimLastCluster(m.composer)
+	m.pruneComposerMentions()
+}
+
+func (m Model) canStartMention() bool {
+	if m.editTarget != nil || m.searchMentionCandidates == nil {
+		return false
+	}
+	chat := m.currentChat()
+	return strings.TrimSpace(chat.ID) != "" && strings.EqualFold(strings.TrimSpace(chat.Kind), "group")
+}
+
+func (m *Model) startMention(start int) {
+	if start < 0 || start >= len(m.composer) {
+		return
+	}
+	m.mentionActive = true
+	m.mentionStart = start
+	m.mentionQuery = ""
+	m.mentionCursor = 0
+	m.refreshMentionCandidates()
+}
+
+func (m *Model) clearMentionState() {
+	m.mentionActive = false
+	m.mentionStart = 0
+	m.mentionQuery = ""
+	m.mentionCandidates = nil
+	m.mentionCursor = 0
+}
+
+func (m *Model) updateActiveMentionFromComposer() {
+	if !m.mentionActive {
+		return
+	}
+	if m.mentionStart < 0 || m.mentionStart >= len(m.composer) || m.composer[m.mentionStart] != '@' {
+		m.clearMentionState()
+		return
+	}
+	query := m.composer[m.mentionStart+1:]
+	if strings.ContainsAny(query, "\n\r\t") {
+		m.clearMentionState()
+		return
+	}
+	m.mentionQuery = query
+	m.mentionCursor = 0
+	m.refreshMentionCandidates()
+}
+
+func (m *Model) refreshMentionCandidates() {
+	m.mentionCandidates = nil
+	if m.searchMentionCandidates == nil {
+		return
+	}
+	chatID := m.currentChat().ID
+	if strings.TrimSpace(chatID) == "" {
+		return
+	}
+	candidates, err := m.searchMentionCandidates(chatID, m.mentionQuery, mentionCandidateLimit)
+	if err != nil {
+		m.status = fmt.Sprintf("mention search failed: %v", err)
+		return
+	}
+	m.mentionCandidates = candidates
+	if len(m.mentionCandidates) == 0 {
+		m.mentionCursor = 0
+		return
+	}
+	m.mentionCursor = clamp(m.mentionCursor, 0, len(m.mentionCandidates)-1)
+}
+
+func (m *Model) moveMentionCursor(delta int) {
+	if len(m.mentionCandidates) == 0 {
+		m.mentionCursor = 0
+		return
+	}
+	m.mentionCursor = clamp(m.mentionCursor+delta, 0, len(m.mentionCandidates)-1)
+}
+
+func (m *Model) completeMention() {
+	if len(m.mentionCandidates) == 0 {
+		return
+	}
+	if m.mentionStart < 0 || m.mentionStart > len(m.composer) {
+		m.clearMentionState()
+		return
+	}
+	candidate := m.mentionCandidates[clamp(m.mentionCursor, 0, len(m.mentionCandidates)-1)]
+	display := mentionDisplayName(candidate)
+	if display == "" {
+		m.clearMentionState()
+		return
+	}
+	prefix := m.composer[:m.mentionStart]
+	text := mentionText(display)
+	start := len(prefix)
+	end := start + len(text)
+	m.composer = prefix + text + " "
+	m.composerMentions = append(m.validComposerMentions(), store.MessageMention{
+		JID:         strings.TrimSpace(candidate.JID),
+		DisplayName: display,
+		StartByte:   start,
+		EndByte:     end,
+		UpdatedAt:   time.Now(),
+	})
+	m.clearMentionState()
+}
+
+func mentionDisplayName(candidate store.MentionCandidate) string {
+	display := strings.Join(strings.Fields(candidate.DisplayName), " ")
+	if display != "" {
+		return display
+	}
+	return strings.TrimSpace(candidate.JID)
+}
+
+func mentionText(display string) string {
+	return "@" + strings.TrimSpace(display)
+}
+
+func (m *Model) pruneComposerMentions() {
+	m.composerMentions = m.validComposerMentions()
+}
+
+func (m Model) validComposerMentions() []store.MessageMention {
+	if len(m.composerMentions) == 0 {
+		return nil
+	}
+	out := make([]store.MessageMention, 0, len(m.composerMentions))
+	for _, mention := range m.composerMentions {
+		if !m.mentionStillPresent(mention) {
+			continue
+		}
+		out = append(out, mention)
+	}
+	return out
+}
+
+func (m Model) mentionStillPresent(mention store.MessageMention) bool {
+	if mention.StartByte < 0 || mention.EndByte <= mention.StartByte || mention.EndByte > len(m.composer) {
+		return false
+	}
+	return m.composer[mention.StartByte:mention.EndByte] == mentionText(mention.DisplayName)
+}
+
+func (m Model) mentionsForSend(body string) []store.MessageMention {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return nil
+	}
+	raw := m.composer
+	leftTrimmed := strings.TrimLeftFunc(raw, unicode.IsSpace)
+	offset := len(raw) - len(leftTrimmed)
+	bodyEnd := offset + len(body)
+	seen := map[string]bool{}
+	var mentions []store.MessageMention
+	for _, mention := range m.validComposerMentions() {
+		if mention.EndByte <= offset || mention.StartByte >= bodyEnd {
+			continue
+		}
+		jid := strings.TrimSpace(mention.JID)
+		if jid == "" || seen[jid] {
+			continue
+		}
+		seen[jid] = true
+		mention.StartByte = max(0, mention.StartByte-offset)
+		mention.EndByte = min(len(body), mention.EndByte-offset)
+		mentions = append(mentions, mention)
+	}
+	return mentions
 }
 
 func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2158,7 +2416,7 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) rebuildSearchMatches() {
-	query := strings.ToLower(strings.TrimSpace(m.lastSearch))
+	query := strings.TrimSpace(m.lastSearch)
 	m.searchMatches = nil
 	m.searchIndex = -1
 	if query == "" {
@@ -2168,13 +2426,13 @@ func (m *Model) rebuildSearchMatches() {
 	switch m.lastSearchFocus {
 	case FocusChats:
 		for i, chat := range m.chats {
-			if strings.Contains(strings.ToLower(chat.DisplayTitle()), query) {
+			if textmatch.Contains(chat.DisplayTitle(), query) {
 				m.searchMatches = append(m.searchMatches, i)
 			}
 		}
 	case FocusMessages, FocusPreview:
 		for i, message := range m.currentMessages() {
-			if strings.Contains(strings.ToLower(message.Body), query) {
+			if textmatch.Contains(message.Body, query) {
 				m.searchMatches = append(m.searchMatches, i)
 			}
 		}
@@ -2699,9 +2957,8 @@ func (m *Model) applyMessageFilter(query string) error {
 		}
 		filtered = slices.Clone(messages)
 	} else {
-		lowerQuery := strings.ToLower(query)
 		for _, message := range source {
-			if strings.Contains(strings.ToLower(message.Body), lowerQuery) {
+			if textmatch.Contains(message.Body, query) {
 				filtered = append(filtered, message)
 			}
 		}
@@ -5064,7 +5321,7 @@ func (m *Model) clearForwardPicker() {
 }
 
 func (m *Model) rebuildForwardCandidates() {
-	query := strings.ToLower(strings.TrimSpace(m.forwardQuery))
+	query := strings.TrimSpace(m.forwardQuery)
 	candidates := make([]store.Chat, 0, len(m.allChats))
 	for _, chat := range m.allChats {
 		if strings.TrimSpace(chat.ID) == "" {
@@ -5074,8 +5331,7 @@ func (m *Model) rebuildForwardCandidates() {
 			candidates = append(candidates, chat)
 			continue
 		}
-		haystack := strings.ToLower(strings.Join([]string{chat.DisplayTitle(), chat.JID, chat.ID}, " "))
-		if strings.Contains(haystack, query) {
+		if textmatch.Contains(strings.Join([]string{chat.DisplayTitle(), chat.JID, chat.ID}, " "), query) {
 			candidates = append(candidates, chat)
 		}
 	}
@@ -5171,6 +5427,7 @@ func (m *Model) persistCurrentDraft() error {
 	if chatID == "" {
 		return nil
 	}
+	m.saveComposerMentionState(chatID, m.composer)
 	return m.setDraft(chatID, m.composer)
 }
 
@@ -5180,9 +5437,13 @@ func (m *Model) setDraft(chatID, body string) error {
 			return err
 		}
 	}
+	if chatID == m.currentChat().ID && body == m.composer {
+		m.saveComposerMentionState(chatID, body)
+	}
 
 	if strings.TrimSpace(body) == "" {
 		delete(m.draftsByChat, chatID)
+		delete(m.composerMentionsByChat, chatID)
 		m.updateChatDraftFlag(chatID, false)
 		return nil
 	}
@@ -5190,6 +5451,23 @@ func (m *Model) setDraft(chatID, body string) error {
 	m.draftsByChat[chatID] = body
 	m.updateChatDraftFlag(chatID, true)
 	return nil
+}
+
+func (m *Model) saveComposerMentionState(chatID, body string) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" || m.composerMentionsByChat == nil {
+		return
+	}
+	if strings.TrimSpace(body) == "" {
+		delete(m.composerMentionsByChat, chatID)
+		return
+	}
+	mentions := m.validComposerMentions()
+	if len(mentions) == 0 {
+		delete(m.composerMentionsByChat, chatID)
+		return
+	}
+	m.composerMentionsByChat[chatID] = slices.Clone(mentions)
 }
 
 func (m *Model) updateChatDraftFlag(chatID string, hasDraft bool) {

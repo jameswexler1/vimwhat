@@ -479,6 +479,7 @@ type TextSendRequest struct {
 	ChatJID           string
 	Body              string
 	RemoteID          string
+	MentionedJIDs     []string
 	QuotedRemoteID    string
 	QuotedSenderJID   string
 	QuotedMessageBody string
@@ -562,7 +563,7 @@ func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendRes
 }
 
 func (c *Client) textMessage(body string, request TextSendRequest) *waE2E.Message {
-	contextInfo := c.quoteContextInfo(request.QuotedRemoteID, request.QuotedSenderJID, request.QuotedMessageBody)
+	contextInfo := c.messageContextInfo(request.QuotedRemoteID, request.QuotedSenderJID, request.QuotedMessageBody, request.MentionedJIDs)
 	if contextInfo == nil {
 		return &waE2E.Message{Conversation: proto.String(body)}
 	}
@@ -575,20 +576,46 @@ func (c *Client) textMessage(body string, request TextSendRequest) *waE2E.Messag
 }
 
 func (c *Client) quoteContextInfo(quotedRemoteID, quotedSenderJID, quotedMessageBody string) *waE2E.ContextInfo {
+	return c.messageContextInfo(quotedRemoteID, quotedSenderJID, quotedMessageBody, nil)
+}
+
+func (c *Client) messageContextInfo(quotedRemoteID, quotedSenderJID, quotedMessageBody string, mentionedJIDs []string) *waE2E.ContextInfo {
 	quotedRemoteID = strings.TrimSpace(quotedRemoteID)
-	if quotedRemoteID == "" {
+	mentions := normalizeMentionedJIDs(mentionedJIDs)
+	if quotedRemoteID == "" && len(mentions) == 0 {
 		return nil
 	}
-	contextInfo := &waE2E.ContextInfo{
-		StanzaID: proto.String(quotedRemoteID),
+	contextInfo := &waE2E.ContextInfo{}
+	if quotedRemoteID != "" {
+		contextInfo.StanzaID = proto.String(quotedRemoteID)
+		if participant := c.quoteParticipant(quotedSenderJID); participant != "" {
+			contextInfo.Participant = proto.String(participant)
+		}
+		if quotedBody := strings.TrimSpace(quotedMessageBody); quotedBody != "" {
+			contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(quotedBody)}
+		}
 	}
-	if participant := c.quoteParticipant(quotedSenderJID); participant != "" {
-		contextInfo.Participant = proto.String(participant)
-	}
-	if quotedBody := strings.TrimSpace(quotedMessageBody); quotedBody != "" {
-		contextInfo.QuotedMessage = &waE2E.Message{Conversation: proto.String(quotedBody)}
+	if len(mentions) > 0 {
+		contextInfo.MentionedJID = mentions
 	}
 	return contextInfo
+}
+
+func normalizeMentionedJIDs(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func (c *Client) quoteParticipant(senderJID string) string {
@@ -1418,6 +1445,7 @@ const (
 	EventOfflineSync         EventKind = "offline_sync"
 	EventContactUpsert       EventKind = "contact_upsert"
 	EventChatAvatarUpdate    EventKind = "chat_avatar_update"
+	EventGroupParticipants   EventKind = "group_participants"
 )
 
 type ConnectionState string
@@ -1448,6 +1476,7 @@ type Event struct {
 	Offline       OfflineSyncEvent
 	Contact       ContactEvent
 	Avatar        AvatarEvent
+	Participants  GroupParticipantsEvent
 }
 
 type ApplyResult struct {
@@ -1483,6 +1512,23 @@ type ContactEvent struct {
 	Phone       string
 	UpdatedAt   time.Time
 	TitleSource string
+}
+
+type GroupParticipantsEvent struct {
+	ChatID       string
+	Participants []GroupParticipantEvent
+	RemoveJIDs   []string
+	Replace      bool
+	UpdatedAt    time.Time
+}
+
+type GroupParticipantEvent struct {
+	JID          string
+	PhoneJID     string
+	LIDJID       string
+	DisplayName  string
+	IsAdmin      bool
+	IsSuperAdmin bool
 }
 
 type MessageEvent struct {

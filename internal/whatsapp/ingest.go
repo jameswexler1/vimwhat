@@ -200,6 +200,30 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			Kind:        "direct",
 		})
 		return ApplyResult{}, err
+	case EventGroupParticipants:
+		participants := make([]store.GroupParticipant, 0, len(event.Participants.Participants))
+		updatedAt := timeOrNow(event.Participants.UpdatedAt)
+		for _, participant := range event.Participants.Participants {
+			participants = append(participants, store.GroupParticipant{
+				ChatID:       event.Participants.ChatID,
+				JID:          participant.JID,
+				PhoneJID:     participant.PhoneJID,
+				LIDJID:       participant.LIDJID,
+				DisplayName:  participant.DisplayName,
+				IsAdmin:      participant.IsAdmin,
+				IsSuperAdmin: participant.IsSuperAdmin,
+				UpdatedAt:    updatedAt,
+			})
+		}
+		if event.Participants.Replace {
+			return ApplyResult{}, i.Store.ReplaceGroupParticipants(ctx, event.Participants.ChatID, participants)
+		}
+		if len(participants) > 0 {
+			if err := i.Store.UpsertGroupParticipants(ctx, event.Participants.ChatID, participants); err != nil {
+				return ApplyResult{}, err
+			}
+		}
+		return ApplyResult{}, i.Store.RemoveGroupParticipants(ctx, event.Participants.ChatID, event.Participants.RemoveJIDs)
 	case EventConnectionState:
 		return ApplyResult{}, nil
 	case EventOfflineSync:

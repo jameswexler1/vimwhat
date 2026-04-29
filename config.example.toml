@@ -4,7 +4,7 @@
 # - Linux: $XDG_CONFIG_HOME/vimwhat/config.toml
 # - Windows: %APPDATA%\vimwhat\config.toml
 # Leave command fields empty to use built-in platform auto defaults.
-# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, ctrl+x, alt+x, alt+enter, and leader sequences.
+# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.
 
 editor = "nvim"
 preview_backend = "auto"
@@ -81,6 +81,9 @@ key_insert_cancel = "esc"
 key_insert_send = "enter"
 key_insert_backspace = "backspace"
 key_insert_backspace_alt = "ctrl+h"
+key_insert_mention_select_alt = "tab"
+key_insert_mention_move_down = "down"
+key_insert_mention_move_up = "up"
 
 # Visual mode
 key_visual_cancel = "esc"

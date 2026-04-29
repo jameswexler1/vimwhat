@@ -189,6 +189,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 						Body:        outgoing.Body,
 						Attachments: slices.Clone(outgoing.Attachments),
 						Quote:       cloneMessagePtr(outgoing.Quote),
+						Mentions:    slices.Clone(outgoing.Mentions),
 						Result:      result,
 					}
 					return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
@@ -197,11 +198,12 @@ func runTUI(env Environment, stderr io.Writer) int {
 				defer cancel()
 				result := make(chan textSendQueuedResult, 1)
 				request := textSendRequest{
-					Context: waitCtx,
-					ChatID:  outgoing.ChatID,
-					Body:    outgoing.Body,
-					Quote:   cloneMessagePtr(outgoing.Quote),
-					Result:  result,
+					Context:  waitCtx,
+					ChatID:   outgoing.ChatID,
+					Body:     outgoing.Body,
+					Quote:    cloneMessagePtr(outgoing.Quote),
+					Mentions: slices.Clone(outgoing.Mentions),
+					Result:   result,
 				}
 				select {
 				case textSendRequests <- request:
@@ -348,6 +350,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		},
 		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
 			return env.Store.SearchMessages(context.Background(), chatID, query, limit)
+		},
+		SearchMentionCandidates: func(chatID, query string, limit int) ([]store.MentionCandidate, error) {
+			return env.Store.SearchMentionCandidates(context.Background(), chatID, query, limit)
 		},
 		CopyToClipboard: func(text string) error {
 			return copyToClipboard(context.Background(), env.Config.ClipboardCommand, text)
@@ -497,11 +502,12 @@ var (
 )
 
 type textSendRequest struct {
-	Context context.Context
-	ChatID  string
-	Body    string
-	Quote   *store.Message
-	Result  chan<- textSendQueuedResult
+	Context  context.Context
+	ChatID   string
+	Body     string
+	Quote    *store.Message
+	Mentions []store.MessageMention
+	Result   chan<- textSendQueuedResult
 }
 
 type textSendQueuedResult struct {
@@ -516,6 +522,7 @@ type mediaSendRequest struct {
 	Attachments []ui.Attachment
 	Sticker     *store.RecentSticker
 	Quote       *store.Message
+	Mentions    []store.MessageMention
 	Result      chan mediaSendQueuedResult
 }
 
@@ -1420,6 +1427,7 @@ func handleTextSendRequest(
 		Timestamp:  now,
 		IsOutgoing: true,
 		Status:     "sending",
+		Mentions:   cloneMessageMentionsForMessage(request.Mentions, whatsapp.LocalMessageID(chatJID, remoteID), now),
 	}
 	if request.Quote != nil {
 		message.QuotedMessageID = request.Quote.ID
@@ -1439,11 +1447,11 @@ func handleTextSendRequest(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote)
+			completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote, request.Mentions)
 		}()
 		return
 	}
-	completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote)
+	completeQueuedTextSend(ctx, db, live, updates, message, body, request.Quote, request.Mentions)
 }
 
 func sendTextQueuedResult(ctx context.Context, request textSendRequest, message store.Message, err error) {
@@ -1456,13 +1464,14 @@ func sendTextQueuedResult(ctx context.Context, request textSendRequest, message 
 	}
 }
 
-func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, body string, quote *store.Message) {
+func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, body string, quote *store.Message, mentions []store.MessageMention) {
 	sendCtx, cancel := context.WithTimeout(ctx, textSendTimeout)
 	defer cancel()
 	request := whatsapp.TextSendRequest{
-		ChatJID:  message.ChatJID,
-		Body:     body,
-		RemoteID: message.RemoteID,
+		ChatJID:       message.ChatJID,
+		Body:          body,
+		RemoteID:      message.RemoteID,
+		MentionedJIDs: mentionedJIDs(mentions),
 	}
 	if quote != nil {
 		request.QuotedRemoteID = quote.RemoteID
@@ -1566,6 +1575,7 @@ func handleMediaSendRequest(
 		IsOutgoing: true,
 		Status:     "sending",
 		Media:      liveMediaForOutgoingMessage(whatsapp.LocalMessageID(chatJID, remoteID), []ui.Attachment{attachment}, now),
+		Mentions:   cloneMessageMentionsForMessage(request.Mentions, whatsapp.LocalMessageID(chatJID, remoteID), now),
 	}
 	if request.Quote != nil {
 		message.QuotedMessageID = request.Quote.ID
@@ -1585,11 +1595,11 @@ func handleMediaSendRequest(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote)
+			completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote, request.Mentions)
 		}()
 		return
 	}
-	completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote)
+	completeQueuedMediaSend(ctx, db, live, updates, message, attachment, request.Quote, request.Mentions)
 }
 
 func handleStickerSendRequest(
@@ -1665,16 +1675,17 @@ func sendMediaQueuedResult(ctx context.Context, request mediaSendRequest, messag
 	}
 }
 
-func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, attachment ui.Attachment, quote *store.Message) {
+func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, message store.Message, attachment ui.Attachment, quote *store.Message, mentions []store.MessageMention) {
 	sendCtx, cancel := context.WithTimeout(ctx, mediaSendTimeout)
 	defer cancel()
 	request := whatsapp.MediaSendRequest{
-		ChatJID:   message.ChatJID,
-		LocalPath: attachment.LocalPath,
-		FileName:  attachment.FileName,
-		MIMEType:  attachment.MIMEType,
-		Caption:   message.Body,
-		RemoteID:  message.RemoteID,
+		ChatJID:       message.ChatJID,
+		LocalPath:     attachment.LocalPath,
+		FileName:      attachment.FileName,
+		MIMEType:      attachment.MIMEType,
+		Caption:       message.Body,
+		RemoteID:      message.RemoteID,
+		MentionedJIDs: mentionedJIDs(mentions),
 	}
 	if quote != nil {
 		request.QuotedRemoteID = quote.RemoteID
@@ -1797,6 +1808,7 @@ func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.M
 		ChatID:      retryChatID(message),
 		Body:        strings.TrimSpace(message.Body),
 		Attachments: []ui.Attachment{attachment},
+		Mentions:    slices.Clone(message.Mentions),
 		Result:      result,
 	}
 	quote, err := retryQuoteForMessage(ctx, db, message)
@@ -3765,7 +3777,46 @@ func cloneMessagePtr(message *store.Message) *store.Message {
 		return nil
 	}
 	clone := *message
+	clone.Mentions = slices.Clone(message.Mentions)
 	return &clone
+}
+
+func cloneMessageMentionsForMessage(mentions []store.MessageMention, messageID string, updatedAt time.Time) []store.MessageMention {
+	if len(mentions) == 0 {
+		return nil
+	}
+	out := make([]store.MessageMention, 0, len(mentions))
+	seen := map[string]bool{}
+	for _, mention := range mentions {
+		mention.JID = strings.TrimSpace(mention.JID)
+		if mention.JID == "" || seen[mention.JID] {
+			continue
+		}
+		seen[mention.JID] = true
+		mention.MessageID = messageID
+		if mention.UpdatedAt.IsZero() {
+			mention.UpdatedAt = updatedAt
+		}
+		out = append(out, mention)
+	}
+	return out
+}
+
+func mentionedJIDs(mentions []store.MessageMention) []string {
+	if len(mentions) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mentions))
+	seen := map[string]bool{}
+	for _, mention := range mentions {
+		jid := strings.TrimSpace(mention.JID)
+		if jid == "" || seen[jid] {
+			continue
+		}
+		seen[jid] = true
+		out = append(out, jid)
+	}
+	return out
 }
 
 func pendingOutgoingMessage(outgoing ui.OutgoingMessage) store.Message {
@@ -3780,6 +3831,10 @@ func pendingOutgoingMessage(outgoing ui.OutgoingMessage) store.Message {
 		Timestamp:  now,
 		IsOutgoing: true,
 		Status:     "pending",
+		Mentions:   cloneMessageMentionsForMessage(outgoing.Mentions, "", now),
+	}
+	for i := range message.Mentions {
+		message.Mentions[i].MessageID = message.ID
 	}
 	if outgoing.Quote != nil {
 		message.QuotedMessageID = outgoing.Quote.ID

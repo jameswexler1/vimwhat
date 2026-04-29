@@ -1690,7 +1690,13 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	updates := make(chan ui.LiveUpdate, 4)
 	handleTextSendRequest(ctx, db, session, updates, nil, true, textSendRequest{
 		ChatID: chatJID,
-		Body:   "hello live",
+		Body:   "hello live @Ana",
+		Mentions: []store.MessageMention{{
+			JID:         "222@s.whatsapp.net",
+			DisplayName: "Ana",
+			StartByte:   11,
+			EndByte:     15,
+		}},
 		Result: result,
 	})
 
@@ -1705,12 +1711,18 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	}
 
 	request := <-session.sends
-	if request.request.ChatJID != chatJID || request.request.Body != "hello live" || request.request.RemoteID != "remote-1" {
+	if request.request.ChatJID != chatJID || request.request.Body != "hello live @Ana" || request.request.RemoteID != "remote-1" {
 		t.Fatalf("send request = %+v, want jid/body/remote id", request)
+	}
+	if len(request.request.MentionedJIDs) != 1 || request.request.MentionedJIDs[0] != "222@s.whatsapp.net" {
+		t.Fatalf("send mentions = %+v, want participant", request.request.MentionedJIDs)
 	}
 	messages := waitForStoredMessages(t, db, chatJID, 1)
 	if len(messages) != 1 || messages[0].ID != queued.Message.ID || messages[0].Status != "sent" {
 		t.Fatalf("stored messages = %+v, want one sent queued message", messages)
+	}
+	if len(messages[0].Mentions) != 1 || messages[0].Mentions[0].JID != "222@s.whatsapp.net" {
+		t.Fatalf("stored mentions = %+v, want participant", messages[0].Mentions)
 	}
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "sent")
@@ -2246,6 +2258,12 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 		Status:          "failed",
 		QuotedMessageID: quoted.ID,
 		QuotedRemoteID:  quoted.RemoteID,
+		Mentions: []store.MessageMention{{
+			JID:         "222@s.whatsapp.net",
+			DisplayName: "Ana",
+			StartByte:   0,
+			EndByte:     4,
+		}},
 		Media: []store.MediaMetadata{{
 			MessageID:     whatsapp.LocalMessageID(chatJID, "failed-1"),
 			FileName:      "report.pdf",
@@ -2285,6 +2303,9 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 	if sent.QuotedRemoteID != quoted.RemoteID || sent.QuotedSenderJID != quoted.SenderJID || sent.QuotedMessageBody != quoted.Body {
 		t.Fatalf("retry quote = %+v, want quoted remote id/sender/body", sent)
 	}
+	if len(sent.MentionedJIDs) != 1 || sent.MentionedJIDs[0] != "222@s.whatsapp.net" {
+		t.Fatalf("retry mentions = %+v, want preserved mention", sent.MentionedJIDs)
+	}
 
 	messages := waitForStoredMessages(t, db, chatJID, 3)
 	if len(messages) != 3 {
@@ -2295,6 +2316,9 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 	}
 	if messages[2].ID != queued.Message.ID || messages[2].Status != "sent" {
 		t.Fatalf("retry message = %+v, want new sent row", messages[2])
+	}
+	if len(messages[2].Mentions) != 1 || messages[2].Mentions[0].JID != "222@s.whatsapp.net" {
+		t.Fatalf("retry message mentions = %+v, want preserved mention", messages[2].Mentions)
 	}
 }
 

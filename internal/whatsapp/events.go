@@ -98,9 +98,10 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 	case *events.ChatPresence:
 		return normalizeChatPresenceEvent(event)
 	case *events.GroupInfo:
-		return normalizeGroupInfoEvent(event.JID, "", event.Name)
+		out := normalizeGroupInfoEvent(event.JID, "", event.Name)
+		return append(out, normalizeGroupParticipantDeltaEvent(event.JID, event.Join, event.Leave)...)
 	case *events.JoinedGroup:
-		return normalizeGroupInfoEvent(event.JID, event.GroupName.Name, &event.GroupName)
+		return normalizeFullGroupInfoEvent(&event.GroupInfo, true)
 	case *events.Contact:
 		return normalizeContactEvent(event)
 	case *events.PushName:
@@ -1064,6 +1065,92 @@ func normalizeGroupInfoEvent(jid types.JID, cachedName string, changedName *type
 			Kind:        "group",
 		},
 	}}
+}
+
+func normalizeFullGroupInfoEvent(group *types.GroupInfo, replaceParticipants bool) []Event {
+	if group == nil {
+		return nil
+	}
+	out := normalizeGroupInfoEvent(group.JID, group.GroupName.Name, &group.GroupName)
+	if len(group.Participants) == 0 {
+		return out
+	}
+	participants := make([]GroupParticipantEvent, 0, len(group.Participants))
+	for _, participant := range group.Participants {
+		if event := groupParticipantEvent(participant); event.JID != "" {
+			participants = append(participants, event)
+		}
+	}
+	if len(participants) == 0 && !replaceParticipants {
+		return out
+	}
+	out = append(out, Event{
+		Kind: EventGroupParticipants,
+		Participants: GroupParticipantsEvent{
+			ChatID:       group.JID.String(),
+			Participants: participants,
+			Replace:      replaceParticipants,
+			UpdatedAt:    time.Now(),
+		},
+	})
+	return out
+}
+
+func normalizeGroupParticipantDeltaEvent(jid types.JID, join, leave []types.JID) []Event {
+	if !supportedChat(jid) || jid.Server != types.GroupServer || (len(join) == 0 && len(leave) == 0) {
+		return nil
+	}
+	participants := make([]GroupParticipantEvent, 0, len(join))
+	for _, participantJID := range join {
+		if participantJID.IsEmpty() {
+			continue
+		}
+		participants = append(participants, GroupParticipantEvent{
+			JID: participantJID.ToNonAD().String(),
+		})
+	}
+	removeJIDs := make([]string, 0, len(leave))
+	for _, participantJID := range leave {
+		if participantJID.IsEmpty() {
+			continue
+		}
+		removeJIDs = append(removeJIDs, participantJID.ToNonAD().String())
+	}
+	return []Event{{
+		Kind: EventGroupParticipants,
+		Participants: GroupParticipantsEvent{
+			ChatID:       jid.String(),
+			Participants: participants,
+			RemoveJIDs:   removeJIDs,
+			UpdatedAt:    time.Now(),
+		},
+	}}
+}
+
+func groupParticipantEvent(participant types.GroupParticipant) GroupParticipantEvent {
+	jid := participant.JID.ToNonAD()
+	if jid.IsEmpty() {
+		jid = participant.PhoneNumber.ToNonAD()
+	}
+	if jid.IsEmpty() {
+		jid = participant.LID.ToNonAD()
+	}
+	if jid.IsEmpty() {
+		return GroupParticipantEvent{}
+	}
+	event := GroupParticipantEvent{
+		JID:          jid.String(),
+		DisplayName:  strings.TrimSpace(participant.DisplayName),
+		IsAdmin:      participant.IsAdmin,
+		IsSuperAdmin: participant.IsSuperAdmin,
+	}
+	if phone := participant.PhoneNumber.ToNonAD(); !phone.IsEmpty() {
+		event.PhoneJID = phone.String()
+	}
+	if lid := participant.LID.ToNonAD(); !lid.IsEmpty() {
+		event.LIDJID = lid.String()
+	}
+	return event
 }
 
 func normalizeContactEvent(event *events.Contact) []Event {

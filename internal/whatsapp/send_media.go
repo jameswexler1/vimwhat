@@ -32,6 +32,7 @@ type MediaSendRequest struct {
 	MIMEType          string
 	Caption           string
 	RemoteID          string
+	MentionedJIDs     []string
 	QuotedRemoteID    string
 	QuotedSenderJID   string
 	QuotedMessageBody string
@@ -284,7 +285,7 @@ func imageDimensions(path string) (uint32, uint32) {
 }
 
 func (c *Client) mediaMessageFromUpload(kind outgoingMediaKind, details localMediaDetails, caption string, upload whatsmeow.UploadResponse, request MediaSendRequest) *waE2E.Message {
-	contextInfo := c.quoteContextInfo(request.QuotedRemoteID, request.QuotedSenderJID, request.QuotedMessageBody)
+	contextInfo := c.messageContextInfo(request.QuotedRemoteID, request.QuotedSenderJID, request.QuotedMessageBody, request.MentionedJIDs)
 	switch kind {
 	case outgoingMediaImage:
 		image := &waE2E.ImageMessage{

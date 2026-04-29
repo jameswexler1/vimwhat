@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.MediaItems != 1 || stats.Migrations != 10 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 media=1 migrations=10", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 11 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=11", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -195,6 +195,136 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if messages[1].Status != "server_ack" {
 		t.Fatalf("updated message status = %q, want server_ack", messages[1].Status)
+	}
+}
+
+func TestAccentAwareSearch(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	for _, chat := range []Chat{
+		{ID: "accented", Title: "João", LastMessageAt: time.Unix(1, 0)},
+		{ID: "plain", Title: "Joao", LastMessageAt: time.Unix(2, 0)},
+	} {
+		if err := db.UpsertChat(ctx, chat); err != nil {
+			t.Fatalf("UpsertChat(%s) error = %v", chat.ID, err)
+		}
+	}
+	if err := db.AddMessage(ctx, Message{ID: "m-1", ChatID: "accented", Sender: "A", Body: "olá mundo", Timestamp: time.Unix(1, 0)}); err != nil {
+		t.Fatalf("AddMessage(m-1) error = %v", err)
+	}
+	if err := db.AddMessage(ctx, Message{ID: "m-2", ChatID: "accented", Sender: "A", Body: "ola mundo", Timestamp: time.Unix(2, 0)}); err != nil {
+		t.Fatalf("AddMessage(m-2) error = %v", err)
+	}
+
+	chats, err := db.SearchChats(ctx, "Joao", 10)
+	if err != nil {
+		t.Fatalf("SearchChats(Joao) error = %v", err)
+	}
+	if len(chats) != 2 {
+		t.Fatalf("SearchChats(Joao) = %+v, want accented and plain", chats)
+	}
+	chats, err = db.SearchChats(ctx, "João", 10)
+	if err != nil {
+		t.Fatalf("SearchChats(João) error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].ID != "accented" {
+		t.Fatalf("SearchChats(João) = %+v, want accented only", chats)
+	}
+
+	messages, err := db.SearchMessages(ctx, "accented", "ola", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(ola) error = %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("SearchMessages(ola) = %+v, want both messages", messages)
+	}
+	messages, err = db.SearchMessages(ctx, "accented", "olá", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(olá) error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "m-1" {
+		t.Fatalf("SearchMessages(olá) = %+v, want accented only", messages)
+	}
+}
+
+func TestGroupMentionCandidatesAndMessageMentions(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "group@g.us", JID: "group@g.us", Title: "Group", Kind: "group"}); err != nil {
+		t.Fatalf("UpsertChat(group) error = %v", err)
+	}
+	if err := db.UpsertContact(ctx, Contact{JID: "111@s.whatsapp.net", DisplayName: "José Silva", Phone: "111"}); err != nil {
+		t.Fatalf("UpsertContact() error = %v", err)
+	}
+	if err := db.ReplaceGroupParticipants(ctx, "group@g.us", []GroupParticipant{
+		{ChatID: "group@g.us", JID: "111@s.whatsapp.net", DisplayName: "Jose fallback"},
+		{ChatID: "group@g.us", JID: "222@s.whatsapp.net", DisplayName: "Ana"},
+	}); err != nil {
+		t.Fatalf("ReplaceGroupParticipants() error = %v", err)
+	}
+
+	candidates, err := db.SearchMentionCandidates(ctx, "group@g.us", "Jose", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(Jose) error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].JID != "111@s.whatsapp.net" || candidates[0].DisplayName != "José Silva" {
+		t.Fatalf("SearchMentionCandidates(Jose) = %+v, want contact display name", candidates)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "José", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(José) error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].JID != "111@s.whatsapp.net" {
+		t.Fatalf("SearchMentionCandidates(José) = %+v, want accented contact", candidates)
+	}
+	if err := db.ReplaceGroupParticipants(ctx, "group@g.us", []GroupParticipant{
+		{ChatID: "group@g.us", JID: "222@s.whatsapp.net", DisplayName: "Ana"},
+	}); err != nil {
+		t.Fatalf("ReplaceGroupParticipants(remove) error = %v", err)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "Jose", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(after replace) error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("SearchMentionCandidates(after replace) = %+v, want no Jose", candidates)
+	}
+
+	if err := db.AddMessage(ctx, Message{
+		ID:        "m-mention",
+		ChatID:    "group@g.us",
+		Sender:    "me",
+		Body:      "@Ana hello",
+		Timestamp: time.Unix(1, 0),
+		Mentions: []MessageMention{{
+			JID:         "222@s.whatsapp.net",
+			DisplayName: "Ana",
+			StartByte:   0,
+			EndByte:     4,
+		}},
+	}); err != nil {
+		t.Fatalf("AddMessage(with mention) error = %v", err)
+	}
+	message, ok, err := db.MessageByID(ctx, "m-mention")
+	if err != nil {
+		t.Fatalf("MessageByID() error = %v", err)
+	}
+	if !ok || len(message.Mentions) != 1 || message.Mentions[0].JID != "222@s.whatsapp.net" {
+		t.Fatalf("MessageByID().Mentions = %+v ok=%v, want Ana mention", message.Mentions, ok)
 	}
 }
 
@@ -1368,8 +1498,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 10 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want ten applied and none pending", applied, pending)
+	if len(applied) != 11 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want eleven applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

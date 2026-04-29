@@ -211,6 +211,35 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		name: "0011_mentions_and_group_participants",
+		sql: []string{
+			`CREATE TABLE IF NOT EXISTS group_participants (
+				chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+				jid TEXT NOT NULL,
+				phone_jid TEXT NOT NULL DEFAULT '',
+				lid_jid TEXT NOT NULL DEFAULT '',
+				display_name TEXT NOT NULL DEFAULT '',
+				is_admin INTEGER NOT NULL DEFAULT 0,
+				is_super_admin INTEGER NOT NULL DEFAULT 0,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (chat_id, jid)
+			)`,
+			`CREATE INDEX IF NOT EXISTS group_participants_chat_idx
+				ON group_participants (chat_id, display_name ASC, jid ASC)`,
+			`CREATE TABLE IF NOT EXISTS message_mentions (
+				message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+				jid TEXT NOT NULL,
+				display_name TEXT NOT NULL DEFAULT '',
+				start_byte INTEGER NOT NULL DEFAULT 0,
+				end_byte INTEGER NOT NULL DEFAULT 0,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (message_id, jid)
+			)`,
+			`CREATE INDEX IF NOT EXISTS message_mentions_message_idx
+				ON message_mentions (message_id, jid ASC)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {
@@ -349,6 +378,9 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM contacts`).Scan(&stats.Contacts); err != nil {
 		return Stats{}, fmt.Errorf("count contacts: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM group_participants`).Scan(&stats.Participants); err != nil {
+		return Stats{}, fmt.Errorf("count group participants: %w", err)
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media_metadata`).Scan(&stats.MediaItems); err != nil {
 		return Stats{}, fmt.Errorf("count media metadata: %w", err)

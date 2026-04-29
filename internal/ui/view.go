@@ -13,6 +13,7 @@ import (
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
+	"vimwhat/internal/textmatch"
 )
 
 var (
@@ -771,29 +772,25 @@ func splitSearchSegments(value, query string) []searchSegment {
 		return []searchSegment{{text: value}}
 	}
 
-	valueClusters := graphemeClusters(value)
-	queryClusters := graphemeClusters(query)
-	if len(queryClusters) == 0 || len(valueClusters) < len(queryClusters) {
+	spans := textmatch.FindAll(value, query)
+	if len(spans) == 0 {
 		return []searchSegment{{text: value}}
 	}
 
 	var segments []searchSegment
 	start := 0
-	for i := 0; i <= len(valueClusters)-len(queryClusters); {
-		candidate := strings.Join(valueClusters[i:i+len(queryClusters)], "")
-		if strings.EqualFold(candidate, query) {
-			if start < i {
-				segments = append(segments, searchSegment{text: strings.Join(valueClusters[start:i], "")})
-			}
-			segments = append(segments, searchSegment{text: candidate, match: true})
-			i += len(queryClusters)
-			start = i
+	for _, span := range spans {
+		if span.Start < start || span.End <= span.Start || span.End > len(value) {
 			continue
 		}
-		i++
+		if start < span.Start {
+			segments = append(segments, searchSegment{text: value[start:span.Start]})
+		}
+		segments = append(segments, searchSegment{text: value[span.Start:span.End], match: true})
+		start = span.End
 	}
-	if start < len(valueClusters) {
-		segments = append(segments, searchSegment{text: strings.Join(valueClusters[start:], "")})
+	if start < len(value) {
+		segments = append(segments, searchSegment{text: value[start:]})
 	}
 	if len(segments) == 0 {
 		return []searchSegment{{text: value}}
@@ -2198,9 +2195,10 @@ func (m Model) renderComposer(width int) string {
 	}
 	attachmentLines := m.composerAttachmentLines(width)
 	lines = append(lines, attachmentLines...)
+	lines = append(lines, m.mentionSuggestionLines(width)...)
 
 	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines))
+	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines)-m.mentionSuggestionHeight())
 	if len(bodyLines) > maxBodyLines {
 		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
 	}
@@ -2216,6 +2214,49 @@ func (m Model) renderComposer(width int) string {
 		style = style.Background(uiTheme.BarBG)
 	}
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) mentionSuggestionLines(width int) []string {
+	if !m.mentionActive {
+		return nil
+	}
+	width = max(1, width)
+	query := strings.TrimSpace(m.mentionQuery)
+	if query == "" {
+		query = "@"
+	} else {
+		query = "@" + query
+	}
+	lines := []string{lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay("mention "+query, width))}
+	if len(m.mentionCandidates) == 0 {
+		return append(lines, lipgloss.NewStyle().Foreground(softFG).Render(truncateDisplay("  no matches", width)))
+	}
+	limit := min(5, len(m.mentionCandidates))
+	cursor := clamp(m.mentionCursor, 0, len(m.mentionCandidates)-1)
+	start := clamp(cursor-limit/2, 0, max(0, len(m.mentionCandidates)-limit))
+	end := min(len(m.mentionCandidates), start+limit)
+	for i := start; i < end; i++ {
+		candidate := m.mentionCandidates[i]
+		prefix := " "
+		style := lipgloss.NewStyle().Foreground(primaryFG)
+		if i == cursor {
+			prefix = ">"
+			style = style.Foreground(accentFG).Bold(true)
+		}
+		label := mentionDisplayName(candidate)
+		lines = append(lines, style.Render(truncateDisplay(fmt.Sprintf("%s @%s", prefix, m.sanitizeDisplayLine(label)), width)))
+	}
+	return lines
+}
+
+func (m Model) mentionSuggestionHeight() int {
+	if !m.mentionActive {
+		return 0
+	}
+	if len(m.mentionCandidates) == 0 {
+		return 2
+	}
+	return 1 + min(5, len(m.mentionCandidates))
 }
 
 func (m Model) editPreviewLine(width int) string {
@@ -2356,14 +2397,14 @@ func (m Model) composerHeight() int {
 	if m.mode != ModeInsert {
 		return 0
 	}
-	extra := len(m.attachments) + 2
+	extra := len(m.attachments) + 2 + m.mentionSuggestionHeight()
 	if m.replyTo != nil {
 		extra++
 	}
 	if m.editTarget != nil {
 		extra++
 	}
-	return min(7, max(3, len(composerLines(m.composer))+extra))
+	return min(12, max(3, len(composerLines(m.composer))+extra))
 }
 
 func (m Model) renderHelp(width int) string {

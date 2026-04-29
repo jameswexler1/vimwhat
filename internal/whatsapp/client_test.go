@@ -123,6 +123,39 @@ func TestMessageFromForwardPayloadStripsExistingForwardMetadata(t *testing.T) {
 	}
 }
 
+func TestTextMessageWithMentionUsesContextInfo(t *testing.T) {
+	client := &Client{}
+	message := client.textMessage("hi @José", TextSendRequest{
+		MentionedJIDs: []string{"111@s.whatsapp.net"},
+	})
+
+	text := message.GetExtendedTextMessage()
+	if text == nil || text.GetText() != "hi @José" {
+		t.Fatalf("text message = %+v, want extended text body", message)
+	}
+	if got := text.GetContextInfo().GetMentionedJID(); !slices.Equal(got, []string{"111@s.whatsapp.net"}) {
+		t.Fatalf("MentionedJID = %+v, want participant", got)
+	}
+}
+
+func TestTextMessageWithQuoteAndMentionPreservesBothContextFields(t *testing.T) {
+	client := &Client{}
+	message := client.textMessage("hi @Ana", TextSendRequest{
+		MentionedJIDs:     []string{"222@s.whatsapp.net"},
+		QuotedRemoteID:    "quoted-1",
+		QuotedSenderJID:   "111@s.whatsapp.net",
+		QuotedMessageBody: "hello",
+	})
+
+	contextInfo := message.GetExtendedTextMessage().GetContextInfo()
+	if contextInfo == nil ||
+		contextInfo.GetStanzaID() != "quoted-1" ||
+		contextInfo.GetParticipant() != "111@s.whatsapp.net" ||
+		!slices.Equal(contextInfo.GetMentionedJID(), []string{"222@s.whatsapp.net"}) {
+		t.Fatalf("context info = %+v, want quote and mention", contextInfo)
+	}
+}
+
 func TestChatAvatarProfilePictureParamsRequestsFullImage(t *testing.T) {
 	params := chatAvatarProfilePictureParams(" avatar-1 ")
 	if params.Preview {

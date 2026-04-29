@@ -38,6 +38,7 @@ type Message struct {
 	EditedAt        time.Time
 	Media           []MediaMetadata
 	Reactions       []Reaction
+	Mentions        []MessageMention
 }
 
 type MessagePayload struct {
@@ -64,6 +65,34 @@ type Contact struct {
 	AvatarThumbPath string
 	AvatarUpdatedAt time.Time
 	UpdatedAt       time.Time
+}
+
+type GroupParticipant struct {
+	ChatID       string
+	JID          string
+	PhoneJID     string
+	LIDJID       string
+	DisplayName  string
+	IsAdmin      bool
+	IsSuperAdmin bool
+	UpdatedAt    time.Time
+}
+
+type MentionCandidate struct {
+	JID          string
+	DisplayName  string
+	SearchText   string
+	IsAdmin      bool
+	IsSuperAdmin bool
+}
+
+type MessageMention struct {
+	MessageID   string
+	JID         string
+	DisplayName string
+	StartByte   int
+	EndByte     int
+	UpdatedAt   time.Time
 }
 
 type MediaMetadata struct {
@@ -132,10 +161,11 @@ type Snapshot struct {
 }
 
 type Stats struct {
-	Chats      int
-	Messages   int
-	Drafts     int
-	Contacts   int
-	MediaItems int
-	Migrations int
+	Chats        int
+	Messages     int
+	Drafts       int
+	Contacts     int
+	Participants int
+	MediaItems   int
+	Migrations   int
 }

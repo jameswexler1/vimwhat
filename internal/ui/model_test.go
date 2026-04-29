@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,91 @@ func TestInsertBackspaceRemovesEmojiCluster(t *testing.T) {
 	got := updated.(Model).composer
 	if got != "ok " {
 		t.Fatalf("composer = %q, want %q", got, "ok ")
+	}
+}
+
+func TestInsertMentionAutocompleteSelectsAndSendsMention(t *testing.T) {
+	var (
+		persisted bool
+		outgoing  OutgoingMessage
+	)
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "group@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{"group@g.us": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "group@g.us",
+		},
+		SearchMentionCandidates: func(chatID, query string, limit int) ([]store.MentionCandidate, error) {
+			if chatID != "group@g.us" {
+				t.Fatalf("mention chatID = %q, want group@g.us", chatID)
+			}
+			return []store.MentionCandidate{{JID: "111@s.whatsapp.net", DisplayName: "José Silva"}}, nil
+		},
+		PersistMessage: func(message OutgoingMessage) (store.Message, error) {
+			persisted = true
+			outgoing = message
+			return store.Message{
+				ID:         "sent-1",
+				ChatID:     message.ChatID,
+				Sender:     "me",
+				Body:       message.Body,
+				IsOutgoing: true,
+				Timestamp:  time.Unix(1, 0),
+				Mentions:   slices.Clone(message.Mentions),
+			}, nil
+		},
+	})
+	model.mode = ModeInsert
+
+	typedAt, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
+	model = typedAt.(Model)
+	if !model.mentionActive || len(model.mentionCandidates) != 1 {
+		t.Fatalf("mention state after @ = active %v candidates %+v", model.mentionActive, model.mentionCandidates)
+	}
+	selected, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	model = selected.(Model)
+	if persisted {
+		t.Fatal("Enter while mention popup is active sent the message")
+	}
+	if model.composer != "@José Silva " || model.mentionActive {
+		t.Fatalf("composer after mention select = %q active=%v", model.composer, model.mentionActive)
+	}
+	model.composer += "hello"
+
+	sent, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	model = sent.(Model)
+	if !persisted {
+		t.Fatal("message was not persisted")
+	}
+	if outgoing.Body != "@José Silva hello" || len(outgoing.Mentions) != 1 || outgoing.Mentions[0].JID != "111@s.whatsapp.net" {
+		t.Fatalf("outgoing = %+v, want body with one mention", outgoing)
+	}
+	if len(model.messagesByChat["group@g.us"]) != 1 || len(model.messagesByChat["group@g.us"][0].Mentions) != 1 {
+		t.Fatalf("stored UI message mentions = %+v", model.messagesByChat["group@g.us"])
+	}
+}
+
+func TestInsertMentionAutocompleteOnlyStartsInGroups(t *testing.T) {
+	called := false
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice", Kind: "direct"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		SearchMentionCandidates: func(chatID, query string, limit int) ([]store.MentionCandidate, error) {
+			called = true
+			return nil, nil
+		},
+	})
+	model.mode = ModeInsert
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
+	got := updated.(Model)
+	if got.mentionActive || called || got.composer != "@" {
+		t.Fatalf("direct chat mention state = active %v called %v composer %q", got.mentionActive, called, got.composer)
 	}
 }
 
@@ -1586,6 +1672,28 @@ func TestSplitSearchSegmentsCaseInsensitiveAndNonOverlapping(t *testing.T) {
 		if segments[i] != want[i] {
 			t.Fatalf("segments[%d] = %+v, want %+v", i, segments[i], want[i])
 		}
+	}
+}
+
+func TestSplitSearchSegmentsAccentAware(t *testing.T) {
+	segments := splitSearchSegments("olá ola", "ola")
+	want := []searchSegment{
+		{text: "olá", match: true},
+		{text: " "},
+		{text: "ola", match: true},
+	}
+	if len(segments) != len(want) {
+		t.Fatalf("segments = %+v, want %+v", segments, want)
+	}
+	for i := range want {
+		if segments[i] != want[i] {
+			t.Fatalf("segments[%d] = %+v, want %+v", i, segments[i], want[i])
+		}
+	}
+
+	segments = splitSearchSegments("olá ola", "olá")
+	if len(segments) != 2 || !segments[0].match || segments[0].text != "olá" || segments[1].text != " ola" {
+		t.Fatalf("accent-sensitive segments = %+v, want only accented match", segments)
 	}
 }
 

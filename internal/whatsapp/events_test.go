@@ -541,6 +541,35 @@ func TestNormalizeGroupInfoUsesSubjectTitle(t *testing.T) {
 	}
 }
 
+func TestNormalizeJoinedGroupIncludesParticipants(t *testing.T) {
+	chat := types.NewJID("12345-678", types.GroupServer)
+	participant := types.NewJID("111", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.JoinedGroup{
+		GroupInfo: types.GroupInfo{
+			JID: chat,
+			GroupName: types.GroupName{
+				Name: "Project Group",
+			},
+			Participants: []types.GroupParticipant{{
+				JID:         participant,
+				DisplayName: "Anon",
+				IsAdmin:     true,
+			}},
+		},
+	})
+	if len(normalized) != 2 || normalized[1].Kind != EventGroupParticipants {
+		t.Fatalf("joined group normalized to %+v, want chat and participants", normalized)
+	}
+	participants := normalized[1].Participants
+	if !participants.Replace ||
+		participants.ChatID != chat.String() ||
+		len(participants.Participants) != 1 ||
+		participants.Participants[0].JID != participant.String() ||
+		!participants.Participants[0].IsAdmin {
+		t.Fatalf("participant event = %+v", participants)
+	}
+}
+
 func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {
 	when := uint64(1_700_000_000)
 	syncType := waHistorySync.HistorySync_ON_DEMAND
