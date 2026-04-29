@@ -98,6 +98,41 @@ func TestMediaDownloadValidationLengthRequiresPlaintextSHA(t *testing.T) {
 	}
 }
 
+func TestMediaDownloadSourcesPreferURLBeforeDirectPath(t *testing.T) {
+	descriptor := MediaDownloadDescriptor{
+		URL:        " https://mmg.whatsapp.net/sticker ",
+		DirectPath: " /v/t62.15575-24/sticker.enc ",
+	}
+	got := mediaDownloadSources(descriptor)
+	want := []mediaDownloadSource{mediaDownloadSourceURL, mediaDownloadSourceDirectPath}
+	if !slices.Equal(got, want) {
+		t.Fatalf("mediaDownloadSources() = %#v, want %#v", got, want)
+	}
+
+	webOnly := mediaDownloadSources(MediaDownloadDescriptor{
+		URL: "https://web.whatsapp.net/media",
+	})
+	if len(webOnly) != 0 {
+		t.Fatalf("mediaDownloadSources(web URL) = %#v, want no usable source", webOnly)
+	}
+}
+
+func TestMediaDownloadDescriptorForSourceIsolatesDownloadSource(t *testing.T) {
+	descriptor := MediaDownloadDescriptor{
+		URL:        "https://mmg.whatsapp.net/sticker",
+		DirectPath: "/v/t62.15575-24/sticker.enc",
+	}
+
+	urlDescriptor := mediaDownloadDescriptorForSource(descriptor, mediaDownloadSourceURL)
+	if urlDescriptor.URL == "" || urlDescriptor.DirectPath != "" {
+		t.Fatalf("url descriptor = %+v, want URL-only", urlDescriptor)
+	}
+	directDescriptor := mediaDownloadDescriptorForSource(descriptor, mediaDownloadSourceDirectPath)
+	if directDescriptor.URL != "" || directDescriptor.DirectPath == "" {
+		t.Fatalf("direct descriptor = %+v, want direct-path-only", directDescriptor)
+	}
+}
+
 func TestCheckSessionStatusMissingDoesNotCreateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.sqlite3")
 

@@ -2444,6 +2444,7 @@ func completeStickerSyncRequest(
 	cached := 0
 	metadataSynced := 0
 	cacheFailures := 0
+	var cacheErr error
 	var applyErr error
 	for _, event := range events {
 		cacheUsable := false
@@ -2452,6 +2453,9 @@ func completeStickerSyncRequest(
 			prepared, err := prepareRecentStickerEvent(syncCtx, db, live, paths, event.Sticker)
 			if err != nil {
 				cacheFailures++
+				if cacheErr == nil {
+					cacheErr = err
+				}
 			} else {
 				event.Sticker = prepared
 				cacheUsable = stickerPickerUsable(store.RecentSticker{
@@ -2478,7 +2482,7 @@ func completeStickerSyncRequest(
 		}
 	}
 
-	err := stickerSyncResultError(cached, metadataSynced, cacheFailures, syncErr, applyErr)
+	err := stickerSyncResultError(cached, metadataSynced, cacheFailures, cacheErr, syncErr, applyErr)
 	sendStickerSyncResult(ctx, request, cached, err)
 	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
@@ -2489,23 +2493,29 @@ func completeStickerSyncRequest(
 	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		Refresh: metadataSynced > 0,
-		Status:  stickerSyncStatus(cached, metadataSynced, cacheFailures, errors.Join(syncErr, applyErr)),
+		Status:  stickerSyncStatus(cached, metadataSynced, cacheFailures, cacheErr, errors.Join(syncErr, applyErr)),
 	})
 }
 
-func stickerSyncResultError(cached, metadataSynced, cacheFailures int, syncErr, applyErr error) error {
+func stickerSyncResultError(cached, metadataSynced, cacheFailures int, cacheErr, syncErr, applyErr error) error {
 	if cached > 0 {
 		return nil
 	}
 	if metadataSynced > 0 && cacheFailures > 0 {
+		if cacheErr != nil {
+			return fmt.Errorf("no sticker files cached; %d metadata record(s) synced, %d download(s) failed: %w", metadataSynced, cacheFailures, cacheErr)
+		}
 		return fmt.Errorf("no sticker files cached; %d metadata record(s) synced, %d download(s) failed", metadataSynced, cacheFailures)
 	}
 	return errors.Join(syncErr, applyErr)
 }
 
-func stickerSyncStatus(cached, metadataSynced, cacheFailures int, warning error) string {
+func stickerSyncStatus(cached, metadataSynced, cacheFailures int, cacheErr, warning error) string {
 	if cached > 0 {
 		if cacheFailures > 0 {
+			if cacheErr != nil {
+				return fmt.Sprintf("synced %d WhatsApp sticker(s); %d unavailable: %s", cached, cacheFailures, shortStatusError(cacheErr))
+			}
 			return fmt.Sprintf("synced %d WhatsApp sticker(s); %d unavailable", cached, cacheFailures)
 		}
 		if warning != nil {

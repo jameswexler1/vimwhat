@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -274,6 +276,81 @@ func TestExpandStickerPickerArgsSplicesFiles(t *testing.T) {
 	want := "nsxiv\x00-t\x00-o\x00-p\x00/tmp/picker/a.webp\x00/tmp/picker/b.webp"
 	if strings.Join(got, "\x00") != want {
 		t.Fatalf("expanded args = %#v", got)
+	}
+}
+
+func TestStickerPickerNsxivEnterHookDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{name: "default nsxiv thumbnail command", argv: []string{"nsxiv", "-t", "-o", "-p", "/tmp/a.webp"}, want: true},
+		{name: "combined thumbnail flag", argv: []string{"/usr/bin/nsxiv", "-top", "/tmp/a.webp"}, want: true},
+		{name: "thumbnail disabled", argv: []string{"nsxiv", "--thumbnail=no", "/tmp/a.webp"}, want: false},
+		{name: "non nsxiv command", argv: []string{"true"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stickerPickerNsxivEnterHookEnabled(tt.argv); got != tt.want {
+				t.Fatalf("stickerPickerNsxivEnterHookEnabled(%#v) = %v, want %v", tt.argv, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrepareNsxivStickerEnterHookWritesChooser(t *testing.T) {
+	dir := t.TempDir()
+	chooserPath := filepath.Join(dir, "chooser")
+	hookRoot, err := prepareNsxivStickerEnterHook(config.Paths{TransientDir: dir})
+	if err != nil {
+		t.Fatalf("prepareNsxivStickerEnterHook() error = %v", err)
+	}
+	defer os.RemoveAll(hookRoot)
+
+	hookPath := filepath.Join(hookRoot, "nsxiv", "exec", "image-info")
+	selected := filepath.Join(dir, "selected.webp")
+	cmd := exec.Command(hookPath, "ignored", "", "", selected)
+	cmd.Env = append(os.Environ(),
+		"VIMWHAT_STICKER_CHOOSER="+chooserPath,
+		"VIMWHAT_STICKER_NSXIV_NO_KILL=1",
+	)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("image-info hook run error = %v", err)
+	}
+	if got := strings.TrimSpace(string(mustReadFile(t, chooserPath))); got != selected {
+		t.Fatalf("chooser = %q, want %q", got, selected)
+	}
+}
+
+func TestStickerPickedMessagePrefersChooserDespiteProcessError(t *testing.T) {
+	dir := t.TempDir()
+	chooserPath := filepath.Join(dir, "chooser")
+	selected := filepath.Join(dir, "selected.webp")
+	if err := os.WriteFile(chooserPath, []byte(selected+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(chooser) error = %v", err)
+	}
+	sticker := store.RecentSticker{ID: "sticker-1"}
+
+	msg := stickerPickedMessage("", chooserPath, map[string]store.RecentSticker{selected: sticker}, errors.New("signal: terminated"))
+	if msg.Err != nil || msg.Cancelled || msg.Sticker.ID != sticker.ID {
+		t.Fatalf("stickerPickedMessage() = %+v, want chooser-selected sticker", msg)
+	}
+}
+
+func TestStickerPickedMessageStdoutAndCancellation(t *testing.T) {
+	dir := t.TempDir()
+	chooserPath := filepath.Join(dir, "chooser")
+	selected := filepath.Join(dir, "selected.webp")
+	sticker := store.RecentSticker{ID: "sticker-1"}
+
+	msg := stickerPickedMessage(selected+"\n", chooserPath, map[string]store.RecentSticker{selected: sticker}, nil)
+	if msg.Err != nil || msg.Cancelled || msg.Sticker.ID != sticker.ID {
+		t.Fatalf("stdout stickerPickedMessage() = %+v, want stdout-selected sticker", msg)
+	}
+	msg = stickerPickedMessage("", chooserPath, nil, nil)
+	if !msg.Cancelled || msg.Err != nil {
+		t.Fatalf("empty stickerPickedMessage() = %+v, want cancellation", msg)
 	}
 }
 

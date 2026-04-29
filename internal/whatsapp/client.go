@@ -972,23 +972,8 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 				err = io.ErrShortWrite
 			}
 		}
-	} else if strings.TrimSpace(descriptor.DirectPath) != "" {
-		err = c.client.DownloadMediaWithPathToFile(
-			ctx,
-			descriptor.DirectPath,
-			descriptor.FileEncSHA256,
-			descriptor.FileSHA256,
-			descriptor.MediaKey,
-			mediaDownloadValidationLength(descriptor),
-			mediaType,
-			"",
-			file,
-		)
 	} else {
-		err = c.client.DownloadToFile(ctx, downloadableMedia{
-			descriptor: descriptor,
-			mediaType:  mediaType,
-		}, file)
+		err = c.downloadMediaToFile(ctx, descriptor, mediaType, file)
 	}
 	if err != nil {
 		return fmt.Errorf("download whatsapp media: %w", err)
@@ -997,27 +982,133 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 	return nil
 }
 
-func (c *Client) downloadMediaBytes(ctx context.Context, descriptor MediaDownloadDescriptor, mediaType whatsmeow.MediaType) ([]byte, error) {
-	if strings.TrimSpace(descriptor.DirectPath) != "" {
-		return c.client.DownloadMediaWithPath(
-			ctx,
-			descriptor.DirectPath,
-			descriptor.FileEncSHA256,
-			descriptor.FileSHA256,
-			descriptor.MediaKey,
-			mediaDownloadValidationLength(descriptor),
-			mediaType,
-			"",
-		)
+func (c *Client) downloadMediaToFile(ctx context.Context, descriptor MediaDownloadDescriptor, mediaType whatsmeow.MediaType, file *os.File) error {
+	var attempts []error
+	for _, source := range mediaDownloadSources(descriptor) {
+		if len(attempts) > 0 {
+			if err := resetMediaDownloadTarget(file); err != nil {
+				return errors.Join(append(attempts, err)...)
+			}
+		}
+		sourceDescriptor := mediaDownloadDescriptorForSource(descriptor, source)
+		var err error
+		switch source {
+		case mediaDownloadSourceURL:
+			err = c.client.DownloadToFile(ctx, downloadableMedia{
+				descriptor: sourceDescriptor,
+				mediaType:  mediaType,
+			}, file)
+		case mediaDownloadSourceDirectPath:
+			err = c.client.DownloadMediaWithPathToFile(
+				ctx,
+				sourceDescriptor.DirectPath,
+				sourceDescriptor.FileEncSHA256,
+				sourceDescriptor.FileSHA256,
+				sourceDescriptor.MediaKey,
+				mediaDownloadValidationLength(sourceDescriptor),
+				mediaType,
+				"",
+				file,
+			)
+		}
+		if err == nil {
+			return nil
+		}
+		attempts = append(attempts, fmt.Errorf("%s: %w", source, err))
 	}
-	return c.client.Download(ctx, downloadableMedia{
-		descriptor: descriptor,
-		mediaType:  mediaType,
-	})
+	if len(attempts) == 0 {
+		return fmt.Errorf("media download source is required")
+	}
+	return errors.Join(attempts...)
+}
+
+func (c *Client) downloadMediaBytes(ctx context.Context, descriptor MediaDownloadDescriptor, mediaType whatsmeow.MediaType) ([]byte, error) {
+	var attempts []error
+	for _, source := range mediaDownloadSources(descriptor) {
+		sourceDescriptor := mediaDownloadDescriptorForSource(descriptor, source)
+		var (
+			data []byte
+			err  error
+		)
+		switch source {
+		case mediaDownloadSourceURL:
+			data, err = c.client.Download(ctx, downloadableMedia{
+				descriptor: sourceDescriptor,
+				mediaType:  mediaType,
+			})
+		case mediaDownloadSourceDirectPath:
+			data, err = c.client.DownloadMediaWithPath(
+				ctx,
+				sourceDescriptor.DirectPath,
+				sourceDescriptor.FileEncSHA256,
+				sourceDescriptor.FileSHA256,
+				sourceDescriptor.MediaKey,
+				mediaDownloadValidationLength(sourceDescriptor),
+				mediaType,
+				"",
+			)
+		}
+		if err == nil {
+			return data, nil
+		}
+		attempts = append(attempts, fmt.Errorf("%s: %w", source, err))
+	}
+	if len(attempts) == 0 {
+		return nil, fmt.Errorf("media download source is required")
+	}
+	return nil, errors.Join(attempts...)
 }
 
 func mediaDownloadNeedsBufferedWrite(descriptor MediaDownloadDescriptor) bool {
 	return len(descriptor.FileSHA256) == 0
+}
+
+type mediaDownloadSource string
+
+const (
+	mediaDownloadSourceURL        mediaDownloadSource = "url"
+	mediaDownloadSourceDirectPath mediaDownloadSource = "direct path"
+)
+
+func mediaDownloadSources(descriptor MediaDownloadDescriptor) []mediaDownloadSource {
+	out := make([]mediaDownloadSource, 0, 2)
+	if mediaDownloadURLUsable(descriptor.URL) {
+		out = append(out, mediaDownloadSourceURL)
+	}
+	if strings.TrimSpace(descriptor.DirectPath) != "" {
+		out = append(out, mediaDownloadSourceDirectPath)
+	}
+	return out
+}
+
+func mediaDownloadURLUsable(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	return raw != "" && !strings.HasPrefix(raw, "https://web.whatsapp.net")
+}
+
+func mediaDownloadDescriptorForSource(descriptor MediaDownloadDescriptor, source mediaDownloadSource) MediaDownloadDescriptor {
+	descriptor.URL = strings.TrimSpace(descriptor.URL)
+	descriptor.DirectPath = strings.TrimSpace(descriptor.DirectPath)
+	switch source {
+	case mediaDownloadSourceURL:
+		descriptor.DirectPath = ""
+	case mediaDownloadSourceDirectPath:
+		descriptor.URL = ""
+	}
+	return descriptor
+}
+
+func resetMediaDownloadTarget(file *os.File) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek media download target: %w", err)
+	}
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("truncate media download target: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind media download target: %w", err)
+	}
+	return nil
 }
 
 func mediaDownloadValidationLength(descriptor MediaDownloadDescriptor) int {

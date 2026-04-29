@@ -469,31 +469,50 @@ func stickerPickerCommand(paths config.Paths, cfg config.Config, db *store.Store
 		_ = os.Remove(chooserPath)
 		return nil, fmt.Errorf("sticker picker %q not found", argv[0])
 	}
+	var hookRoot string
+	if stickerPickerNsxivEnterHookEnabled(argv) {
+		hookRoot, err = prepareNsxivStickerEnterHook(paths)
+		if err != nil {
+			_ = os.RemoveAll(pickerDir)
+			_ = os.Remove(chooserPath)
+			return nil, err
+		}
+	}
 
 	var stdout bytes.Buffer
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout = &stdout
+	if hookRoot != "" {
+		cmd.Env = stickerPickerEnv(os.Environ(), hookRoot, chooserPath)
+	}
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		defer os.RemoveAll(pickerDir)
 		defer os.Remove(chooserPath)
-		if err != nil {
-			return ui.StickerPickedMsg{Err: err}
+		if hookRoot != "" {
+			defer os.RemoveAll(hookRoot)
 		}
-		selected := firstNonEmptyLine(stdout.String())
-		if data, readErr := os.ReadFile(chooserPath); readErr == nil {
-			if fromChooser := firstNonEmptyLine(string(data)); fromChooser != "" {
-				selected = fromChooser
-			}
+		return stickerPickedMessage(stdout.String(), chooserPath, stickersByPath, err)
+	}), nil
+}
+
+func stickerPickedMessage(stdout, chooserPath string, stickersByPath map[string]store.RecentSticker, err error) ui.StickerPickedMsg {
+	selected := firstNonEmptyLine(stdout)
+	if data, readErr := os.ReadFile(chooserPath); readErr == nil {
+		if fromChooser := firstNonEmptyLine(string(data)); fromChooser != "" {
+			selected = fromChooser
 		}
-		if selected == "" {
-			return ui.StickerPickedMsg{Cancelled: true}
-		}
+	}
+	if selected != "" {
 		sticker, ok := selectedStickerForPath(selected, stickersByPath)
 		if !ok {
 			return ui.StickerPickedMsg{Err: fmt.Errorf("selected sticker is not from the picker set")}
 		}
 		return ui.StickerPickedMsg{Sticker: sticker}
-	}), nil
+	}
+	if err != nil {
+		return ui.StickerPickedMsg{Err: err}
+	}
+	return ui.StickerPickedMsg{Cancelled: true}
 }
 
 func stickerPickerCandidates(ctx context.Context, db *store.Store, limit int) ([]store.RecentSticker, error) {
@@ -582,6 +601,91 @@ func createStickerChooserFile(paths config.Paths) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+const nsxivStickerImageInfoHook = `#!/bin/sh
+choice=${4:-$1}
+if [ -n "$choice" ] && [ -n "$VIMWHAT_STICKER_CHOOSER" ]; then
+	printf '%s\n' "$choice" > "$VIMWHAT_STICKER_CHOOSER"
+fi
+if [ "$VIMWHAT_STICKER_NSXIV_NO_KILL" != "1" ]; then
+	kill -TERM "$PPID" 2>/dev/null || true
+fi
+exit 0
+`
+
+func stickerPickerNsxivEnterHookEnabled(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	name := strings.ToLower(filepath.Base(argv[0]))
+	if name != "nsxiv" && name != "nsxiv.exe" {
+		return false
+	}
+	return nsxivStartsInThumbnailMode(argv[1:])
+}
+
+func nsxivStartsInThumbnailMode(args []string) bool {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "--" {
+			return false
+		}
+		if arg == "--thumbnail" {
+			return true
+		}
+		if strings.HasPrefix(arg, "--thumbnail=") {
+			value := strings.TrimPrefix(arg, "--thumbnail=")
+			return value != "no" && value != "false" && value != "0"
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.Contains(arg[1:], "t") {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareNsxivStickerEnterHook(paths config.Paths) (string, error) {
+	root := strings.TrimSpace(paths.TransientDir)
+	if root == "" {
+		root = os.TempDir()
+	}
+	parent := filepath.Join(root, "stickers")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("create nsxiv sticker hook root: %w", err)
+	}
+	configRoot, err := os.MkdirTemp(parent, "nsxiv-config-*")
+	if err != nil {
+		return "", fmt.Errorf("create nsxiv sticker hook config: %w", err)
+	}
+	execDir := filepath.Join(configRoot, "nsxiv", "exec")
+	if err := os.MkdirAll(execDir, 0o700); err != nil {
+		_ = os.RemoveAll(configRoot)
+		return "", fmt.Errorf("create nsxiv sticker hook dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(execDir, "image-info"), []byte(nsxivStickerImageInfoHook), 0o700); err != nil {
+		_ = os.RemoveAll(configRoot)
+		return "", fmt.Errorf("write nsxiv sticker hook: %w", err)
+	}
+	return configRoot, nil
+}
+
+func stickerPickerEnv(base []string, hookRoot, chooserPath string) []string {
+	env := append([]string(nil), base...)
+	env = setEnvValue(env, "XDG_CONFIG_HOME", hookRoot)
+	env = setEnvValue(env, "VIMWHAT_STICKER_CHOOSER", chooserPath)
+	return env
+}
+
+func setEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 func expandStickerPickerArgs(argv []string, chooserPath, pickerDir string, pickerFiles []string) []string {

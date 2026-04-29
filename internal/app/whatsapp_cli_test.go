@@ -1932,7 +1932,7 @@ func TestHandleStickerSyncRequestKeepsUsableStickersWhenOneDownloadFails(t *test
 	})
 }
 
-func TestHandleStickerSyncRequestReportsConciseErrorWhenAllDownloadsFail(t *testing.T) {
+func TestHandleStickerSyncRequestReportsReasonWhenAllDownloadsFail(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {
@@ -1965,9 +1965,9 @@ func TestHandleStickerSyncRequestReportsConciseErrorWhenAllDownloadsFail(t *test
 	if synced.Err == nil || synced.Stickers != 0 {
 		t.Fatalf("sticker sync result = %+v, want concise fatal error with no cached stickers", synced)
 	}
-	want := "no sticker files cached; 2 metadata record(s) synced, 2 download(s) failed"
-	if synced.Err.Error() != want {
-		t.Fatalf("sticker sync error = %q, want %q", synced.Err.Error(), want)
+	wantPrefix := "no sticker files cached; 2 metadata record(s) synced, 2 download(s) failed"
+	if got := synced.Err.Error(); !strings.HasPrefix(got, wantPrefix) || !strings.Contains(got, "expired media 1") {
+		t.Fatalf("sticker sync error = %q, want prefix %q and first failure reason", got, wantPrefix)
 	}
 	for _, id := range []string{"favorite-sticker-bad-1", "favorite-sticker-bad-2"} {
 		recent, ok, err := db.RecentSticker(ctx, id)
@@ -1981,8 +1981,8 @@ func TestHandleStickerSyncRequestReportsConciseErrorWhenAllDownloadsFail(t *test
 	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "sticker sync failed")
 	})
-	if strings.Contains(update.Status, "expired media") || strings.Contains(update.Status, "cache sticker") {
-		t.Fatalf("status = %q, want concise sync failure", update.Status)
+	if !strings.Contains(update.Status, "expired media 1") || strings.Contains(update.Status, "cache sticker") {
+		t.Fatalf("status = %q, want concise sync failure with first download reason", update.Status)
 	}
 }
 
