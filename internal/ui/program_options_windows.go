@@ -4,17 +4,30 @@ package ui
 
 import (
 	"os"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func programOptions() []tea.ProgramOption {
-	options := []tea.ProgramOption{tea.WithAltScreen()}
+	options := []tea.ProgramOption{tea.WithAltScreen(), tea.WithFPS(windowsTUIFPS())}
 	if windowsReportFocusEnabled() {
 		options = append(options, tea.WithReportFocus())
 	}
 	return options
+}
+
+func windowsTUIFPS() int {
+	value := strings.TrimSpace(os.Getenv("VIMWHAT_TUI_FPS"))
+	if value == "" {
+		return 30
+	}
+	fps, err := strconv.Atoi(value)
+	if err != nil || fps <= 0 {
+		return 30
+	}
+	return fps
 }
 
 func windowsReportFocusEnabled() bool {

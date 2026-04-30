@@ -24,6 +24,7 @@ const (
 
 	PreviewDisplayText    PreviewDisplay = "text"
 	PreviewDisplayOverlay PreviewDisplay = "overlay"
+	PreviewDisplaySixel   PreviewDisplay = "sixel"
 
 	SourceLocal              SourceKind = "local"
 	SourceThumbnail          SourceKind = "thumbnail"
@@ -81,6 +82,9 @@ func (p Preview) Ready() bool {
 	}
 	if p.Display == PreviewDisplayOverlay {
 		return p.SourcePath != "" && p.Width > 0 && p.Height > 0
+	}
+	if p.Display == PreviewDisplaySixel {
+		return len(p.Lines) > 0 && p.Width > 0 && p.Height > 0
 	}
 	return len(p.Lines) > 0
 }
@@ -255,13 +259,13 @@ func (p Previewer) renderSource(ctx context.Context, req PreviewRequest, source 
 		if hasCommand("chafa") {
 			lines, err := runChafa(timeoutCtx, "sixels", req.Width, req.Height, source, false)
 			if err == nil {
-				return lines, BackendSixel, PreviewDisplayText, nil
+				return lines, BackendSixel, platformSixelPreviewDisplay(), nil
 			}
 		}
 		if hasCommand("img2sixel") {
 			lines, err := runImg2Sixel(timeoutCtx, req.Width, req.Height, source)
 			if err == nil {
-				return lines, BackendSixel, PreviewDisplayText, nil
+				return lines, BackendSixel, platformSixelPreviewDisplay(), nil
 			}
 		}
 		return p.renderChafaFallback(timeoutCtx, req, source)

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -194,8 +195,19 @@ type mediaOverlayMsg struct {
 	Err       error
 }
 
+type sixelOverlayMsg struct {
+	Signature string
+	Err       error
+}
+
 type overlayResumeMsg struct {
 	Generation int
+}
+
+type terminalSizePolledMsg struct {
+	Width  int
+	Height int
+	OK     bool
 }
 
 type MediaOpenFinishedMsg struct {
@@ -271,6 +283,8 @@ type Options struct {
 	ActiveChatChanged        func(chatID string)
 	AppFocusChanged          func(focused bool)
 	VisibleChatsChanged      func(chatIDs []string)
+	SixelWriter              io.Writer
+	PollTerminalSize         bool
 }
 
 type Model struct {
@@ -300,6 +314,11 @@ type Model struct {
 	overlaySignature           string
 	overlaySyncPending         bool
 	overlayPendingSignature    string
+	sixel                      *media.SixelManager
+	sixelWriter                io.Writer
+	sixelSignature             string
+	sixelSyncPending           bool
+	sixelPendingSignature      string
 	mediaOverlayPaused         bool
 	avatarOverlayPaused        bool
 	overlayPauseGeneration     int
@@ -410,6 +429,7 @@ type Model struct {
 	messageLimitsByChat        map[string]int
 	historyRequestedByChat     map[string]bool
 	syncOverlay                syncOverlayState
+	pollTerminalSize           bool
 }
 
 const messageLoadLimit = 200
@@ -417,6 +437,8 @@ const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
 const syncOverlayCompleteDelay = 600 * time.Millisecond
 const overlayResumeDelay = 80 * time.Millisecond
+const sixelPaintDelay = 40 * time.Millisecond
+const terminalSizePollInterval = 250 * time.Millisecond
 
 type syncOverlayState struct {
 	Visible        bool
@@ -441,7 +463,11 @@ func Run(opts Options) (err error) {
 		}
 	}()
 	opts.ReserveLastColumn = opts.ReserveLastColumn || report.LastColumnGuard
-	p := tea.NewProgram(NewModel(opts), programOptions()...)
+	opts.PollTerminalSize = opts.PollTerminalSize || platformTerminalSizePollingEnabled()
+	output := newLockedTerminalFile(os.Stdout)
+	opts.SixelWriter = output
+	options := append(programOptions(), tea.WithOutput(output))
+	p := tea.NewProgram(NewModel(opts), options...)
 	final, err := p.Run()
 	if closer, ok := final.(interface{ Close() error }); ok {
 		if closeErr := closer.Close(); err == nil {
@@ -475,6 +501,7 @@ func NewModel(opts Options) Model {
 		previewCache:             map[string]media.Preview{},
 		previewInflight:          map[string]bool{},
 		previewRequested:         map[string]bool{},
+		sixelWriter:              opts.SixelWriter,
 		mediaDownloadInflight:    map[string]bool{},
 		paths:                    opts.Paths,
 		config:                   normalizeConfig(opts.Config),
@@ -525,7 +552,9 @@ func NewModel(opts Options) Model {
 		presenceSubscribed:       map[string]bool{},
 		messageLimitsByChat:      map[string]int{},
 		historyRequestedByChat:   map[string]bool{},
+		pollTerminalSize:         opts.PollTerminalSize,
 	}
+	model.ensureSixelManager()
 	model.reportActiveChatChanged()
 	model.reportVisibleChatsChanged()
 	return model
@@ -575,6 +604,11 @@ func (m Model) Close() error {
 			err = closeErr
 		}
 	}
+	if m.sixel != nil {
+		if closeErr := m.sixel.Close(); err == nil {
+			err = closeErr
+		}
+	}
 	return err
 }
 
@@ -595,7 +629,7 @@ func cloneDrafts(input map[string]string) map[string]string {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.waitForLiveUpdateCmd()
+	return batchCmds(m.waitForLiveUpdateCmd(), m.terminalSizePollCmd())
 }
 
 func (m Model) waitForLiveUpdateCmd() tea.Cmd {
@@ -762,6 +796,18 @@ func refreshDebounceCmd() tea.Cmd {
 func overlayResumeCmd(generation int) tea.Cmd {
 	return tea.Tick(overlayResumeDelay, func(time.Time) tea.Msg {
 		return overlayResumeMsg{Generation: generation}
+	})
+}
+
+var currentTerminalSize = platformTerminalSize
+
+func (m Model) terminalSizePollCmd() tea.Cmd {
+	if !m.pollTerminalSize {
+		return nil
+	}
+	return tea.Tick(terminalSizePollInterval, func(time.Time) tea.Msg {
+		width, height, ok := currentTerminalSize()
+		return terminalSizePolledMsg{Width: width, Height: height, OK: ok}
 	})
 }
 
@@ -959,6 +1005,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.overlayPendingSignature = ""
 		}
 		return m, nil
+	case sixelOverlayMsg:
+		if msg.Err != nil {
+			m.sixelSignature = ""
+			m.sixelSyncPending = false
+			m.sixelPendingSignature = ""
+			m.status = fmt.Sprintf("sixel failed: %s", shortError(msg.Err))
+			return m, nil
+		}
+		if m.sixelSyncPending && msg.Signature == m.sixelPendingSignature {
+			m.sixelSignature = msg.Signature
+			m.sixelSyncPending = false
+			m.sixelPendingSignature = ""
+		}
+		return m, nil
 	case overlayResumeMsg:
 		if msg.Generation != m.overlayPauseGeneration {
 			return m, nil
@@ -966,10 +1026,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.overlay != nil {
 			m.overlay.Invalidate()
 		}
+		if m.sixel != nil {
+			m.sixel.Invalidate()
+		}
 		m.mediaOverlayPaused = false
 		m.avatarOverlayPaused = false
 		m.overlayResumeQueued = 0
 		return m.withPreviewCmd(nil)
+	case terminalSizePolledMsg:
+		nextPoll := m.terminalSizePollCmd()
+		if !msg.OK || msg.Width <= 0 || msg.Height <= 0 {
+			return m, nextPoll
+		}
+		if msg.Width == m.width && msg.Height == m.height {
+			return m, nextPoll
+		}
+		m.width = msg.Width
+		m.height = msg.Height
+		m.compactLayout = msg.Width < 110
+		if (!m.infoPaneVisible || m.compactLayout) && m.focus == FocusPreview {
+			m.focus = FocusMessages
+		}
+		m.keepActiveChatVisible()
+		next, cmd := m.withPreviewCmd(nil)
+		return next, batchCmds(cmd, nextPoll)
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
 		if next, ok := updated.(Model); ok {
@@ -2366,8 +2446,9 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		if m.previewReport.Selected == media.BackendUeberzugPP && m.overlay == nil {
 			m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 		}
+		m.ensureSixelManager()
 		m.status = fmt.Sprintf("preview backend: %s", m.previewReport.Selected)
-		return m, m.clearOverlayCmd()
+		return m, batchCmds(m.clearOverlayCmd(), m.clearSixelCmd())
 	case cmd == "preview-cache clear" || cmd == "clear-preview-cache":
 		return m.clearMediaPreviews("preview cache cleared")
 	case cmd == "media-hide" || cmd == "media hide" || cmd == "media-previews hide" || cmd == "media previews hide":
@@ -3253,7 +3334,7 @@ func (m *Model) showCurrentChatLatest() {
 
 func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	if m.quitting {
-		return m, batchCmds(cmd, m.clearOverlayCmd())
+		return m, batchCmds(cmd, m.clearOverlayCmd(), m.clearSixelCmd())
 	}
 	next := m
 	next.reportVisibleChatsChanged()
@@ -3262,7 +3343,8 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	next, previewCmd := next.queueRequestedPreviewCmd()
 	resumeCmd := next.queueOverlayResumeCmd()
 	overlayCmd := next.syncOverlayCmd()
-	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd, resumeCmd)
+	sixelCmd := next.syncSixelCmd()
+	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd, sixelCmd, resumeCmd)
 }
 
 func (m *Model) pauseOverlays(mediaPreview, chatAvatars bool) {
@@ -3279,6 +3361,9 @@ func (m *Model) pauseOverlays(mediaPreview, chatAvatars bool) {
 	m.overlayResumeQueued = 0
 	if m.overlay != nil {
 		m.overlay.Invalidate()
+	}
+	if m.sixel != nil {
+		m.sixel.Invalidate()
 	}
 }
 
@@ -3301,6 +3386,19 @@ func (m *Model) clearOverlayPause() {
 	m.avatarOverlayPaused = false
 	m.overlayPauseGeneration++
 	m.overlayResumeQueued = 0
+	if m.overlay != nil {
+		m.overlay.Invalidate()
+	}
+	if m.sixel != nil {
+		m.sixel.Invalidate()
+	}
+}
+
+func (m *Model) ensureSixelManager() {
+	if m.previewReport.Selected != media.BackendSixel || m.sixel != nil || m.sixelWriter == nil {
+		return
+	}
+	m.sixel = media.NewSixelManagerForWriter(m.sixelWriter)
 }
 
 func batchCmds(cmds ...tea.Cmd) tea.Cmd {
@@ -3407,7 +3505,7 @@ func (m Model) hasVisibleAvatarFallbackCandidate() bool {
 
 func (m *Model) showInlineFallbackPrompt() {
 	m.inlineFallbackPrompt = true
-	m.status = "sixel unavailable; choose an inline image fallback"
+	m.status = "choose an inline image fallback"
 }
 
 func (m Model) queueRequestedPreviewCmd() (Model, tea.Cmd) {
@@ -3568,12 +3666,84 @@ func (m *Model) clearOverlayCmd() tea.Cmd {
 		m.overlayPendingSignature = ""
 		return nil
 	}
+	if signature == m.overlaySignature || (m.overlaySyncPending && signature == m.overlayPendingSignature) {
+		return nil
+	}
 	m.overlaySyncPending = true
 	m.overlayPendingSignature = signature
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
 		return mediaOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+		}
+	}
+}
+
+func (m *Model) syncSixelCmd() tea.Cmd {
+	if m.previewReport.Selected != media.BackendSixel {
+		return m.clearSixelCmd()
+	}
+	if m.helpVisible || m.syncOverlay.Visible {
+		return m.clearSixelCmd()
+	}
+	placements := m.syncableSixelPlacements()
+	signature := media.SixelPlacementsSignature(placements)
+	if signature == m.sixelSignature || (m.sixelSyncPending && signature == m.sixelPendingSignature) {
+		return nil
+	}
+	if signature == "" {
+		return m.clearSixelCmd()
+	}
+	m.ensureSixelManager()
+	if m.sixel == nil {
+		m.sixelSignature = ""
+		m.sixelSyncPending = false
+		m.sixelPendingSignature = ""
+		return nil
+	}
+	m.sixelSyncPending = true
+	m.sixelPendingSignature = signature
+	manager := m.sixel
+	epoch := manager.Epoch()
+	return func() tea.Msg {
+		time.Sleep(sixelPaintDelay)
+		return sixelOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(context.Background(), epoch, placements),
+		}
+	}
+}
+
+func (m Model) syncableSixelPlacements() []media.SixelPlacement {
+	var placements []media.SixelPlacement
+	if !m.mediaOverlayPaused {
+		placements = append(placements, m.visibleSixelMediaPlacements()...)
+	}
+	if !m.avatarOverlayPaused {
+		placements = append(placements, m.visibleSixelChatAvatarPlacements()...)
+	}
+	return placements
+}
+
+func (m *Model) clearSixelCmd() tea.Cmd {
+	signature := ""
+	if m.sixel == nil {
+		m.sixelSignature = ""
+		m.sixelSyncPending = false
+		m.sixelPendingSignature = ""
+		return nil
+	}
+	if signature == m.sixelSignature || (m.sixelSyncPending && signature == m.sixelPendingSignature) {
+		return nil
+	}
+	m.sixelSyncPending = true
+	m.sixelPendingSignature = signature
+	manager := m.sixel
+	epoch := manager.Epoch()
+	return func() tea.Msg {
+		return sixelOverlayMsg{
 			Signature: signature,
 			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
 		}
@@ -4202,11 +4372,14 @@ func (m Model) clearMediaPreviews(status string) (tea.Model, tea.Cmd) {
 	if m.overlay != nil {
 		m.overlay.Invalidate()
 	}
+	if m.sixel != nil {
+		m.sixel.Invalidate()
+	}
 	if strings.TrimSpace(status) == "" {
 		status = "media previews unloaded"
 	}
 	m.status = status
-	return m, m.clearOverlayCmd()
+	return m, batchCmds(m.clearOverlayCmd(), m.clearSixelCmd())
 }
 
 func saveMediaToDownloads(item store.MediaMetadata, downloadsDir string) (string, error) {

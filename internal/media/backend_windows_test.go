@@ -3,7 +3,10 @@
 package media
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -98,7 +101,7 @@ func TestDetectWindowsForcedSixelBeatsExternal(t *testing.T) {
 	}
 }
 
-func TestDetectWindowsAutoKeepsExternalWhenWezTermSupportsSixel(t *testing.T) {
+func TestDetectWindowsAutoPrefersSixelWhenWezTermSupportsSixel(t *testing.T) {
 	prevLookPath := lookPath
 	lookPath = func(name string) (string, error) {
 		switch name {
@@ -117,8 +120,8 @@ func TestDetectWindowsAutoKeepsExternalWhenWezTermSupportsSixel(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "wezterm")
 
 	report := Detect("auto")
-	if report.Selected != BackendExternal {
-		t.Fatalf("Selected = %q, want %q", report.Selected, BackendExternal)
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
 	}
 	if report.Reasons[BackendSixel] != "available" {
 		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
@@ -149,7 +152,7 @@ func TestDetectWindowsExplicitSixelSelectsSixel(t *testing.T) {
 	}
 }
 
-func TestDetectWindowsAutoDoesNotSelectSixelWithoutForce(t *testing.T) {
+func TestDetectWindowsAutoSelectsSixelWithoutExternalOpener(t *testing.T) {
 	prevLookPath := lookPath
 	lookPath = func(name string) (string, error) {
 		if name == "img2sixel" {
@@ -164,8 +167,8 @@ func TestDetectWindowsAutoDoesNotSelectSixelWithoutForce(t *testing.T) {
 	t.Setenv("TERM_PROGRAM", "wezterm")
 
 	report := Detect("auto")
-	if report.Selected != BackendNone {
-		t.Fatalf("Selected = %q, want %q", report.Selected, BackendNone)
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
 	}
 	if report.Reasons[BackendSixel] != "available" {
 		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
@@ -187,5 +190,46 @@ func TestDetectWindowsNoBackend(t *testing.T) {
 	}
 	if report.Reasons[BackendExternal] != "rundll32.exe/explorer.exe not found in PATH" {
 		t.Fatalf("external reason = %q", report.Reasons[BackendExternal])
+	}
+}
+
+func TestPreviewerReturnsSixelDisplayOnWindows(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "img2sixel" {
+			return `C:\Program Files\libsixel\img2sixel.exe`, nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return []byte("\x1bPqfake\x1b\\\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendSixel}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if preview.Display != PreviewDisplaySixel || !preview.Ready() {
+		t.Fatalf("preview = %+v, want ready sixel display", preview)
 	}
 }

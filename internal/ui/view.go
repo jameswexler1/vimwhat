@@ -239,8 +239,8 @@ func (m Model) renderInlineFallbackPrompt(width, height int) string {
 
 	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
 	lines := []string{
-		lipgloss.NewStyle().Foreground(warnFG).Bold(true).Render(truncateDisplay("Sixel image rendering unavailable", contentWidth)),
-		lipgloss.NewStyle().Foreground(softFG).Render(wrapPlainText("For sharper inline images on Windows, run vimwhat in WezTerm or another Sixel-capable terminal. Chafa can render a lower-resolution fallback now.", contentWidth)),
+		lipgloss.NewStyle().Foreground(warnFG).Bold(true).Render(truncateDisplay("Inline image fallback available", contentWidth)),
+		lipgloss.NewStyle().Foreground(softFG).Render(wrapPlainText("The selected preview backend opens images externally. Chafa can render a lower-resolution inline fallback now.", contentWidth)),
 		"",
 		lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay("Enter use Chafa fallback  Esc keep external opener", contentWidth)),
 	}
@@ -937,6 +937,9 @@ func (m Model) renderChatAvatarLines(chat store.Chat, title string, border lipgl
 		if preview.Display == media.PreviewDisplayOverlay && m.chatAvatarOverlayVisible(preview) {
 			return blankChatAvatarLines(max(chatAvatarPreviewWidth, preview.Width))
 		}
+		if preview.Display == media.PreviewDisplaySixel {
+			return blankChatAvatarLines(max(chatAvatarPreviewWidth, preview.Width))
+		}
 		if len(preview.Lines) > 0 {
 			return normalizeChatAvatarLines(preview.Lines, max(chatAvatarPreviewWidth, preview.Width))
 		}
@@ -1599,6 +1602,15 @@ func overlayPreviewVisible(preview media.Preview, visibleOverlays map[string]boo
 }
 
 func renderPreviewLines(preview media.Preview, width int, overlayVisible bool) []string {
+	if preview.Display == media.PreviewDisplaySixel {
+		height := max(1, preview.Height)
+		lineWidth := min(width, max(1, preview.Width))
+		lines := make([]string, height)
+		for i := range lines {
+			lines[i] = strings.Repeat(" ", lineWidth)
+		}
+		return lines
+	}
 	if preview.Display != media.PreviewDisplayOverlay {
 		return preview.Lines
 	}

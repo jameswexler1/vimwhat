@@ -35,7 +35,7 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 		return media.Placement{}, false
 	}
 	preview, ok := m.mediaPreview(message, item, m.messagePaneContentWidth())
-	if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+	if !ok || !previewIsOverlay(preview) || !preview.Ready() {
 		return media.Placement{}, false
 	}
 	identifier := overlayIdentifier(preview.Key)
@@ -90,7 +90,7 @@ func (m Model) visibleMediaPlacements() []media.Placement {
 	if !ok {
 		return nil
 	}
-	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height)
+	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height, previewIsOverlay)
 	if len(candidates) == 0 || len(viewportRefs) == 0 {
 		return nil
 	}
@@ -155,7 +155,7 @@ func (m Model) visibleChatAvatarPlacements() []media.Placement {
 	for i := start; i < end; i++ {
 		chat := m.chats[i]
 		preview, ok := m.chatAvatarPreview(chat)
-		if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+		if !ok || !previewIsOverlay(preview) || !preview.Ready() {
 			continue
 		}
 		row := i - start
@@ -171,6 +171,98 @@ func (m Model) visibleChatAvatarPlacements() []media.Placement {
 			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
 			Path:       preview.SourcePath,
 			Scaler:     "fit_contain",
+		})
+	}
+	return placements
+}
+
+func (m Model) visibleSixelMediaPlacements() []media.SixelPlacement {
+	if m.layoutWidth() <= 0 || m.height <= 0 {
+		return nil
+	}
+	geometry, ok := m.messagePaneGeometry()
+	if !ok {
+		return nil
+	}
+	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height, previewIsSixel)
+	if len(candidates) == 0 || len(viewportRefs) == 0 {
+		return nil
+	}
+
+	rowsByTarget := make(map[string]map[int]int, len(candidates))
+	firstRows := make(map[string]int, len(candidates))
+	for identifier := range candidates {
+		firstRows[identifier] = -1
+	}
+	for y, ref := range viewportRefs {
+		if ref.target == "" {
+			continue
+		}
+		if rowsByTarget[ref.target] == nil {
+			rowsByTarget[ref.target] = map[int]int{}
+		}
+		rowsByTarget[ref.target][ref.row] = y
+		if ref.row == 0 {
+			firstRows[ref.target] = y
+		}
+	}
+
+	placements := make([]media.SixelPlacement, 0, len(candidates))
+	for identifier, candidate := range candidates {
+		preview := candidate.preview
+		firstRow := firstRows[identifier]
+		if firstRow == -1 || len(rowsByTarget[identifier]) < preview.Height {
+			continue
+		}
+		xOffset := m.mediaXOffset(geometry.width, candidate)
+		yOffset := 1 + firstRow
+		placements = append(placements, media.SixelPlacement{
+			Identifier: identifier,
+			X:          geometry.x + xOffset,
+			Y:          geometry.y + yOffset,
+			MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
+			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+			Payload:    preview.Lines,
+		})
+	}
+	return placements
+}
+
+func (m Model) visibleSixelChatAvatarPlacements() []media.SixelPlacement {
+	if m.layoutWidth() <= 0 || m.height <= 0 {
+		return nil
+	}
+	geometry, ok := m.chatPaneGeometry()
+	if !ok {
+		return nil
+	}
+	visible := visibleChatCellCount(geometry.height)
+	if visible <= 0 || len(m.chats) == 0 {
+		return nil
+	}
+	start := adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visible)
+	end := min(len(m.chats), start+visible)
+
+	const avatarXOffset = 2
+	placements := make([]media.SixelPlacement, 0, end-start)
+	for i := start; i < end; i++ {
+		chat := m.chats[i]
+		preview, ok := m.chatAvatarPreview(chat)
+		if !ok || !previewIsSixel(preview) || !preview.Ready() {
+			continue
+		}
+		row := i - start
+		yOffset := chatHeaderHeight + row*chatCellHeight + 1
+		if yOffset+preview.Height > geometry.height {
+			continue
+		}
+		placements = append(placements, media.SixelPlacement{
+			Identifier: overlayIdentifier(preview.Key),
+			X:          geometry.x + avatarXOffset,
+			Y:          geometry.y + yOffset,
+			MaxWidth:   min(preview.Width, max(1, geometry.width-avatarXOffset)),
+			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+			Payload:    preview.Lines,
 		})
 	}
 	return placements
@@ -241,7 +333,7 @@ func (m Model) chatPaneGeometry() (paneGeometry, bool) {
 	}, true
 }
 
-func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementCandidate, []messageLineRef) {
+func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview) bool) (map[string]mediaPlacementCandidate, []messageLineRef) {
 	if width <= 0 || height <= 1 {
 		return nil, nil
 	}
@@ -270,7 +362,7 @@ func (m Model) mediaPlacementRefs(width, height int) (map[string]mediaPlacementC
 
 		for _, item := range message.Media {
 			preview, ok := m.mediaPreview(message, item, width)
-			if !ok || preview.Display != media.PreviewDisplayOverlay || !preview.Ready() {
+			if !ok || !include(preview) || !preview.Ready() {
 				continue
 			}
 			lineOffset, ok := m.previewLineOffset(message, item, preview)
@@ -376,4 +468,12 @@ func maxRenderedWidth(value string) int {
 func overlayIdentifier(key string) string {
 	sum := sha1.Sum([]byte(key))
 	return "vimwhat-" + hex.EncodeToString(sum[:8])
+}
+
+func previewIsOverlay(preview media.Preview) bool {
+	return preview.Display == media.PreviewDisplayOverlay
+}
+
+func previewIsSixel(preview media.Preview) bool {
+	return preview.Display == media.PreviewDisplaySixel
 }

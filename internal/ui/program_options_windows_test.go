@@ -52,6 +52,22 @@ func TestWindowsReportFocusDisableWins(t *testing.T) {
 	}
 }
 
+func TestWindowsTUIFPSDefaultsToThirty(t *testing.T) {
+	t.Setenv("VIMWHAT_TUI_FPS", "")
+
+	if got := windowsTUIFPS(); got != 30 {
+		t.Fatalf("windowsTUIFPS() = %d, want 30", got)
+	}
+}
+
+func TestWindowsTUIFPSCanBeOverridden(t *testing.T) {
+	t.Setenv("VIMWHAT_TUI_FPS", "45")
+
+	if got := windowsTUIFPS(); got != 45 {
+		t.Fatalf("windowsTUIFPS() = %d, want 45", got)
+	}
+}
+
 func TestWindowsOutputModeRequestsVirtualTerminalAndDelayedNewline(t *testing.T) {
 	mode := windowsOutputMode(0, true)
 	for _, flag := range []uint32{

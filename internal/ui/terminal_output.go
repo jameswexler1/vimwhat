@@ -2,8 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 type TerminalReport struct {
@@ -67,4 +69,31 @@ func joinTerminalDetails(values ...string) string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+type lockedTerminalFile struct {
+	file *os.File
+	mu   sync.Mutex
+}
+
+func newLockedTerminalFile(file *os.File) *lockedTerminalFile {
+	return &lockedTerminalFile{file: file}
+}
+
+func (f *lockedTerminalFile) Read(p []byte) (int, error) {
+	return f.file.Read(p)
+}
+
+func (f *lockedTerminalFile) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.file.Write(p)
+}
+
+func (f *lockedTerminalFile) Close() error {
+	return nil
+}
+
+func (f *lockedTerminalFile) Fd() uintptr {
+	return f.file.Fd()
 }
