@@ -144,7 +144,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 		if event.Receipt.MessageID == "" {
 			return ApplyResult{}, fmt.Errorf("receipt message id is required")
 		}
-		_, err := i.Store.UpdateMessageStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
+		_, err := i.Store.UpdateMessageReceiptStatusIfExists(ctx, event.Receipt.MessageID, event.Receipt.Status)
 		return ApplyResult{}, err
 	case EventReactionUpdate:
 		return ApplyResult{}, i.Store.UpsertReaction(ctx, store.Reaction{

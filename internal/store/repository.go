@@ -822,7 +822,7 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 }
 
 func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status string) error {
-	updated, err := s.UpdateMessageStatusIfExists(ctx, messageID, status)
+	updated, err := s.updateMessageStatusIfExists(ctx, messageID, status, false)
 	if err != nil {
 		return err
 	}
@@ -833,11 +833,34 @@ func (s *Store) UpdateMessageStatus(ctx context.Context, messageID, status strin
 }
 
 func (s *Store) UpdateMessageStatusIfExists(ctx context.Context, messageID, status string) (bool, error) {
+	return s.updateMessageStatusIfExists(ctx, messageID, status, false)
+}
+
+func (s *Store) UpdateMessageReceiptStatusIfExists(ctx context.Context, messageID, status string) (bool, error) {
+	return s.updateMessageStatusIfExists(ctx, messageID, status, true)
+}
+
+func (s *Store) updateMessageStatusIfExists(ctx context.Context, messageID, status string, monotonic bool) (bool, error) {
 	if strings.TrimSpace(messageID) == "" {
 		return false, fmt.Errorf("message id is required")
 	}
-	if strings.TrimSpace(status) == "" {
+	status = strings.TrimSpace(status)
+	if status == "" {
 		return false, fmt.Errorf("message status is required")
+	}
+
+	if monotonic {
+		var current string
+		err := s.db.QueryRowContext(ctx, `SELECT status FROM messages WHERE id = ?`, messageID).Scan(&current)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return false, nil
+			}
+			return false, fmt.Errorf("load message status %s: %w", messageID, err)
+		}
+		if messageStatusRank(current) > messageStatusRank(status) {
+			return true, nil
+		}
 	}
 
 	result, err := s.db.ExecContext(ctx, `

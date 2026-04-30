@@ -3610,7 +3610,8 @@ func TestMessageStatusTicks(t *testing.T) {
 		"sent":       "✓",
 		"server_ack": "✓",
 		"delivered":  "✓✓",
-		"read":       "✓✓",
+		"read":       "[✓✓]",
+		"played":     "[✓✓]",
 		"custom":     "✓",
 	}
 	for status, want := range tests {
@@ -3682,10 +3683,10 @@ func TestShortOutgoingBubbleIsSmallAndRightAligned(t *testing.T) {
 	if leadingSpaces(bodyLine) < 50 {
 		t.Fatalf("short outgoing bubble was not right aligned: %q\n%s", bodyLine, view)
 	}
-	if got := lipgloss.Width(strings.TrimLeft(bodyLine, " ")); got > 12 {
-		t.Fatalf("short outgoing bubble line width = %d, want compact <= 12\n%s", got, view)
+	if got := lipgloss.Width(strings.TrimLeft(bodyLine, " ")); got > 15 {
+		t.Fatalf("short outgoing bubble line width = %d, want compact <= 15\n%s", got, view)
 	}
-	if !strings.Contains(view, "20:59 ✓✓") {
+	if !strings.Contains(view, "20:59 [✓✓]") {
 		t.Fatalf("short outgoing bubble missing compact read receipt\n%s", view)
 	}
 }

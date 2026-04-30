@@ -84,6 +84,16 @@ func TestIngestorAppliesChatMessageMediaAndReceiptEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Apply(receipt) error = %v", err)
 	}
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventReceiptUpdate,
+		Receipt: ReceiptEvent{
+			MessageID: "msg-1",
+			ChatID:    "chat-1",
+			Status:    "delivered",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(late receipt) error = %v", err)
+	}
 
 	chats, err := db.ListChats(ctx)
 	if err != nil {

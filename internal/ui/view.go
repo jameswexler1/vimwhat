@@ -1871,8 +1871,10 @@ func messageStatusTicks(status string) string {
 		return "…"
 	case "sent", "server_ack", "server ack", "ack":
 		return "✓"
-	case "delivered", "read":
+	case "delivered":
 		return "✓✓"
+	case "read", "played":
+		return "[✓✓]"
 	case "failed", "error":
 		return "!"
 	default:

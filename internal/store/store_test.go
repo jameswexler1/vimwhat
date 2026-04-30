@@ -198,6 +198,90 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReceiptStatusUpdatesAreMonotonic(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.AddMessage(ctx, Message{
+		ID:         "m-1",
+		ChatID:     "chat-1",
+		ChatJID:    "chat-1@s.whatsapp.net",
+		Sender:     "me",
+		SenderJID:  "me",
+		Body:       "outgoing",
+		IsOutgoing: true,
+		Status:     "delivered",
+	}); err != nil {
+		t.Fatalf("AddMessage() error = %v", err)
+	}
+
+	updated, err := db.UpdateMessageReceiptStatusIfExists(ctx, "m-1", "read")
+	if err != nil {
+		t.Fatalf("UpdateMessageReceiptStatusIfExists(read) error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateMessageReceiptStatusIfExists(read) updated = false, want true")
+	}
+	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "read")
+
+	updated, err = db.UpdateMessageReceiptStatusIfExists(ctx, "m-1", "delivered")
+	if err != nil {
+		t.Fatalf("UpdateMessageReceiptStatusIfExists(delivered) error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateMessageReceiptStatusIfExists(delivered) updated = false for existing message")
+	}
+	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "read")
+
+	updated, err = db.UpdateMessageReceiptStatusIfExists(ctx, "m-1", "played")
+	if err != nil {
+		t.Fatalf("UpdateMessageReceiptStatusIfExists(played) error = %v", err)
+	}
+	if !updated {
+		t.Fatal("UpdateMessageReceiptStatusIfExists(played) updated = false for existing message")
+	}
+	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "played")
+
+	updated, err = db.UpdateMessageReceiptStatusIfExists(ctx, "missing", "read")
+	if err != nil {
+		t.Fatalf("UpdateMessageReceiptStatusIfExists(missing) error = %v", err)
+	}
+	if updated {
+		t.Fatal("UpdateMessageReceiptStatusIfExists(missing) updated = true, want false")
+	}
+
+	if err := db.UpdateMessageStatus(ctx, "m-1", "failed"); err != nil {
+		t.Fatalf("UpdateMessageStatus(failed) error = %v", err)
+	}
+	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "failed")
+}
+
+func assertMessageStatus(t *testing.T, db *Store, ctx context.Context, chatID, messageID, want string) {
+	t.Helper()
+	messages, err := db.ListMessages(ctx, chatID, 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	for _, message := range messages {
+		if message.ID == messageID {
+			if message.Status != want {
+				t.Fatalf("message %s status = %q, want %q", messageID, message.Status, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("message %s not found in %+v", messageID, messages)
+}
+
 func TestAccentAwareSearch(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
