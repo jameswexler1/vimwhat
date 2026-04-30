@@ -81,6 +81,7 @@ type Adapter interface {
 	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
 	RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error
+	SyncAppState(ctx context.Context) ([]Event, error)
 	SyncRecentStickers(ctx context.Context) ([]Event, error)
 	DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error
 	GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error)
@@ -1086,7 +1087,7 @@ func (c *Client) RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor,
 	return nil
 }
 
-func (c *Client) SyncRecentStickers(ctx context.Context) ([]Event, error) {
+func (c *Client) SyncAppState(ctx context.Context) ([]Event, error) {
 	if c == nil || c.client == nil {
 		return nil, ErrClientNotOpen
 	}
@@ -1105,19 +1106,41 @@ func (c *Client) SyncRecentStickers(ctx context.Context) ([]Event, error) {
 			if ctx.Err() != nil {
 				return out, ctx.Err()
 			}
-			syncErr = errors.Join(syncErr, fmt.Errorf("fetch whatsapp sticker app state %s: %w", name, err))
+			syncErr = errors.Join(syncErr, fmt.Errorf("fetch whatsapp app state %s: %w", name, err))
 			continue
 		}
 		for _, raw := range rawEvents {
 			for _, event := range c.normalizeWhatsmeowEvent(ctx, raw) {
-				switch event.Kind {
-				case EventRecentSticker, EventRecentStickerRemove:
+				if syncedAppStateEvent(event) {
 					out = append(out, event)
 				}
 			}
 		}
 	}
 	return out, syncErr
+}
+
+func (c *Client) SyncRecentStickers(ctx context.Context) ([]Event, error) {
+	events, err := c.SyncAppState(ctx)
+	out := make([]Event, 0, len(events))
+	for _, event := range events {
+		switch event.Kind {
+		case EventRecentSticker, EventRecentStickerRemove:
+			out = append(out, event)
+		}
+	}
+	return out, err
+}
+
+func syncedAppStateEvent(event Event) bool {
+	switch event.Kind {
+	case EventRecentSticker, EventRecentStickerRemove:
+		return true
+	case EventChatUpsert:
+		return event.Chat.MutedKnown || event.Chat.PinnedKnown
+	default:
+		return false
+	}
 }
 
 func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDescriptor, targetPath string) error {
@@ -1514,7 +1537,10 @@ type ChatEvent struct {
 	Unread        int
 	UnreadKnown   bool
 	Pinned        bool
+	PinnedKnown   bool
 	Muted         bool
+	MutedKnown    bool
+	MutedUntil    time.Time
 	LastMessageAt time.Time
 	Historical    bool
 }

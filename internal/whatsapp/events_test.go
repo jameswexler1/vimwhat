@@ -9,6 +9,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
+	waSyncAction "go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/proto/waWeb"
 	wastore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
@@ -569,6 +570,53 @@ func TestNormalizeGroupInfoUsesSubjectTitle(t *testing.T) {
 		normalized[0].Chat.Title != "Project Group" ||
 		normalized[0].Chat.TitleSource != store.ChatTitleSourceGroupSubject {
 		t.Fatalf("group info normalized to %+v", normalized)
+	}
+}
+
+func TestNormalizeMuteEventUpdatesChatSettings(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	mutedUntil := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+
+	normalized := normalizeWhatsmeowEvent(&events.Mute{
+		JID: chat,
+		Action: &waSyncAction.MuteAction{
+			Muted:            proto.Bool(true),
+			MuteEndTimestamp: proto.Int64(mutedUntil.UnixMilli()),
+		},
+	})
+	if len(normalized) != 1 || normalized[0].Kind != EventChatUpsert {
+		t.Fatalf("mute normalized = %+v, want chat upsert", normalized)
+	}
+	got := normalized[0].Chat
+	if got.ID != chat.String() || !got.MutedKnown || !got.Muted || !got.MutedUntil.Equal(mutedUntil) {
+		t.Fatalf("mute chat event = %+v, want known timed mute", got)
+	}
+
+	normalized = normalizeWhatsmeowEvent(&events.Mute{
+		JID: chat,
+		Action: &waSyncAction.MuteAction{
+			Muted: proto.Bool(false),
+		},
+	})
+	if len(normalized) != 1 || !normalized[0].Chat.MutedKnown || normalized[0].Chat.Muted || !normalized[0].Chat.MutedUntil.IsZero() {
+		t.Fatalf("unmute normalized = %+v, want known unmuted chat", normalized)
+	}
+}
+
+func TestNormalizePinEventUpdatesChatSettings(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	normalized := normalizeWhatsmeowEvent(&events.Pin{
+		JID: chat,
+		Action: &waSyncAction.PinAction{
+			Pinned: proto.Bool(true),
+		},
+	})
+	if len(normalized) != 1 || normalized[0].Kind != EventChatUpsert {
+		t.Fatalf("pin normalized = %+v, want chat upsert", normalized)
+	}
+	got := normalized[0].Chat
+	if got.ID != chat.String() || !got.PinnedKnown || !got.Pinned {
+		t.Fatalf("pin chat event = %+v, want known pinned chat", got)
 	}
 }
 

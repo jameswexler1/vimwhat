@@ -29,12 +29,14 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			Unread:        event.Chat.Unread,
 			Pinned:        event.Chat.Pinned,
 			Muted:         event.Chat.Muted,
+			MutedUntil:    event.Chat.MutedUntil,
 			LastMessageAt: event.Chat.LastMessageAt,
 		}
-		if event.Chat.UnreadKnown {
-			return ApplyResult{}, i.Store.UpsertChat(ctx, chat)
-		}
-		return ApplyResult{}, i.Store.UpsertChatPreserveUnread(ctx, chat)
+		return ApplyResult{}, i.Store.UpsertChatWithOptions(ctx, chat, store.ChatUpsertOptions{
+			PreserveUnreadOnUpdate: !event.Chat.UnreadKnown,
+			PreservePinnedOnUpdate: !event.Chat.PinnedKnown,
+			PreserveMutedOnUpdate:  !event.Chat.MutedKnown,
+		})
 	case EventMessageUpsert:
 		message := store.Message{
 			ID:              event.Message.ID,

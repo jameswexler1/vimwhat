@@ -40,6 +40,10 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 		return c.normalizeContactEvent(ctx, event)
 	case *events.PushName:
 		return c.normalizePushNameEvent(ctx, event)
+	case *events.Mute:
+		return c.normalizeMuteEvent(ctx, event)
+	case *events.Pin:
+		return c.normalizePinEvent(ctx, event)
 	case *events.GroupInfo:
 		out := normalizeGroupInfoEvent(event.JID, "", event.Name)
 		return append(out, c.normalizeGroupParticipantDeltaEvent(ctx, event.JID, event.Join, event.Leave)...)
@@ -118,6 +122,10 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return normalizeContactEvent(event)
 	case *events.PushName:
 		return normalizePushNameEvent(event)
+	case *events.Mute:
+		return normalizeMuteEvent(event)
+	case *events.Pin:
+		return normalizePinEvent(event)
 	default:
 		return nil
 	}
@@ -154,6 +162,7 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 			continue
 		}
 		chatID := canonicalChatJID.String()
+		muted, mutedUntil := historyMuteState(conversation.GetMuteEndTime(), time.Now())
 		out = append(out, Event{
 			Kind: EventChatUpsert,
 			Chat: ChatEvent{
@@ -165,7 +174,10 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 				Kind:          chatKind(canonicalChatJID),
 				UnreadKnown:   false,
 				Pinned:        conversation.GetPinned() > 0,
-				Muted:         conversation.GetMuteEndTime() > uint64(time.Now().Unix()),
+				PinnedKnown:   true,
+				Muted:         muted,
+				MutedKnown:    true,
+				MutedUntil:    mutedUntil,
 				LastMessageAt: historyConversationTimestamp(conversation),
 				Historical:    true,
 			},
@@ -270,6 +282,110 @@ func normalizeAppStateEvent(event *events.AppState) []Event {
 		}}
 	}
 	return nil
+}
+
+func (c *Client) normalizeMuteEvent(ctx context.Context, event *events.Mute) []Event {
+	if event == nil || !supportedChat(event.JID) {
+		return nil
+	}
+	canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, event.JID, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.JID)
+	}
+	return chatMuteEvent(canonicalChatJID, aliases, event.Action, event.Timestamp)
+}
+
+func normalizeMuteEvent(event *events.Mute) []Event {
+	if event == nil {
+		return nil
+	}
+	return chatMuteEvent(canonicalizableChatJID(event.JID), nil, event.Action, event.Timestamp)
+}
+
+func chatMuteEvent(chatJID types.JID, aliases []string, action *waSyncAction.MuteAction, updatedAt time.Time) []Event {
+	if chatJID.IsEmpty() || !supportedChat(chatJID) {
+		return nil
+	}
+	muted, mutedUntil := muteActionState(action, time.Now())
+	chatID := chatJID.String()
+	return []Event{{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          chatID,
+			JID:         chatID,
+			AliasIDs:    aliases,
+			Title:       historyConversationTitle(nil, chatJID),
+			TitleSource: historyConversationTitleSource(nil, chatJID),
+			Kind:        chatKind(chatJID),
+			Muted:       muted,
+			MutedKnown:  true,
+			MutedUntil:  mutedUntil,
+		},
+	}}
+}
+
+func (c *Client) normalizePinEvent(ctx context.Context, event *events.Pin) []Event {
+	if event == nil || !supportedChat(event.JID) {
+		return nil
+	}
+	canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, event.JID, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.JID)
+	}
+	return chatPinEvent(canonicalChatJID, aliases, event.Action)
+}
+
+func normalizePinEvent(event *events.Pin) []Event {
+	if event == nil {
+		return nil
+	}
+	return chatPinEvent(canonicalizableChatJID(event.JID), nil, event.Action)
+}
+
+func chatPinEvent(chatJID types.JID, aliases []string, action *waSyncAction.PinAction) []Event {
+	if chatJID.IsEmpty() || !supportedChat(chatJID) {
+		return nil
+	}
+	chatID := chatJID.String()
+	return []Event{{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          chatID,
+			JID:         chatID,
+			AliasIDs:    aliases,
+			Title:       historyConversationTitle(nil, chatJID),
+			TitleSource: historyConversationTitleSource(nil, chatJID),
+			Kind:        chatKind(chatJID),
+			Pinned:      action.GetPinned(),
+			PinnedKnown: true,
+		},
+	}}
+}
+
+func muteActionState(action *waSyncAction.MuteAction, now time.Time) (bool, time.Time) {
+	if action == nil || !action.GetMuted() {
+		return false, time.Time{}
+	}
+	muteEnd := action.GetMuteEndTimestamp()
+	if muteEnd <= 0 {
+		return true, time.Time{}
+	}
+	mutedUntil := time.UnixMilli(muteEnd)
+	if now.Before(mutedUntil) {
+		return true, mutedUntil
+	}
+	return false, time.Time{}
+}
+
+func historyMuteState(muteEnd uint64, now time.Time) (bool, time.Time) {
+	if muteEnd == 0 {
+		return false, time.Time{}
+	}
+	mutedUntil := time.Unix(int64(muteEnd), 0)
+	if now.Before(mutedUntil) {
+		return true, mutedUntil
+	}
+	return false, time.Time{}
 }
 
 func recentStickerFromHistory(sticker *waHistorySync.StickerMetadata) (RecentStickerEvent, bool) {

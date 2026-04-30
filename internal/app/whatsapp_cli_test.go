@@ -152,6 +152,11 @@ func (s *fakeLiveWhatsAppSession) SyncRecentStickers(context.Context) ([]whatsap
 	return append([]whatsapp.Event(nil), s.stickerSync...), s.stickerSyncErr
 }
 
+func (s *fakeLiveWhatsAppSession) SyncAppState(context.Context) ([]whatsapp.Event, error) {
+	s.stickerSyncCalls++
+	return append([]whatsapp.Event(nil), s.stickerSync...), s.stickerSyncErr
+}
+
 func (s *fakeLiveWhatsAppSession) GenerateMessageID() string {
 	if s.generatedID != "" {
 		return s.generatedID
@@ -1510,6 +1515,108 @@ func TestRunLiveWhatsAppSuppressesNotificationsForMutedAndDuplicateMessages(t *t
 				t.Fatal("runLiveWhatsApp did not stop after cancellation")
 			}
 		})
+	}
+}
+
+func TestRunLiveWhatsAppStartupMuteSurvivesMessageChatUpsert(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	when := time.Unix(1_700_000_000, 0)
+	mutedUntil := time.Now().Add(time.Hour).Truncate(time.Second)
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 8),
+		stickerSync: []whatsapp.Event{{
+			Kind: whatsapp.EventChatUpsert,
+			Chat: whatsapp.ChatEvent{
+				ID:          "chat-1",
+				JID:         "chat-1@s.whatsapp.net",
+				Title:       "Alice",
+				Kind:        "direct",
+				Muted:       true,
+				MutedKnown:  true,
+				MutedUntil:  mutedUntil,
+				PinnedKnown: true,
+			},
+		}},
+	}
+	notifier := &fakeNotifier{
+		notifications: make(chan notify.Notification, 4),
+		report:        notify.Report{Selected: notify.BackendCommand},
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		OpenNotifier: func(config.Config) notify.Notifier {
+			return notifier
+		},
+	}
+
+	updates := make(chan ui.LiveUpdate, 32)
+	activeChat := make(chan string, 2)
+	appFocus := make(chan bool, 2)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), activeChat, appFocus, make(chan []string, 16))
+	}()
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && strings.Contains(update.Status, "chat setting")
+	})
+	activeChat <- "other-chat"
+	appFocus <- true
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+		},
+	}
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "muted hello",
+			NotificationPreview: "muted hello",
+			Timestamp:           when,
+			Status:              "received",
+		},
+	}
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && update.Status == ""
+	})
+	assertNotificationCount(t, notifier.notifications, 0)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runLiveWhatsApp did not stop after cancellation")
 	}
 }
 

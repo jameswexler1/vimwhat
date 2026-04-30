@@ -139,6 +139,7 @@ type chatMergeRow struct {
 	Unread          int
 	Pinned          bool
 	Muted           bool
+	MutedUntil      time.Time
 	LastMessageAt   time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -151,11 +152,12 @@ func loadChatMergeRow(ctx context.Context, tx *sql.Tx, chatID string) (chatMerge
 		lastMessageUnix    int64
 		createdUnix        int64
 		updatedUnix        int64
+		mutedUntilUnix     int64
 		pinnedInt, muteInt int
 	)
 	err := tx.QueryRowContext(ctx, `
 		SELECT id, jid, title, title_source, kind, avatar_id, avatar_path, avatar_thumb_path,
-			avatar_updated_at, unread_count, pinned, muted, last_message_at, created_at, updated_at
+			avatar_updated_at, unread_count, pinned, muted, muted_until, last_message_at, created_at, updated_at
 		FROM chats
 		WHERE id = ?
 	`, chatID).Scan(
@@ -171,6 +173,7 @@ func loadChatMergeRow(ctx context.Context, tx *sql.Tx, chatID string) (chatMerge
 		&row.Unread,
 		&pinnedInt,
 		&muteInt,
+		&mutedUntilUnix,
 		&lastMessageUnix,
 		&createdUnix,
 		&updatedUnix,
@@ -189,7 +192,7 @@ func loadChatMergeRow(ctx context.Context, tx *sql.Tx, chatID string) (chatMerge
 	}
 	row.TitleSource = NormalizeChatTitleSource(row.TitleSource)
 	row.Pinned = pinnedInt != 0
-	row.Muted = muteInt != 0
+	row.Muted, row.MutedUntil = activeMuteState(muteInt != 0, mutedUntilUnix, time.Now())
 	if avatarUpdatedUnix > 0 {
 		row.AvatarUpdatedAt = time.Unix(avatarUpdatedUnix, 0)
 	}
@@ -230,7 +233,7 @@ func mergeChatRows(canonical chatMergeRow, canonicalExists bool, alias chatMerge
 	merged.JID = canonicalID
 	merged.Unread += alias.Unread
 	merged.Pinned = merged.Pinned || alias.Pinned
-	merged.Muted = merged.Muted || alias.Muted
+	merged.Muted, merged.MutedUntil = mergeMuteState(merged.Muted, merged.MutedUntil, alias.Muted, alias.MutedUntil)
 	if alias.LastMessageAt.After(merged.LastMessageAt) {
 		merged.LastMessageAt = alias.LastMessageAt
 	}
@@ -263,6 +266,22 @@ func hasChatAvatar(chat chatMergeRow) bool {
 		strings.TrimSpace(chat.AvatarThumbPath) != ""
 }
 
+func mergeMuteState(leftMuted bool, leftUntil time.Time, rightMuted bool, rightUntil time.Time) (bool, time.Time) {
+	if !leftMuted {
+		return rightMuted, rightUntil
+	}
+	if !rightMuted {
+		return leftMuted, leftUntil
+	}
+	if leftUntil.IsZero() || rightUntil.IsZero() {
+		return true, time.Time{}
+	}
+	if rightUntil.After(leftUntil) {
+		return true, rightUntil
+	}
+	return true, leftUntil
+}
+
 func fallbackChatMergeTitle(chatID string) string {
 	if user := jidUserPart(chatID); user != "" {
 		return user
@@ -281,8 +300,8 @@ func upsertMergedChatRow(ctx context.Context, tx *sql.Tx, chat chatMergeRow) err
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO chats (
 			id, jid, title, title_source, kind, avatar_id, avatar_path, avatar_thumb_path,
-			avatar_updated_at, unread_count, pinned, muted, last_message_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			avatar_updated_at, unread_count, pinned, muted, muted_until, last_message_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			jid = excluded.jid,
 			title = excluded.title,
@@ -295,6 +314,7 @@ func upsertMergedChatRow(ctx context.Context, tx *sql.Tx, chat chatMergeRow) err
 			unread_count = excluded.unread_count,
 			pinned = excluded.pinned,
 			muted = excluded.muted,
+			muted_until = excluded.muted_until,
 			last_message_at = excluded.last_message_at,
 			updated_at = excluded.updated_at
 	`,
@@ -310,6 +330,7 @@ func upsertMergedChatRow(ctx context.Context, tx *sql.Tx, chat chatMergeRow) err
 		chat.Unread,
 		boolToInt(chat.Pinned),
 		boolToInt(chat.Muted),
+		chatMuteUntilUnix(chat),
 		chat.LastMessageAt.Unix(),
 		chat.CreatedAt.Unix(),
 		now.Unix(),
@@ -853,12 +874,19 @@ func refreshMergedChatState(ctx context.Context, tx *sql.Tx, merged chatMergeRow
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE chats
-		SET unread_count = ?, pinned = ?, muted = ?, last_message_at = ?, updated_at = ?
+		SET unread_count = ?, pinned = ?, muted = ?, muted_until = ?, last_message_at = ?, updated_at = ?
 		WHERE id = ?
-	`, merged.Unread, boolToInt(merged.Pinned), boolToInt(merged.Muted), lastMessageAt, time.Now().Unix(), canonicalID); err != nil {
+	`, merged.Unread, boolToInt(merged.Pinned), boolToInt(merged.Muted), chatMuteUntilUnix(merged), lastMessageAt, time.Now().Unix(), canonicalID); err != nil {
 		return fmt.Errorf("refresh merged chat %s: %w", canonicalID, err)
 	}
 	return nil
+}
+
+func chatMuteUntilUnix(chat chatMergeRow) int64 {
+	if !chat.Muted || chat.MutedUntil.IsZero() {
+		return 0
+	}
+	return chat.MutedUntil.Unix()
 }
 
 func localMessageID(chatID, remoteID string) string {

@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 11 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=11", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 12 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=12", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -586,6 +586,97 @@ func TestAddIncomingMessageIncrementsUnreadOnlyOnce(t *testing.T) {
 	}
 	if chats[0].Unread != 1 || chats[0].Title != "Alice Updated" {
 		t.Fatalf("preserved chat = %+v, want unread preserved and title updated", chats[0])
+	}
+}
+
+func TestUpsertChatPreservesUnknownSettings(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	mutedUntil := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := db.UpsertChat(ctx, Chat{
+		ID:         "chat-1",
+		Title:      "Alice",
+		Pinned:     true,
+		Muted:      true,
+		MutedUntil: mutedUntil,
+	}); err != nil {
+		t.Fatalf("UpsertChat(initial) error = %v", err)
+	}
+
+	if err := db.UpsertChatWithOptions(ctx, Chat{
+		ID:    "chat-1",
+		Title: "Alice from message",
+	}, ChatUpsertOptions{
+		PreservePinnedOnUpdate: true,
+		PreserveMutedOnUpdate:  true,
+	}); err != nil {
+		t.Fatalf("UpsertChatWithOptions(preserve settings) error = %v", err)
+	}
+
+	chat, ok, err := db.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() ok = false, want true")
+	}
+	if !chat.Pinned || !chat.Muted || !chat.MutedUntil.Equal(mutedUntil) {
+		t.Fatalf("preserved chat settings = %+v, want pinned and timed muted preserved", chat)
+	}
+
+	if err := db.UpsertChatWithOptions(ctx, Chat{
+		ID:    "chat-1",
+		Title: "Alice unmuted",
+	}, ChatUpsertOptions{}); err != nil {
+		t.Fatalf("UpsertChatWithOptions(clear settings) error = %v", err)
+	}
+	chat, ok, err = db.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() after clear error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() after clear ok = false, want true")
+	}
+	if chat.Pinned || chat.Muted || !chat.MutedUntil.IsZero() {
+		t.Fatalf("cleared chat settings = %+v, want unpinned and unmuted", chat)
+	}
+}
+
+func TestExpiredTimedMuteReadsAsUnmuted(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{
+		ID:         "chat-1",
+		Title:      "Alice",
+		Muted:      true,
+		MutedUntil: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertChat(expired mute) error = %v", err)
+	}
+
+	chat, ok, err := db.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() ok = false, want true")
+	}
+	if chat.Muted || !chat.MutedUntil.IsZero() {
+		t.Fatalf("chat mute = muted:%v until:%v, want inactive expired mute", chat.Muted, chat.MutedUntil)
 	}
 }
 
@@ -1593,8 +1684,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 11 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want eleven applied and none pending", applied, pending)
+	if len(applied) != 12 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want twelve applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {

@@ -240,6 +240,12 @@ var migrations = []migration{
 				ON message_mentions (message_id, jid ASC)`,
 		},
 	},
+	{
+		name: "0012_chat_muted_until",
+		sql: []string{
+			`ALTER TABLE chats ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

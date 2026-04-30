@@ -42,6 +42,12 @@ const (
 				), '') AS last_preview`
 )
 
+type ChatUpsertOptions struct {
+	PreserveUnreadOnUpdate bool
+	PreservePinnedOnUpdate bool
+	PreserveMutedOnUpdate  bool
+}
+
 func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, error) {
 	if messageLimit <= 0 {
 		messageLimit = defaultMessageWindow
@@ -93,6 +99,7 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.unread_count,
 			c.pinned,
 			c.muted,
+			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
@@ -141,6 +148,7 @@ func (s *Store) ChatByJID(ctx context.Context, jid string) (Chat, bool, error) {
 			c.unread_count,
 			c.pinned,
 			c.muted,
+			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
@@ -179,6 +187,7 @@ func (s *Store) ChatByID(ctx context.Context, id string) (Chat, bool, error) {
 			c.unread_count,
 			c.pinned,
 			c.muted,
+			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
 			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
@@ -464,11 +473,15 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 }
 
 func (s *Store) UpsertChat(ctx context.Context, chat Chat) error {
-	return s.upsertChat(ctx, chat, false)
+	return s.upsertChat(ctx, chat, ChatUpsertOptions{})
 }
 
 func (s *Store) UpsertChatPreserveUnread(ctx context.Context, chat Chat) error {
-	return s.upsertChat(ctx, chat, true)
+	return s.upsertChat(ctx, chat, ChatUpsertOptions{PreserveUnreadOnUpdate: true})
+}
+
+func (s *Store) UpsertChatWithOptions(ctx context.Context, chat Chat, options ChatUpsertOptions) error {
+	return s.upsertChat(ctx, chat, options)
 }
 
 func (s *Store) UpdateChatTitleIfExists(ctx context.Context, chat Chat) (bool, error) {
@@ -503,7 +516,7 @@ func (s *Store) UpdateChatTitleIfExists(ctx context.Context, chat Chat) (bool, e
 	return true, nil
 }
 
-func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdate bool) error {
+func (s *Store) upsertChat(ctx context.Context, chat Chat, options ChatUpsertOptions) error {
 	if strings.TrimSpace(chat.ID) == "" {
 		return fmt.Errorf("chat id is required")
 	}
@@ -533,12 +546,16 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 	if chat.AvatarUpdatedAt.IsZero() {
 		avatarUpdatedAt = 0
 	}
+	mutedUntil := chat.MutedUntil.Unix()
+	if chat.MutedUntil.IsZero() || !chat.Muted {
+		mutedUntil = 0
+	}
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO chats (
 			id, jid, title, title_source, kind, avatar_id, avatar_path, avatar_thumb_path,
-			avatar_updated_at, unread_count, pinned, muted, last_message_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			avatar_updated_at, unread_count, pinned, muted, muted_until, last_message_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			jid = excluded.jid,
 			title = excluded.title,
@@ -564,8 +581,18 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 				WHEN ? THEN chats.unread_count
 				ELSE excluded.unread_count
 			END,
-			pinned = excluded.pinned,
-			muted = excluded.muted,
+			pinned = CASE
+				WHEN ? THEN chats.pinned
+				ELSE excluded.pinned
+			END,
+			muted = CASE
+				WHEN ? THEN chats.muted
+				ELSE excluded.muted
+			END,
+			muted_until = CASE
+				WHEN ? THEN chats.muted_until
+				ELSE excluded.muted_until
+			END,
 			last_message_at = CASE
 				WHEN excluded.last_message_at > chats.last_message_at THEN excluded.last_message_at
 				ELSE chats.last_message_at
@@ -584,10 +611,14 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, preserveUnreadOnUpdat
 		chat.Unread,
 		boolToInt(chat.Pinned),
 		boolToInt(chat.Muted),
+		mutedUntil,
 		lastMessageAt,
 		now,
 		now,
-		boolToInt(preserveUnreadOnUpdate),
+		boolToInt(options.PreserveUnreadOnUpdate),
+		boolToInt(options.PreservePinnedOnUpdate),
+		boolToInt(options.PreserveMutedOnUpdate),
+		boolToInt(options.PreserveMutedOnUpdate),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert chat %s: %w", chat.ID, err)
@@ -2240,6 +2271,7 @@ func scanChat(row scanner) (Chat, error) {
 		chat              Chat
 		pinned            int
 		muted             int
+		mutedUntilUnix    int64
 		hasDraft          int
 		lastMessageUnix   int64
 		avatarUpdatedUnix int64
@@ -2257,6 +2289,7 @@ func scanChat(row scanner) (Chat, error) {
 		&chat.Unread,
 		&pinned,
 		&muted,
+		&mutedUntilUnix,
 		&lastMessageUnix,
 		&chat.LastPreview,
 		&hasDraft,
@@ -2265,7 +2298,7 @@ func scanChat(row scanner) (Chat, error) {
 	}
 
 	chat.Pinned = pinned == 1
-	chat.Muted = muted == 1
+	chat.Muted, chat.MutedUntil = activeMuteState(muted == 1, mutedUntilUnix, time.Now())
 	chat.HasDraft = hasDraft == 1
 	if lastMessageUnix > 0 {
 		chat.LastMessageAt = time.Unix(lastMessageUnix, 0)
@@ -2282,6 +2315,20 @@ func scanChat(row scanner) (Chat, error) {
 	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
 
 	return chat, nil
+}
+
+func activeMuteState(muted bool, mutedUntilUnix int64, now time.Time) (bool, time.Time) {
+	if !muted {
+		return false, time.Time{}
+	}
+	if mutedUntilUnix <= 0 {
+		return true, time.Time{}
+	}
+	mutedUntil := time.Unix(mutedUntilUnix, 0)
+	if now.Before(mutedUntil) {
+		return true, mutedUntil
+	}
+	return false, time.Time{}
 }
 
 func scanMessage(row scanner) (Message, error) {

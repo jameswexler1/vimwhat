@@ -196,6 +196,82 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}
 }
 
+func TestIngestorPreservesUnknownChatSettings(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	mutedUntil := time.Now().Add(time.Hour).Truncate(time.Second)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          "chat-1",
+			JID:         "chat-1@s.whatsapp.net",
+			Title:       "Alice",
+			Kind:        "direct",
+			Pinned:      true,
+			PinnedKnown: true,
+			Muted:       true,
+			MutedKnown:  true,
+			MutedUntil:  mutedUntil,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(initial settings) error = %v", err)
+	}
+
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:    "chat-1",
+			JID:   "chat-1@s.whatsapp.net",
+			Title: "Alice from message",
+			Kind:  "direct",
+		},
+	}); err != nil {
+		t.Fatalf("Apply(unknown settings) error = %v", err)
+	}
+	chat, ok, err := db.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() ok = false, want true")
+	}
+	if !chat.Pinned || !chat.Muted || !chat.MutedUntil.Equal(mutedUntil) {
+		t.Fatalf("chat after unknown settings upsert = %+v, want settings preserved", chat)
+	}
+
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{
+			ID:          "chat-1",
+			JID:         "chat-1@s.whatsapp.net",
+			Title:       "Alice",
+			Kind:        "direct",
+			MutedKnown:  true,
+			PinnedKnown: true,
+		},
+	}); err != nil {
+		t.Fatalf("Apply(clear settings) error = %v", err)
+	}
+	chat, ok, err = db.ChatByID(ctx, "chat-1")
+	if err != nil {
+		t.Fatalf("ChatByID() after clear error = %v", err)
+	}
+	if !ok {
+		t.Fatal("ChatByID() after clear ok = false, want true")
+	}
+	if chat.Pinned || chat.Muted || !chat.MutedUntil.IsZero() {
+		t.Fatalf("chat after known false settings = %+v, want cleared settings", chat)
+	}
+}
+
 func TestIngestorAppliesMessageDeleteEvent(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
