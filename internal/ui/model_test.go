@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1096,7 +1097,7 @@ func TestSnapshotAppendPreservesHistoryPositionAndShowsNewMessagesIndicator(t *t
 	if !model.hasNewMessagesBelow("chat-1") {
 		t.Fatal("new-messages indicator was not set")
 	}
-	if footer := stripANSI(model.renderMessageFooter(60)); !strings.Contains(footer, "↓ new messages below") {
+	if footer := stripANSI(model.renderMessageFooter(60)); !strings.Contains(footer, "↓ 2 new below") {
 		t.Fatalf("footer missing new-messages indicator:\n%s", footer)
 	}
 }
@@ -1117,7 +1118,7 @@ func TestMovingToLatestMessageClearsNewMessagesIndicator(t *testing.T) {
 	model.focus = FocusMessages
 	model.messageCursor = 0
 	model.messageScrollTop = 0
-	model.setNewMessagesBelow("chat-1")
+	model.recordNewMessages("chat-1", "m-2")
 
 	model.moveCursor(2)
 	if model.messageCursor != 2 {
@@ -1163,6 +1164,64 @@ func TestSnapshotPrependDoesNotSetNewMessagesIndicator(t *testing.T) {
 	}
 	if model.hasNewMessagesBelow("chat-1") {
 		t.Fatal("history prepend set new-messages indicator")
+	}
+}
+
+func TestRenderMessagesShowsNewMessagesDivider(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+				{ID: "m-3", ChatID: "chat-1", Body: "three"},
+				{ID: "m-4", ChatID: "chat-1", Body: "four"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+	model.recordNewMessages("chat-1", "m-2")
+
+	view := stripANSI(model.renderMessages(70, 12))
+	if !strings.Contains(view, "Mensagens novas: 2") {
+		t.Fatalf("renderMessages() missing new message divider\n%s", view)
+	}
+	if !strings.Contains(view, "three") {
+		t.Fatalf("renderMessages() did not keep a new message below the divider\n%s", view)
+	}
+}
+
+func TestNewMessagesStatePersistsUntilConversationBottom(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+				{ID: "m-3", ChatID: "chat-1", Body: "three"},
+				{ID: "m-4", ChatID: "chat-1", Body: "four"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+	model.recordNewMessages("chat-1", "m-2")
+
+	model.moveCursor(1)
+	if !model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("new message state cleared before reaching latest message")
+	}
+
+	model.moveCursor(1)
+	if model.hasNewMessagesBelow("chat-1") {
+		t.Fatal("new message state remained after reaching latest message")
 	}
 }
 
@@ -4553,9 +4612,9 @@ func TestInsertPasteImageStagesClipboardImageInComposer(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PasteImageFromClipboard: func() tea.Cmd {
+		PasteAttachmentFromClipboard: func() tea.Cmd {
 			return func() tea.Msg {
-				return ClipboardImagePastedMsg{Attachment: Attachment{
+				return ClipboardAttachmentPastedMsg{Attachment: Attachment{
 					LocalPath:     "/tmp/clipboard.png",
 					FileName:      "clipboard.png",
 					MIMEType:      "image/png",
@@ -4572,7 +4631,7 @@ func TestInsertPasteImageStagesClipboardImageInComposer(t *testing.T) {
 	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlV})
 	got := updated.(Model)
 	if cmd == nil {
-		t.Fatal("ctrl+v did not start clipboard image paste")
+		t.Fatal("ctrl+v did not start clipboard attachment paste")
 	}
 	final, _ := got.Update(cmd())
 	got = final.(Model)
@@ -4592,9 +4651,9 @@ func TestPasteImageCommandStagesClipboardImage(t *testing.T) {
 			DraftsByChat:   map[string]string{},
 			ActiveChatID:   "chat-1",
 		},
-		PasteImageFromClipboard: func() tea.Cmd {
+		PasteAttachmentFromClipboard: func() tea.Cmd {
 			return func() tea.Msg {
-				return ClipboardImagePastedMsg{Attachment: Attachment{
+				return ClipboardAttachmentPastedMsg{Attachment: Attachment{
 					LocalPath:     "/tmp/clipboard.png",
 					FileName:      "clipboard.png",
 					MIMEType:      "image/png",
@@ -4604,7 +4663,7 @@ func TestPasteImageCommandStagesClipboardImage(t *testing.T) {
 		},
 	})
 
-	updated, cmd := model.executeCommand("paste-image")
+	updated, cmd := model.executeCommand("paste-attachment")
 	got := updated.(Model)
 	if got.mode != ModeInsert || cmd == nil {
 		t.Fatalf("mode=%s cmd nil=%v, want insert and paste command", got.mode, cmd == nil)
@@ -4612,6 +4671,49 @@ func TestPasteImageCommandStagesClipboardImage(t *testing.T) {
 	final, _ := got.Update(cmd())
 	got = final.(Model)
 	if len(got.attachments) != 1 || got.attachments[0].MIMEType != "image/png" {
+		t.Fatalf("attachments = %+v", got.attachments)
+	}
+}
+
+func TestInsertPasteAttachmentReplacesStagedAttachment(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PasteAttachmentFromClipboard: func() tea.Cmd {
+			return func() tea.Msg {
+				return ClipboardAttachmentPastedMsg{Attachment: Attachment{
+					LocalPath:     "/tmp/report.pdf",
+					FileName:      "report.pdf",
+					MIMEType:      "application/pdf",
+					DownloadState: "local_pending",
+				}}
+			}
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "caption"
+	model.attachments = []Attachment{{
+		LocalPath:     "/tmp/photo.png",
+		FileName:      "photo.png",
+		MIMEType:      "image/png",
+		DownloadState: "local_pending",
+	}}
+
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyCtrlV})
+	if cmd == nil {
+		t.Fatal("ctrl+v did not start clipboard attachment paste")
+	}
+	final, _ := updated.(Model).Update(cmd())
+	got := final.(Model)
+	if got.mode != ModeInsert || got.composer != "caption" {
+		t.Fatalf("mode/composer = %s/%q, want insert/caption", got.mode, got.composer)
+	}
+	if len(got.attachments) != 1 || got.attachments[0].FileName != "report.pdf" {
 		t.Fatalf("attachments = %+v", got.attachments)
 	}
 }
@@ -6362,7 +6464,7 @@ func TestSyncOverlayCmdIncludesChatAvatarPlacements(t *testing.T) {
 	if _, ok := msg.(mediaOverlayMsg); !ok {
 		t.Fatalf("overlay command message = %T, want mediaOverlayMsg", msg)
 	}
-	if !strings.Contains(overlay.String(), avatarPath) || !strings.Contains(overlay.String(), `"max_width":4`) || !strings.Contains(overlay.String(), `"max_height":2`) {
+	if !strings.Contains(overlay.String(), strconv.Quote(avatarPath)) || !strings.Contains(overlay.String(), `"max_width":4`) || !strings.Contains(overlay.String(), `"max_height":2`) {
 		t.Fatalf("avatar overlay command missing avatar placement:\n%s", overlay.String())
 	}
 }
@@ -7428,6 +7530,72 @@ func TestComposerRemainsVisibleOverFullMessagePane(t *testing.T) {
 	}
 	if got := len(strings.Split(view, "\n")); got > 8 {
 		t.Fatalf("renderMessages produced %d lines, want <= 8\n%s", got, view)
+	}
+}
+
+func TestComposerShowsTailOfLongLastLine(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+	view := stripANSI(model.renderComposer(18))
+	if !strings.Contains(view, "uvwxyz▌") {
+		t.Fatalf("renderComposer() did not keep the typed tail visible\n%s", view)
+	}
+	if strings.Contains(view, "> 0123456789abcd") {
+		t.Fatalf("renderComposer() still showed the truncated line head\n%s", view)
+	}
+}
+
+func TestComposerTailPreservesGraphemeClusters(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "ok 👩🏻‍⚕️👩🏻‍⚕️ pronto"
+
+	view := stripANSI(model.renderComposer(16))
+	if !strings.Contains(view, "pronto▌") {
+		t.Fatalf("renderComposer() missing grapheme-safe tail\n%s", view)
+	}
+	if strings.Contains(view, "�") {
+		t.Fatalf("renderComposer() split a grapheme cluster\n%s", view)
+	}
+}
+
+func TestComposerTailKeepsMultilineHeightAndCursor(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.composer = "line one\nline two is much longer than the pane width"
+
+	view := stripANSI(model.renderComposer(18))
+	if !strings.Contains(view, "line one") || !strings.Contains(view, " pane width▌") {
+		t.Fatalf("renderComposer() did not preserve multiline composer tail\n%s", view)
+	}
+	if got := len(strings.Split(view, "\n")); got < 3 {
+		t.Fatalf("renderComposer() height = %d, want multiline output\n%s", got, view)
 	}
 }
 

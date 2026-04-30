@@ -131,10 +131,12 @@ type clipboardCopiedMsg struct {
 	Err   error
 }
 
-type ClipboardImagePastedMsg struct {
+type ClipboardAttachmentPastedMsg struct {
 	Attachment Attachment
 	Err        error
 }
+
+type ClipboardImagePastedMsg = ClipboardAttachmentPastedMsg
 
 type ClipboardImageCopiedMsg struct {
 	MessageID string
@@ -241,195 +243,201 @@ type AudioProcess interface {
 	Stop() error
 }
 
+type newMessageState struct {
+	FirstMessageID string
+	NewCount       int
+}
+
 type Options struct {
-	Paths                    config.Paths
-	Config                   config.Config
-	PreviewReport            media.Report
-	Snapshot                 store.Snapshot
-	ConnectionState          ConnectionState
-	LiveUpdates              <-chan LiveUpdate
-	ReserveLastColumn        bool
-	BlockSending             bool
-	BlockAttachments         bool
-	RequireOnlineForSend     bool
-	PersistMessage           func(OutgoingMessage) (store.Message, error)
-	SendSticker              func(chatID string, sticker store.RecentSticker) (store.Message, error)
-	RetryMessage             func(message store.Message) (store.Message, error)
-	MarkRead                 func(chat store.Chat, messages []store.Message) error
-	SendReaction             func(message store.Message, emoji string) error
-	SendPresence             func(chatID string, composing bool) error
-	SubscribePresence        func(chatID string) error
-	LoadMessages             func(chatID string, limit int) ([]store.Message, error)
-	LoadOlderMessages        func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	RequestHistory           func(chatID string) error
-	ReloadSnapshot           func(activeChatID string, limit int) (store.Snapshot, error)
-	SaveDraft                func(chatID, body string) error
-	SearchChats              func(query string) ([]store.Chat, error)
-	SearchMessages           func(chatID, query string, limit int) ([]store.Message, error)
-	SearchMentionCandidates  func(chatID, query string, limit int) ([]store.MentionCandidate, error)
-	ForwardMessages          func(ForwardMessagesRequest) tea.Cmd
-	CopyToClipboard          func(text string) error
-	PasteImageFromClipboard  func() tea.Cmd
-	CopyImageToClipboard     func(media store.MediaMetadata) tea.Cmd
-	PickAttachment           func() tea.Cmd
-	PickSticker              func() tea.Cmd
-	OpenMedia                func(media store.MediaMetadata) tea.Cmd
-	StartAudio               func(media store.MediaMetadata) (AudioProcess, error)
-	DeleteMessage            func(messageID string) error
-	DeleteMessageForEveryone func(message store.Message) tea.Cmd
-	EditMessage              func(message store.Message, body string) tea.Cmd
-	SaveMedia                func(media store.MediaMetadata) error
-	DownloadMedia            func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	ActiveChatChanged        func(chatID string)
-	AppFocusChanged          func(focused bool)
-	VisibleChatsChanged      func(chatIDs []string)
-	SixelWriter              io.Writer
-	PollTerminalSize         bool
+	Paths                        config.Paths
+	Config                       config.Config
+	PreviewReport                media.Report
+	Snapshot                     store.Snapshot
+	ConnectionState              ConnectionState
+	LiveUpdates                  <-chan LiveUpdate
+	ReserveLastColumn            bool
+	BlockSending                 bool
+	BlockAttachments             bool
+	RequireOnlineForSend         bool
+	PersistMessage               func(OutgoingMessage) (store.Message, error)
+	SendSticker                  func(chatID string, sticker store.RecentSticker) (store.Message, error)
+	RetryMessage                 func(message store.Message) (store.Message, error)
+	MarkRead                     func(chat store.Chat, messages []store.Message) error
+	SendReaction                 func(message store.Message, emoji string) error
+	SendPresence                 func(chatID string, composing bool) error
+	SubscribePresence            func(chatID string) error
+	LoadMessages                 func(chatID string, limit int) ([]store.Message, error)
+	LoadOlderMessages            func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	RequestHistory               func(chatID string) error
+	ReloadSnapshot               func(activeChatID string, limit int) (store.Snapshot, error)
+	SaveDraft                    func(chatID, body string) error
+	SearchChats                  func(query string) ([]store.Chat, error)
+	SearchMessages               func(chatID, query string, limit int) ([]store.Message, error)
+	SearchMentionCandidates      func(chatID, query string, limit int) ([]store.MentionCandidate, error)
+	ForwardMessages              func(ForwardMessagesRequest) tea.Cmd
+	CopyToClipboard              func(text string) error
+	PasteAttachmentFromClipboard func() tea.Cmd
+	PasteImageFromClipboard      func() tea.Cmd
+	CopyImageToClipboard         func(media store.MediaMetadata) tea.Cmd
+	PickAttachment               func() tea.Cmd
+	PickSticker                  func() tea.Cmd
+	OpenMedia                    func(media store.MediaMetadata) tea.Cmd
+	StartAudio                   func(media store.MediaMetadata) (AudioProcess, error)
+	DeleteMessage                func(messageID string) error
+	DeleteMessageForEveryone     func(message store.Message) tea.Cmd
+	EditMessage                  func(message store.Message, body string) tea.Cmd
+	SaveMedia                    func(media store.MediaMetadata) error
+	DownloadMedia                func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	ActiveChatChanged            func(chatID string)
+	AppFocusChanged              func(focused bool)
+	VisibleChatsChanged          func(chatIDs []string)
+	SixelWriter                  io.Writer
+	PollTerminalSize             bool
 }
 
 type Model struct {
-	width                      int
-	height                     int
-	reserveLastColumn          bool
-	mode                       Mode
-	focus                      Focus
-	allChats                   []store.Chat
-	chats                      []store.Chat
-	messagesByChat             map[string][]store.Message
-	draftsByChat               map[string]string
-	activeChat                 int
-	chatScrollTop              int
-	messageCursor              int
-	messageScrollTop           int
-	visualAnchor               int
-	previewReport              media.Report
-	previewCache               map[string]media.Preview
-	previewInflight            map[string]bool
-	previewRequested           map[string]bool
-	previewGeneration          int
-	inlineFallbackPrompt       bool
-	inlineFallbackAccepted     bool
-	inlineFallbackDeclined     bool
-	overlay                    *media.OverlayManager
-	overlaySignature           string
-	overlaySyncPending         bool
-	overlayPendingSignature    string
-	sixel                      *media.SixelManager
-	sixelWriter                io.Writer
-	sixelSignature             string
-	sixelSyncPending           bool
-	sixelPendingSignature      string
-	mediaOverlayPaused         bool
-	avatarOverlayPaused        bool
-	overlayPauseGeneration     int
-	overlayResumeQueued        int
-	mediaDownloadInflight      map[string]bool
-	audioProcess               AudioProcess
-	audioSession               int
-	audioMessageID             string
-	audioMediaKey              string
-	audioDisplayName           string
-	paths                      config.Paths
-	config                     config.Config
-	status                     string
-	connectionState            ConnectionState
-	commandLine                string
-	searchLine                 string
-	forwardQuery               string
-	forwardSearchActive        bool
-	forwardSourceMessages      []store.Message
-	forwardCandidates          []store.Chat
-	forwardCursor              int
-	forwardSelected            map[string]bool
-	forwardSelectedOrder       []string
-	confirmLine                string
-	composer                   string
-	composerMentions           []store.MessageMention
-	composerMentionsByChat     map[string][]store.MessageMention
-	mentionActive              bool
-	mentionStart               int
-	mentionQuery               string
-	mentionCandidates          []store.MentionCandidate
-	mentionCursor              int
-	attachments                []Attachment
-	lastSearch                 string
-	lastSearchFocus            Focus
-	activeSearch               string
-	searchChatSource           []store.Chat
-	searchMatches              []int
-	searchIndex                int
-	messageFilter              string
-	unfilteredByChat           map[string][]store.Message
-	newMessagesBelowByChat     map[string]bool
-	pendingCount               int
-	leaderPending              bool
-	leaderSequence             string
-	yankRegister               string
-	quitting                   bool
-	compactLayout              bool
-	infoPaneVisible            bool
-	helpVisible                bool
-	unreadOnly                 bool
-	pinnedFirst                bool
-	commandHistory             []string
-	searchHistory              []string
-	deleteConfirmID            string
-	deleteForEveryoneConfirmID string
-	editTarget                 *store.Message
-	replyTo                    *store.Message
-	presenceByChat             map[string]PresenceUpdate
-	readReceiptInflight        map[string]bool
-	presenceSubscribed         map[string]bool
-	ownPresenceChatID          string
-	ownPresenceComposing       bool
-	ownPresenceGeneration      int
-	persistMessage             func(OutgoingMessage) (store.Message, error)
-	sendSticker                func(chatID string, sticker store.RecentSticker) (store.Message, error)
-	retryMessage               func(message store.Message) (store.Message, error)
-	markRead                   func(chat store.Chat, messages []store.Message) error
-	sendReaction               func(message store.Message, emoji string) error
-	sendPresence               func(chatID string, composing bool) error
-	subscribePresence          func(chatID string) error
-	loadMessages               func(chatID string, limit int) ([]store.Message, error)
-	loadOlderMessages          func(chatID string, before store.Message, limit int) ([]store.Message, error)
-	requestHistory             func(chatID string) error
-	reloadSnapshot             func(activeChatID string, limit int) (store.Snapshot, error)
-	saveDraft                  func(chatID, body string) error
-	searchChats                func(query string) ([]store.Chat, error)
-	searchMessages             func(chatID, query string, limit int) ([]store.Message, error)
-	searchMentionCandidates    func(chatID, query string, limit int) ([]store.MentionCandidate, error)
-	forwardMessages            func(ForwardMessagesRequest) tea.Cmd
-	copyToClipboard            func(text string) error
-	pasteImageFromClipboard    func() tea.Cmd
-	copyImageToClipboard       func(media store.MediaMetadata) tea.Cmd
-	pickAttachment             func() tea.Cmd
-	pickSticker                func() tea.Cmd
-	openMedia                  func(media store.MediaMetadata) tea.Cmd
-	startAudio                 func(media store.MediaMetadata) (AudioProcess, error)
-	deleteMessage              func(messageID string) error
-	deleteMessageForEveryone   func(message store.Message) tea.Cmd
-	editMessage                func(message store.Message, body string) tea.Cmd
-	saveMedia                  func(media store.MediaMetadata) error
-	downloadMedia              func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
-	activeChatChanged          func(chatID string)
-	lastReportedActiveChat     string
-	appFocusKnown              bool
-	appFocused                 bool
-	appFocusChanged            func(focused bool)
-	visibleChatsChanged        func(chatIDs []string)
-	lastReportedVisibleChats   string
-	liveUpdates                <-chan LiveUpdate
-	reloadInFlight             bool
-	refreshQueued              bool
-	refreshDebouncePending     bool
-	refreshPreferredChatID     string
-	blockSending               bool
-	blockAttachments           bool
-	requireOnlineForSend       bool
-	messageLimitsByChat        map[string]int
-	historyRequestedByChat     map[string]bool
-	syncOverlay                syncOverlayState
-	pollTerminalSize           bool
+	width                        int
+	height                       int
+	reserveLastColumn            bool
+	mode                         Mode
+	focus                        Focus
+	allChats                     []store.Chat
+	chats                        []store.Chat
+	messagesByChat               map[string][]store.Message
+	draftsByChat                 map[string]string
+	activeChat                   int
+	chatScrollTop                int
+	messageCursor                int
+	messageScrollTop             int
+	visualAnchor                 int
+	previewReport                media.Report
+	previewCache                 map[string]media.Preview
+	previewInflight              map[string]bool
+	previewRequested             map[string]bool
+	previewGeneration            int
+	inlineFallbackPrompt         bool
+	inlineFallbackAccepted       bool
+	inlineFallbackDeclined       bool
+	overlay                      *media.OverlayManager
+	overlaySignature             string
+	overlaySyncPending           bool
+	overlayPendingSignature      string
+	sixel                        *media.SixelManager
+	sixelWriter                  io.Writer
+	sixelSignature               string
+	sixelSyncPending             bool
+	sixelPendingSignature        string
+	mediaOverlayPaused           bool
+	avatarOverlayPaused          bool
+	overlayPauseGeneration       int
+	overlayResumeQueued          int
+	mediaDownloadInflight        map[string]bool
+	audioProcess                 AudioProcess
+	audioSession                 int
+	audioMessageID               string
+	audioMediaKey                string
+	audioDisplayName             string
+	paths                        config.Paths
+	config                       config.Config
+	status                       string
+	connectionState              ConnectionState
+	commandLine                  string
+	searchLine                   string
+	forwardQuery                 string
+	forwardSearchActive          bool
+	forwardSourceMessages        []store.Message
+	forwardCandidates            []store.Chat
+	forwardCursor                int
+	forwardSelected              map[string]bool
+	forwardSelectedOrder         []string
+	confirmLine                  string
+	composer                     string
+	composerMentions             []store.MessageMention
+	composerMentionsByChat       map[string][]store.MessageMention
+	mentionActive                bool
+	mentionStart                 int
+	mentionQuery                 string
+	mentionCandidates            []store.MentionCandidate
+	mentionCursor                int
+	attachments                  []Attachment
+	lastSearch                   string
+	lastSearchFocus              Focus
+	activeSearch                 string
+	searchChatSource             []store.Chat
+	searchMatches                []int
+	searchIndex                  int
+	messageFilter                string
+	unfilteredByChat             map[string][]store.Message
+	newMessageStateByChat        map[string]newMessageState
+	pendingCount                 int
+	leaderPending                bool
+	leaderSequence               string
+	yankRegister                 string
+	quitting                     bool
+	compactLayout                bool
+	infoPaneVisible              bool
+	helpVisible                  bool
+	unreadOnly                   bool
+	pinnedFirst                  bool
+	commandHistory               []string
+	searchHistory                []string
+	deleteConfirmID              string
+	deleteForEveryoneConfirmID   string
+	editTarget                   *store.Message
+	replyTo                      *store.Message
+	presenceByChat               map[string]PresenceUpdate
+	readReceiptInflight          map[string]bool
+	presenceSubscribed           map[string]bool
+	ownPresenceChatID            string
+	ownPresenceComposing         bool
+	ownPresenceGeneration        int
+	persistMessage               func(OutgoingMessage) (store.Message, error)
+	sendSticker                  func(chatID string, sticker store.RecentSticker) (store.Message, error)
+	retryMessage                 func(message store.Message) (store.Message, error)
+	markRead                     func(chat store.Chat, messages []store.Message) error
+	sendReaction                 func(message store.Message, emoji string) error
+	sendPresence                 func(chatID string, composing bool) error
+	subscribePresence            func(chatID string) error
+	loadMessages                 func(chatID string, limit int) ([]store.Message, error)
+	loadOlderMessages            func(chatID string, before store.Message, limit int) ([]store.Message, error)
+	requestHistory               func(chatID string) error
+	reloadSnapshot               func(activeChatID string, limit int) (store.Snapshot, error)
+	saveDraft                    func(chatID, body string) error
+	searchChats                  func(query string) ([]store.Chat, error)
+	searchMessages               func(chatID, query string, limit int) ([]store.Message, error)
+	searchMentionCandidates      func(chatID, query string, limit int) ([]store.MentionCandidate, error)
+	forwardMessages              func(ForwardMessagesRequest) tea.Cmd
+	copyToClipboard              func(text string) error
+	pasteAttachmentFromClipboard func() tea.Cmd
+	copyImageToClipboard         func(media store.MediaMetadata) tea.Cmd
+	pickAttachment               func() tea.Cmd
+	pickSticker                  func() tea.Cmd
+	openMedia                    func(media store.MediaMetadata) tea.Cmd
+	startAudio                   func(media store.MediaMetadata) (AudioProcess, error)
+	deleteMessage                func(messageID string) error
+	deleteMessageForEveryone     func(message store.Message) tea.Cmd
+	editMessage                  func(message store.Message, body string) tea.Cmd
+	saveMedia                    func(media store.MediaMetadata) error
+	downloadMedia                func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error)
+	activeChatChanged            func(chatID string)
+	lastReportedActiveChat       string
+	appFocusKnown                bool
+	appFocused                   bool
+	appFocusChanged              func(focused bool)
+	visibleChatsChanged          func(chatIDs []string)
+	lastReportedVisibleChats     string
+	liveUpdates                  <-chan LiveUpdate
+	reloadInFlight               bool
+	refreshQueued                bool
+	refreshDebouncePending       bool
+	refreshPreferredChatID       string
+	blockSending                 bool
+	blockAttachments             bool
+	requireOnlineForSend         bool
+	messageLimitsByChat          map[string]int
+	historyRequestedByChat       map[string]bool
+	syncOverlay                  syncOverlayState
+	pollTerminalSize             bool
 }
 
 const messageLoadLimit = 200
@@ -489,70 +497,73 @@ func NewModel(opts Options) Model {
 	}
 
 	model := Model{
-		reserveLastColumn:        opts.ReserveLastColumn,
-		mode:                     ModeNormal,
-		focus:                    FocusChats,
-		allChats:                 slices.Clone(chats),
-		chats:                    chats,
-		messagesByChat:           cloneMessages(opts.Snapshot.MessagesByChat),
-		draftsByChat:             cloneDrafts(opts.Snapshot.DraftsByChat),
-		activeChat:               activeChat,
-		previewReport:            opts.PreviewReport,
-		previewCache:             map[string]media.Preview{},
-		previewInflight:          map[string]bool{},
-		previewRequested:         map[string]bool{},
-		sixelWriter:              opts.SixelWriter,
-		mediaDownloadInflight:    map[string]bool{},
-		paths:                    opts.Paths,
-		config:                   normalizeConfig(opts.Config),
-		status:                   "ready",
-		connectionState:          opts.ConnectionState,
-		pinnedFirst:              true,
-		persistMessage:           opts.PersistMessage,
-		sendSticker:              opts.SendSticker,
-		retryMessage:             opts.RetryMessage,
-		loadMessages:             opts.LoadMessages,
-		loadOlderMessages:        opts.LoadOlderMessages,
-		requestHistory:           opts.RequestHistory,
-		reloadSnapshot:           opts.ReloadSnapshot,
-		saveDraft:                opts.SaveDraft,
-		searchChats:              opts.SearchChats,
-		searchMessages:           opts.SearchMessages,
-		searchMentionCandidates:  opts.SearchMentionCandidates,
-		forwardMessages:          opts.ForwardMessages,
-		copyToClipboard:          opts.CopyToClipboard,
-		pasteImageFromClipboard:  opts.PasteImageFromClipboard,
-		copyImageToClipboard:     opts.CopyImageToClipboard,
-		pickAttachment:           opts.PickAttachment,
-		pickSticker:              opts.PickSticker,
-		openMedia:                opts.OpenMedia,
-		startAudio:               opts.StartAudio,
-		deleteMessage:            opts.DeleteMessage,
-		deleteMessageForEveryone: opts.DeleteMessageForEveryone,
-		editMessage:              opts.EditMessage,
-		saveMedia:                opts.SaveMedia,
-		downloadMedia:            opts.DownloadMedia,
-		activeChatChanged:        opts.ActiveChatChanged,
-		appFocusChanged:          opts.AppFocusChanged,
-		visibleChatsChanged:      opts.VisibleChatsChanged,
-		markRead:                 opts.MarkRead,
-		sendReaction:             opts.SendReaction,
-		sendPresence:             opts.SendPresence,
-		subscribePresence:        opts.SubscribePresence,
-		liveUpdates:              opts.LiveUpdates,
-		blockSending:             opts.BlockSending,
-		blockAttachments:         opts.BlockAttachments,
-		requireOnlineForSend:     opts.RequireOnlineForSend,
-		unfilteredByChat:         map[string][]store.Message{},
-		newMessagesBelowByChat:   map[string]bool{},
-		composerMentionsByChat:   map[string][]store.MessageMention{},
-		presenceByChat:           map[string]PresenceUpdate{},
-		forwardSelected:          map[string]bool{},
-		readReceiptInflight:      map[string]bool{},
-		presenceSubscribed:       map[string]bool{},
-		messageLimitsByChat:      map[string]int{},
-		historyRequestedByChat:   map[string]bool{},
-		pollTerminalSize:         opts.PollTerminalSize,
+		reserveLastColumn:            opts.ReserveLastColumn,
+		mode:                         ModeNormal,
+		focus:                        FocusChats,
+		allChats:                     slices.Clone(chats),
+		chats:                        chats,
+		messagesByChat:               cloneMessages(opts.Snapshot.MessagesByChat),
+		draftsByChat:                 cloneDrafts(opts.Snapshot.DraftsByChat),
+		activeChat:                   activeChat,
+		previewReport:                opts.PreviewReport,
+		previewCache:                 map[string]media.Preview{},
+		previewInflight:              map[string]bool{},
+		previewRequested:             map[string]bool{},
+		sixelWriter:                  opts.SixelWriter,
+		mediaDownloadInflight:        map[string]bool{},
+		paths:                        opts.Paths,
+		config:                       normalizeConfig(opts.Config),
+		status:                       "ready",
+		connectionState:              opts.ConnectionState,
+		pinnedFirst:                  true,
+		persistMessage:               opts.PersistMessage,
+		sendSticker:                  opts.SendSticker,
+		retryMessage:                 opts.RetryMessage,
+		loadMessages:                 opts.LoadMessages,
+		loadOlderMessages:            opts.LoadOlderMessages,
+		requestHistory:               opts.RequestHistory,
+		reloadSnapshot:               opts.ReloadSnapshot,
+		saveDraft:                    opts.SaveDraft,
+		searchChats:                  opts.SearchChats,
+		searchMessages:               opts.SearchMessages,
+		searchMentionCandidates:      opts.SearchMentionCandidates,
+		forwardMessages:              opts.ForwardMessages,
+		copyToClipboard:              opts.CopyToClipboard,
+		pasteAttachmentFromClipboard: opts.PasteAttachmentFromClipboard,
+		copyImageToClipboard:         opts.CopyImageToClipboard,
+		pickAttachment:               opts.PickAttachment,
+		pickSticker:                  opts.PickSticker,
+		openMedia:                    opts.OpenMedia,
+		startAudio:                   opts.StartAudio,
+		deleteMessage:                opts.DeleteMessage,
+		deleteMessageForEveryone:     opts.DeleteMessageForEveryone,
+		editMessage:                  opts.EditMessage,
+		saveMedia:                    opts.SaveMedia,
+		downloadMedia:                opts.DownloadMedia,
+		activeChatChanged:            opts.ActiveChatChanged,
+		appFocusChanged:              opts.AppFocusChanged,
+		visibleChatsChanged:          opts.VisibleChatsChanged,
+		markRead:                     opts.MarkRead,
+		sendReaction:                 opts.SendReaction,
+		sendPresence:                 opts.SendPresence,
+		subscribePresence:            opts.SubscribePresence,
+		liveUpdates:                  opts.LiveUpdates,
+		blockSending:                 opts.BlockSending,
+		blockAttachments:             opts.BlockAttachments,
+		requireOnlineForSend:         opts.RequireOnlineForSend,
+		unfilteredByChat:             map[string][]store.Message{},
+		newMessageStateByChat:        map[string]newMessageState{},
+		composerMentionsByChat:       map[string][]store.MessageMention{},
+		presenceByChat:               map[string]PresenceUpdate{},
+		forwardSelected:              map[string]bool{},
+		readReceiptInflight:          map[string]bool{},
+		presenceSubscribed:           map[string]bool{},
+		messageLimitsByChat:          map[string]int{},
+		historyRequestedByChat:       map[string]bool{},
+		pollTerminalSize:             opts.PollTerminalSize,
+	}
+	if model.pasteAttachmentFromClipboard == nil {
+		model.pasteAttachmentFromClipboard = opts.PasteImageFromClipboard
 	}
 	model.ensureSixelManager()
 	model.reportActiveChatChanged()
@@ -940,8 +951,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("yanked %d message(s) to clipboard", msg.Count)
 		}
 		return m, nil
-	case ClipboardImagePastedMsg:
-		return m.handleClipboardImagePasted(msg)
+	case ClipboardAttachmentPastedMsg:
+		return m.handleClipboardAttachmentPasted(msg)
 	case ClipboardImageCopiedMsg:
 		return m.handleClipboardImageCopied(msg)
 	case AttachmentPickedMsg:
@@ -1672,7 +1683,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = "attachments cannot be used while editing"
 			return m, nil
 		}
-		return m.startClipboardImagePaste()
+		return m.startClipboardAttachmentPaste()
 	}
 	if m.keyMatches(msg, keys.InsertRemoveAttachment) {
 		if m.editTarget != nil {
@@ -2461,8 +2472,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.saveFocusedMedia()
 	case cmd == "copy-image" || cmd == "copy image":
 		return m.copyFocusedImage()
-	case cmd == "paste-image" || cmd == "paste image":
-		return m.startClipboardImagePaste()
+	case cmd == "paste-attachment" || cmd == "paste attachment" || cmd == "paste-image" || cmd == "paste image":
+		return m.startClipboardAttachmentPaste()
 	case cmd == "retry-message" || cmd == "retry message" || cmd == "retry":
 		m.retryFocusedMediaMessage()
 	case cmd == "history-fetch" || cmd == "history fetch":
@@ -2998,7 +3009,7 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 			if oldWasAtTail {
 				m.showCurrentChatLatest()
 			} else {
-				m.setNewMessagesBelow(oldChatID)
+				m.recordNewMessages(oldChatID, oldTailID)
 			}
 		}
 	}
@@ -3042,32 +3053,70 @@ func (m Model) activeChatTailAdvanced(oldTailID string) bool {
 	return indexOfMessage(messages, oldTailID) >= 0
 }
 
-func (m *Model) setNewMessagesBelow(chatID string) {
-	if strings.TrimSpace(chatID) == "" {
+func (m *Model) recordNewMessages(chatID, oldTailID string) {
+	if strings.TrimSpace(chatID) == "" || strings.TrimSpace(oldTailID) == "" {
 		return
 	}
-	if m.newMessagesBelowByChat == nil {
-		m.newMessagesBelowByChat = map[string]bool{}
+	messages := m.currentMessages()
+	if chatID != m.currentChat().ID || len(messages) == 0 {
+		return
 	}
-	m.newMessagesBelowByChat[chatID] = true
+	oldTailIndex := indexOfMessage(messages, oldTailID)
+	if oldTailIndex < 0 || oldTailIndex >= len(messages)-1 {
+		return
+	}
+	if m.newMessageStateByChat == nil {
+		m.newMessageStateByChat = map[string]newMessageState{}
+	}
+	state := m.newMessageStateByChat[chatID]
+	firstIndex := -1
+	if strings.TrimSpace(state.FirstMessageID) != "" {
+		firstIndex = indexOfMessage(messages, state.FirstMessageID)
+	}
+	if firstIndex < 0 {
+		firstIndex = oldTailIndex + 1
+		state.FirstMessageID = messages[firstIndex].ID
+	}
+	state.NewCount = len(messages) - firstIndex
+	m.newMessageStateByChat[chatID] = state
 }
 
 func (m *Model) clearNewMessagesBelow(chatID string) {
-	if strings.TrimSpace(chatID) == "" || m.newMessagesBelowByChat == nil {
+	if strings.TrimSpace(chatID) == "" || m.newMessageStateByChat == nil {
 		return
 	}
-	delete(m.newMessagesBelowByChat, chatID)
+	delete(m.newMessageStateByChat, chatID)
+}
+
+func (m Model) newMessagesState(chatID string) (newMessageState, int, bool) {
+	if strings.TrimSpace(chatID) == "" || m.newMessageStateByChat == nil {
+		return newMessageState{}, -1, false
+	}
+	state, ok := m.newMessageStateByChat[chatID]
+	if !ok || strings.TrimSpace(state.FirstMessageID) == "" {
+		return newMessageState{}, -1, false
+	}
+	if chatID != m.currentChat().ID || m.messageViewNarrowed("") {
+		return newMessageState{}, -1, false
+	}
+	messages := m.currentMessages()
+	if len(messages) == 0 || m.messageCursor >= len(messages)-1 {
+		return newMessageState{}, -1, false
+	}
+	firstIndex := indexOfMessage(messages, state.FirstMessageID)
+	if firstIndex < 0 || firstIndex >= len(messages) {
+		return newMessageState{}, -1, false
+	}
+	state.NewCount = len(messages) - firstIndex
+	if state.NewCount <= 0 {
+		return newMessageState{}, -1, false
+	}
+	return state, firstIndex, true
 }
 
 func (m Model) hasNewMessagesBelow(chatID string) bool {
-	if strings.TrimSpace(chatID) == "" || m.newMessagesBelowByChat == nil || !m.newMessagesBelowByChat[chatID] {
-		return false
-	}
-	if chatID != m.currentChat().ID {
-		return false
-	}
-	messages := m.currentMessages()
-	return len(messages) > 0 && m.messageCursor < len(messages)-1
+	_, _, ok := m.newMessagesState(chatID)
+	return ok
 }
 
 func (m *Model) clearSearch() {
@@ -3301,21 +3350,20 @@ func (m Model) messageScrollTopWithCursorVisible() (int, bool) {
 	if len(messages) == 0 {
 		return 0, true
 	}
-	start, end := m.visibleMessageRange(len(messages), height)
-	if m.messageCursor < start || m.messageCursor >= end {
-		return clamp(m.messageCursor, 0, len(messages)-1), true
-	}
-	blocks := m.messageBlocksForRange(messages, width, start, end, nil)
+	blocks := m.messageBlocks(messages, width, nil)
 	if len(blocks) == 0 {
 		return 0, true
 	}
-	localCursor := clamp(m.messageCursor-start, 0, len(blocks)-1)
-	localScrollTop := clamp(m.messageScrollTop-start, 0, len(blocks)-1)
+	localCursor := messageBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, len(messages)-1))
+	localScrollTop := messageBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, len(messages)-1))
+	localScrollTop = dividerViewportScrollTop(blocks, localScrollTop, localCursor, height)
 	spans := messageViewportSpans(blocks, localScrollTop, localCursor, height)
 	if messageBlockSpansContain(spans, localCursor) {
-		return m.messageScrollTop, true
+		return blocks[localScrollTop].messageIndex, true
 	}
-	return clamp(start+adjustedMessageScrollTop(blocks, localScrollTop, localCursor, height), 0, len(messages)-1), true
+	target := adjustedMessageScrollTop(blocks, localScrollTop, localCursor, height)
+	target = dividerViewportScrollTop(blocks, target, localCursor, height)
+	return clamp(blocks[target].messageIndex, 0, len(messages)-1), true
 }
 
 func (m *Model) showCurrentChatLatest() {
@@ -4692,11 +4740,11 @@ func (m Model) handlePickedSticker(msg StickerPickedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleClipboardImagePasted(msg ClipboardImagePastedMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleClipboardAttachmentPasted(msg ClipboardAttachmentPastedMsg) (tea.Model, tea.Cmd) {
 	m.mode = ModeInsert
 	m.focus = FocusMessages
 	if msg.Err != nil {
-		m.status = fmt.Sprintf("paste image failed: %v", msg.Err)
+		m.status = fmt.Sprintf("paste attachment failed: %v", msg.Err)
 		return m, nil
 	}
 	m.stageAttachment(msg.Attachment)
@@ -4761,19 +4809,19 @@ func (m Model) startStickerPicker() (tea.Model, tea.Cmd) {
 	return m, m.pickSticker()
 }
 
-func (m Model) startClipboardImagePaste() (tea.Model, tea.Cmd) {
+func (m Model) startClipboardAttachmentPaste() (tea.Model, tea.Cmd) {
 	if len(m.chats) == 0 || m.currentChat().ID == "" {
 		m.status = "no chat selected"
 		return m, nil
 	}
 	m.mode = ModeInsert
 	m.focus = FocusMessages
-	if m.pasteImageFromClipboard == nil {
-		m.status = "image clipboard paste unavailable"
+	if m.pasteAttachmentFromClipboard == nil {
+		m.status = "clipboard attachment paste unavailable"
 		return m, nil
 	}
-	m.status = "pasting image from clipboard"
-	return m, m.pasteImageFromClipboard()
+	m.status = "pasting attachment from clipboard"
+	return m, m.pasteAttachmentFromClipboard()
 }
 
 func (m *Model) stageAttachmentPath(path string) error {

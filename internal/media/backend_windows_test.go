@@ -21,6 +21,9 @@ func TestDetectWindowsExternalOpener(t *testing.T) {
 	t.Cleanup(func() {
 		lookPath = prevLookPath
 	})
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
 
 	report := Detect("auto")
 	if report.Selected != BackendExternal {
@@ -31,7 +34,7 @@ func TestDetectWindowsExternalOpener(t *testing.T) {
 	}
 }
 
-func TestDetectWindowsAutoPrefersExternalOverChafa(t *testing.T) {
+func TestDetectWindowsAutoPrefersChafaOverExternal(t *testing.T) {
 	prevLookPath := lookPath
 	lookPath = func(name string) (string, error) {
 		switch name {
@@ -46,13 +49,41 @@ func TestDetectWindowsAutoPrefersExternalOverChafa(t *testing.T) {
 	t.Cleanup(func() {
 		lookPath = prevLookPath
 	})
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
 
 	report := Detect("auto")
-	if report.Selected != BackendExternal {
-		t.Fatalf("Selected = %q, want %q", report.Selected, BackendExternal)
+	if report.Selected != BackendChafa {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendChafa)
 	}
 	if report.Reasons[BackendChafa] != "available" {
 		t.Fatalf("chafa reason = %q", report.Reasons[BackendChafa])
+	}
+}
+
+func TestDetectWindowsExplicitExternalPreservesExternalOpener(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "rundll32.exe":
+			return `C:\Windows\System32\rundll32.exe`, nil
+		case "chafa":
+			return `C:\Program Files\chafa\chafa.exe`, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
+
+	report := Detect("external")
+	if report.Selected != BackendExternal {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendExternal)
 	}
 }
 

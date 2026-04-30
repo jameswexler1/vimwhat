@@ -18,8 +18,10 @@ type messageLineRef struct {
 }
 
 type messageLayoutBlock struct {
-	lines []string
-	refs  []messageLineRef
+	lines        []string
+	refs         []messageLineRef
+	messageIndex int
+	kind         messageBlockKind
 }
 
 type mediaPlacementCandidate struct {
@@ -343,15 +345,20 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 	footer := m.renderMessageFooter(max(1, width-2))
 	footerHeight := min(countLines(footer), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
-	start, end := m.visibleMessageRange(len(messages), messageHeight)
-
-	blocks := make([]messageLayoutBlock, 0, end-start)
+	blocks := make([]messageLayoutBlock, 0, len(messages)+1)
 	candidates := map[string]mediaPlacementCandidate{}
 	var lastDate string
-	if start > 0 {
-		lastDate = messageDate(messages[start-1])
-	}
-	for i := start; i < end; i++ {
+	newState, firstNewIndex, hasNewDivider := m.newMessagesState(m.currentChat().ID)
+	for i := 0; i < len(messages); i++ {
+		if hasNewDivider && i == firstNewIndex {
+			line := renderNewMessagesDivider(width, newState.NewCount)
+			blocks = append(blocks, messageLayoutBlock{
+				lines:        []string{line},
+				refs:         []messageLineRef{{}},
+				messageIndex: i,
+				kind:         messageBlockDivider,
+			})
+		}
 		message := messages[i]
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
@@ -387,11 +394,17 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 			refs = append([]messageLineRef{{}}, refs...)
 			lastDate = date
 		}
-		blocks = append(blocks, messageLayoutBlock{lines: lines, refs: refs})
+		blocks = append(blocks, messageLayoutBlock{
+			lines:        lines,
+			refs:         refs,
+			messageIndex: i,
+			kind:         messageBlockMessage,
+		})
 	}
 
-	localCursor := clamp(m.messageCursor-start, 0, max(0, len(blocks)-1))
-	localScrollTop := clamp(m.messageScrollTop-start, 0, max(0, len(blocks)-1))
+	localCursor := messageLayoutBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, max(0, len(messages)-1)))
+	localScrollTop := messageLayoutBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, max(0, len(messages)-1)))
+	localScrollTop = messageLayoutDividerViewportScrollTop(blocks, localScrollTop, localCursor, messageHeight)
 	viewportRefs := messageViewportRefs(
 		blocks,
 		localScrollTop,
@@ -436,7 +449,11 @@ func messageViewportRefs(blocks []messageLayoutBlock, scrollTop, cursor, height 
 	}
 	plainBlocks := make([]messageBlock, len(blocks))
 	for i, block := range blocks {
-		plainBlocks[i] = messageBlock{lines: block.lines}
+		plainBlocks[i] = messageBlock{
+			lines:        block.lines,
+			messageIndex: block.messageIndex,
+			kind:         block.kind,
+		}
 	}
 
 	spans := messageViewportSpans(plainBlocks, scrollTop, cursor, height)
@@ -455,6 +472,36 @@ func messageViewportRefs(blocks []messageLayoutBlock, scrollTop, cursor, height 
 		}
 	}
 	return out
+}
+
+func messageLayoutBlockIndexForCursor(blocks []messageLayoutBlock, messageIndex int) int {
+	for i, block := range blocks {
+		if block.kind == messageBlockMessage && block.messageIndex == messageIndex {
+			return i
+		}
+	}
+	return clamp(messageIndex, 0, max(0, len(blocks)-1))
+}
+
+func messageLayoutBlockIndexForScrollTop(blocks []messageLayoutBlock, scrollTop int) int {
+	for i, block := range blocks {
+		if block.messageIndex == scrollTop {
+			return i
+		}
+	}
+	return clamp(scrollTop, 0, max(0, len(blocks)-1))
+}
+
+func messageLayoutDividerViewportScrollTop(blocks []messageLayoutBlock, current, cursor, height int) int {
+	plainBlocks := make([]messageBlock, len(blocks))
+	for i, block := range blocks {
+		plainBlocks[i] = messageBlock{
+			lines:        block.lines,
+			messageIndex: block.messageIndex,
+			kind:         block.kind,
+		}
+	}
+	return dividerViewportScrollTop(plainBlocks, current, cursor, height)
 }
 
 func maxRenderedWidth(value string) int {

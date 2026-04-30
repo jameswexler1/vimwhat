@@ -22,7 +22,7 @@ func platformExternalOpenerUnavailableReason() string {
 
 func platformBackendOrder() []Backend {
 	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
-		return []Backend{BackendSixel, BackendExternal, BackendChafa, BackendUeberzugPP}
+		return []Backend{BackendSixel, BackendChafa, BackendExternal, BackendUeberzugPP}
 	}
-	return []Backend{BackendSixel, BackendExternal, BackendChafa, BackendUeberzugPP}
+	return []Backend{BackendSixel, BackendChafa, BackendExternal, BackendUeberzugPP}
 }

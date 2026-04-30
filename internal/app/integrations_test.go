@@ -56,8 +56,8 @@ func TestReadImageFromClipboardRejectsNonImageData(t *testing.T) {
 	paths := config.Paths{MediaDir: filepath.Join(t.TempDir(), "media")}
 
 	_, err := readImageFromClipboard(context.Background(), paths, `sh -c "printf not-image"`)
-	if err == nil || !strings.Contains(err.Error(), "image") {
-		t.Fatalf("readImageFromClipboard() error = %v, want image rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "attachment") {
+		t.Fatalf("readImageFromClipboard() error = %v, want attachment rejection", err)
 	}
 }
 

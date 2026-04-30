@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2939,7 +2940,7 @@ func TestRunMediaOpenRepairsStaleManagedCacheAndDownloadsAgain(t *testing.T) {
 	env := Environment{
 		Store: db,
 		Config: config.Config{
-			FileOpenerCommand: "true {path}",
+			FileOpenerCommand: testNoopFileOpenerCommand(),
 		},
 		Paths: config.Paths{
 			TransientDir: filepath.Join(t.TempDir(), "transient"),
@@ -3104,6 +3105,9 @@ func logoutTestEnvironment(t *testing.T) (Environment, string) {
 	if err := db.SaveDraft(ctx, "chat-1", "draft"); err != nil {
 		t.Fatalf("SaveDraft() error = %v", err)
 	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
 
 	for _, file := range []string{
 		paths.DatabaseFile + "-wal",
@@ -3125,11 +3129,23 @@ func logoutTestEnvironment(t *testing.T) (Environment, string) {
 		}
 	}
 
+	db, err = store.Open(paths.DatabaseFile)
+	if err != nil {
+		t.Fatalf("store.Open() reopen error = %v", err)
+	}
+
 	return Environment{
 		Paths:  paths,
 		Config: config.Config{DownloadsDir: downloadsDir},
 		Store:  db,
 	}, savedPath
+}
+
+func testNoopFileOpenerCommand() string {
+	if runtime.GOOS == "windows" {
+		return `cmd.exe /c if exist "{path}" (exit /b 0) else (exit /b 0)`
+	}
+	return "true {path}"
 }
 
 func assertLocalStateCleared(t *testing.T, paths config.Paths, savedPath string) {
@@ -3362,7 +3378,7 @@ func TestRunMediaOpenUsesLocalDownloadedFile(t *testing.T) {
 
 	env := Environment{
 		Store:  db,
-		Config: config.Config{FileOpenerCommand: "true {path}"},
+		Config: config.Config{FileOpenerCommand: testNoopFileOpenerCommand()},
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -3429,7 +3445,7 @@ func TestRunMediaOpenDownloadsRemoteWhenNeeded(t *testing.T) {
 	env := Environment{
 		Store: db,
 		Config: config.Config{
-			FileOpenerCommand: "true {path}",
+			FileOpenerCommand: testNoopFileOpenerCommand(),
 		},
 		Paths: config.Paths{
 			MediaDir:    mediaDir,
@@ -3505,7 +3521,7 @@ func TestRunMediaOpenFailsWithoutDescriptor(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(Environment{
 		Store:  db,
-		Config: config.Config{FileOpenerCommand: "true {path}"},
+		Config: config.Config{FileOpenerCommand: testNoopFileOpenerCommand()},
 	}, []string{"media", "open", "m-1"}, &stdout, &stderr); code != 1 {
 		t.Fatalf("run media open exit = %d, want 1", code)
 	}
@@ -3564,7 +3580,7 @@ func TestRunMediaOpenFailsWhenUnpairedForRemoteOnlyMedia(t *testing.T) {
 	env := Environment{
 		Store: db,
 		Config: config.Config{
-			FileOpenerCommand: "true {path}",
+			FileOpenerCommand: testNoopFileOpenerCommand(),
 		},
 		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
 			sessionOpened = true

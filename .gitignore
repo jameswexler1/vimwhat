@@ -1,4 +1,6 @@
 /vimwhat
+/vimwhat.exe
+/vimwhat.exe~
 *.sqlite3
 *.sqlite3-*
 *.db

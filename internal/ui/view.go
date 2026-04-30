@@ -440,6 +440,45 @@ func splitDisplayWidth(value string, width int) (string, string) {
 	return value[:cut], value[cut:]
 }
 
+func tailDisplay(value string, width int) string {
+	if width <= 0 || value == "" {
+		return ""
+	}
+	if displayWidth(value) <= width {
+		return value
+	}
+
+	type cluster struct {
+		text  string
+		width int
+	}
+	clusters := make([]cluster, 0, len(value))
+	graphemes := uniseg.NewGraphemes(value)
+	for graphemes.Next() {
+		text := graphemes.Str()
+		clusters = append(clusters, cluster{text: text, width: displayWidth(text)})
+	}
+
+	used := 0
+	start := len(clusters)
+	for start > 0 {
+		next := clusters[start-1]
+		if used > 0 && used+next.width > width {
+			break
+		}
+		used += next.width
+		start--
+		if used >= width {
+			break
+		}
+	}
+	var b strings.Builder
+	for _, cluster := range clusters[start:] {
+		b.WriteString(cluster.text)
+	}
+	return b.String()
+}
+
 func clipLines(content string, height int) string {
 	return strings.Join(clipLinesSlice(strings.Split(content, "\n"), height), "\n")
 }
@@ -469,7 +508,16 @@ func clipLinesSlice(lines []string, height int) []string {
 }
 
 type messageBlock struct {
-	lines []string
+	lines        []string
+	messageIndex int
+	kind         messageBlockKind
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 type messageBlockSpan struct {
@@ -477,6 +525,13 @@ type messageBlockSpan struct {
 	start int
 	end   int
 }
+
+type messageBlockKind int
+
+const (
+	messageBlockMessage messageBlockKind = iota
+	messageBlockDivider
+)
 
 const maxMessageRenderWindow = 48
 
@@ -575,6 +630,89 @@ func messageBlockSpansContain(spans []messageBlockSpan, index int) bool {
 		}
 	}
 	return false
+}
+
+func messageBlockIndexForCursor(blocks []messageBlock, messageIndex int) int {
+	for i, block := range blocks {
+		if block.kind == messageBlockMessage && block.messageIndex == messageIndex {
+			return i
+		}
+	}
+	return clamp(messageIndex, 0, max(0, len(blocks)-1))
+}
+
+func messageBlockIndexForScrollTop(blocks []messageBlock, scrollTop int) int {
+	for i, block := range blocks {
+		if block.messageIndex == scrollTop {
+			return i
+		}
+	}
+	return clamp(scrollTop, 0, max(0, len(blocks)-1))
+}
+
+func lastVisibleMessageIndex(blocks []messageBlock, spans []messageBlockSpan) int {
+	last := -1
+	for _, span := range spans {
+		if span.index < 0 || span.index >= len(blocks) || span.start >= span.end {
+			continue
+		}
+		block := blocks[span.index]
+		if block.kind != messageBlockMessage {
+			continue
+		}
+		last = max(last, block.messageIndex)
+	}
+	return last
+}
+
+func dividerViewportScrollTop(blocks []messageBlock, current, cursor, height int) int {
+	divider := -1
+	for i, block := range blocks {
+		if block.kind == messageBlockDivider {
+			divider = i
+			break
+		}
+	}
+	if divider < 0 {
+		return current
+	}
+
+	best := -1
+	bestScore := 0
+	for candidate := 0; candidate < len(blocks); candidate++ {
+		spans := messageViewportSpans(blocks, candidate, cursor, height)
+		if !messageBlockSpansContain(spans, cursor) || !messageBlockSpansContain(spans, divider) {
+			continue
+		}
+		hasMessageBelow := false
+		visibleLines := 0
+		dividerMid := 0
+		for _, span := range spans {
+			if span.index < 0 || span.index >= len(blocks) || span.start >= span.end {
+				continue
+			}
+			block := blocks[span.index]
+			if block.kind == messageBlockMessage && span.index > divider {
+				hasMessageBelow = true
+			}
+			if span.index == divider {
+				dividerMid = visibleLines + (span.end-span.start)/2
+			}
+			visibleLines += span.end - span.start
+		}
+		if !hasMessageBelow {
+			continue
+		}
+		score := abs(dividerMid-height/2)*1000 + abs(candidate-current)
+		if best == -1 || score < bestScore {
+			best = candidate
+			bestScore = score
+		}
+	}
+	if best >= 0 {
+		return best
+	}
+	return current
 }
 
 func bottomMessageViewportSpans(blocks []messageBlock, height int) []messageBlockSpan {
@@ -1216,26 +1354,22 @@ func (m Model) renderMessages(width, height int) string {
 
 	messages := m.currentMessages()
 	bodyHeight := max(1, height-len(headerLines))
-	footer := m.renderMessageFooter(max(1, width-2))
-	footerHeight := min(countLines(footer), bodyHeight)
+	footerHeight := min(countLines(m.renderMessageFooter(max(1, width-2))), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
-	start, end := m.visibleMessageRange(len(messages), messageHeight)
-
-	blocks := m.messageBlocksForRange(messages, width, start, end, m.visibleOverlayIdentifiers())
+	blocks := m.messageBlocks(messages, width, m.visibleOverlayIdentifiers())
 
 	body := make([]string, 0, bodyHeight)
+	var spans []messageBlockSpan
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
-		localCursor := clamp(m.messageCursor-start, 0, len(blocks)-1)
-		localScrollTop := clamp(m.messageScrollTop-start, 0, len(blocks)-1)
-		body = append(body, messageViewport(
-			blocks,
-			localScrollTop,
-			localCursor,
-			messageHeight,
-		)...)
+		cursorBlock := messageBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, len(messages)-1))
+		scrollBlock := messageBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, len(messages)-1))
+		scrollBlock = dividerViewportScrollTop(blocks, scrollBlock, cursorBlock, messageHeight)
+		spans = messageViewportSpans(blocks, scrollBlock, cursorBlock, messageHeight)
+		body = append(body, messageLinesForSpans(blocks, spans)...)
 	}
+	footer := m.renderMessageFooterWithNotice(max(1, width-2), m.footerNoticeForViewport(blocks, spans))
 	if footerHeight > 0 {
 		if len(blocks) == 0 || messageBlocksHeight(blocks) <= messageHeight {
 			body = padLines(body, messageHeight)
@@ -1247,13 +1381,25 @@ func (m Model) renderMessages(width, height int) string {
 	return strings.Join(clipLinesSlice(append(headerLines, body...), height), "\n")
 }
 
+func (m Model) messageBlocks(messages []store.Message, width int, visibleOverlays map[string]bool) []messageBlock {
+	return m.messageBlocksForRange(messages, width, 0, len(messages), visibleOverlays)
+}
+
 func (m Model) messageBlocksForRange(messages []store.Message, width, start, end int, visibleOverlays map[string]bool) []messageBlock {
 	blocks := make([]messageBlock, 0, end-start)
 	var lastDate string
 	if start > 0 && start <= len(messages) {
 		lastDate = messageDate(messages[start-1])
 	}
+	newState, firstNewIndex, hasNewDivider := m.newMessagesState(m.currentChat().ID)
 	for i := start; i < end && i < len(messages); i++ {
+		if hasNewDivider && i == firstNewIndex {
+			blocks = append(blocks, messageBlock{
+				lines:        []string{renderNewMessagesDivider(width, newState.NewCount)},
+				messageIndex: i,
+				kind:         messageBlockDivider,
+			})
+		}
 		message := messages[i]
 		date := messageDate(message)
 		selected := m.mode == ModeVisual && i >= min(m.visualAnchor, m.messageCursor) && i <= max(m.visualAnchor, m.messageCursor)
@@ -1264,9 +1410,26 @@ func (m Model) messageBlocksForRange(messages []store.Message, width, start, end
 			lines = append([]string{renderDaySeparator(date, width)}, lines...)
 			lastDate = date
 		}
-		blocks = append(blocks, messageBlock{lines: lines})
+		blocks = append(blocks, messageBlock{
+			lines:        lines,
+			messageIndex: i,
+			kind:         messageBlockMessage,
+		})
 	}
 	return blocks
+}
+
+func renderNewMessagesDivider(width, count int) string {
+	width = max(1, width)
+	label := fmt.Sprintf(" Mensagens novas: %d ", max(1, count))
+	if lipgloss.Width(label) >= width {
+		return lipgloss.NewStyle().Foreground(warnFG).Bold(true).Render(truncateDisplay(label, width))
+	}
+	left := (width - lipgloss.Width(label)) / 2
+	right := max(0, width-lipgloss.Width(label)-left)
+	return lipgloss.NewStyle().Foreground(warnFG).Bold(true).Render(
+		strings.Repeat("-", left) + label + strings.Repeat("-", right),
+	)
 }
 
 func (m Model) visibleMessageRange(count, height int) (int, int) {
@@ -2277,35 +2440,7 @@ func (m Model) renderPrompt(content, hint string) string {
 }
 
 func (m Model) renderComposer(width int) string {
-	lines := []string{m.renderFooterHelpLine(width)}
-
-	if edit := m.editPreviewLine(width); edit != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(edit))
-	}
-	if quote := m.replyPreviewLine(width); quote != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(quote))
-	}
-	attachmentLines := m.composerAttachmentLines(width)
-	lines = append(lines, attachmentLines...)
-	lines = append(lines, m.mentionSuggestionLines(width)...)
-
-	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines)-m.mentionSuggestionHeight())
-	if len(bodyLines) > maxBodyLines {
-		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
-	}
-	for i, line := range bodyLines {
-		if i == len(bodyLines)-1 {
-			line += "▌"
-		}
-		lines = append(lines, truncateDisplay("> "+line, width))
-	}
-
-	style := lipgloss.NewStyle().Foreground(primaryFG).Width(width)
-	if !barsTransparent() {
-		style = style.Background(uiTheme.BarBG)
-	}
-	return style.Render(strings.Join(lines, "\n"))
+	return m.renderComposerWithNotice(width, m.renderFooterHelpNotice())
 }
 
 func (m Model) mentionSuggestionLines(width int) []string {
@@ -2408,11 +2543,15 @@ func (m Model) composerAttachmentLines(width int) []string {
 }
 
 func (m Model) renderMessageFooter(width int) string {
+	return m.renderMessageFooterWithNotice(width, m.renderFooterHelpNotice())
+}
+
+func (m Model) renderMessageFooterWithNotice(width int, notice string) string {
 	if m.mode == ModeCommand || m.mode == ModeSearch || m.mode == ModeConfirm {
 		return ""
 	}
 	if m.mode == ModeInsert {
-		return m.renderComposer(width)
+		return m.renderComposerWithNotice(width, notice)
 	}
 
 	draft := strings.TrimSuffix(m.draftsByChat[m.currentChat().ID], "\n")
@@ -2422,7 +2561,7 @@ func (m Model) renderMessageFooter(width int) string {
 	draft = firstLine(draft)
 	input := "> " + draft
 	lines := []string{
-		m.renderFooterHelpLine(width),
+		m.renderFooterHelpLineWithNotice(width, notice),
 		truncateDisplay(input, width),
 	}
 	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
@@ -2432,13 +2571,55 @@ func (m Model) renderMessageFooter(width int) string {
 	return style.Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) renderFooterHelpLine(width int) string {
-	notice := ""
-	chatID := m.currentChat().ID
-	if m.hasNewMessagesBelow(chatID) {
-		notice = "↓ new messages below"
+func (m Model) renderComposerWithNotice(width int, notice string) string {
+	lines := []string{m.renderFooterHelpLineWithNotice(width, notice)}
+
+	if edit := m.editPreviewLine(width); edit != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(edit))
 	}
+	if quote := m.replyPreviewLine(width); quote != "" {
+		lines = append(lines, lipgloss.NewStyle().Foreground(softFG).Italic(true).Render(quote))
+	}
+	attachmentLines := m.composerAttachmentLines(width)
+	lines = append(lines, attachmentLines...)
+	lines = append(lines, m.mentionSuggestionLines(width)...)
+
+	bodyLines := composerLines(m.composer)
+	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines)-m.mentionSuggestionHeight())
+	if len(bodyLines) > maxBodyLines {
+		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
+	}
+	for i, line := range bodyLines {
+		if i == len(bodyLines)-1 {
+			line = tailDisplay(line+"▌", max(1, width-2))
+		}
+		lines = append(lines, truncateDisplay("> "+line, width))
+	}
+
+	style := lipgloss.NewStyle().Foreground(primaryFG).Width(width)
+	if !barsTransparent() {
+		style = style.Background(uiTheme.BarBG)
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderFooterHelpLine(width int) string {
+	return m.renderFooterHelpLineWithNotice(width, m.renderFooterHelpNotice())
+}
+
+func (m Model) renderFooterHelpLineWithNotice(width int, notice string) string {
 	return renderFooterHelpLine(width, notice)
+}
+
+func (m Model) renderFooterHelpNotice() string {
+	chatID := m.currentChat().ID
+	if !m.hasNewMessagesBelow(chatID) {
+		return ""
+	}
+	if messages := m.currentMessages(); len(messages) > 0 && m.messageCursor < len(messages)-1 {
+		return fmt.Sprintf("↓ %d new below", len(messages)-m.messageCursor-1)
+	}
+	return ""
 }
 
 func renderFooterHelpLine(width int, notice string) string {
@@ -2463,6 +2644,24 @@ func renderFooterHelpLine(width int, notice string) string {
 	fill := strings.Repeat("-", max(0, width-lipgloss.Width(hint)-1))
 	return lipgloss.NewStyle().Foreground(borderColor).Render(fill+" ") +
 		lipgloss.NewStyle().Foreground(accentFG).Render(hint)
+}
+
+func (m Model) footerNoticeForViewport(blocks []messageBlock, spans []messageBlockSpan) string {
+	if len(blocks) == 0 || len(spans) == 0 {
+		return m.renderFooterHelpNotice()
+	}
+	lastVisible := lastVisibleMessageIndex(blocks, spans)
+	if lastVisible < 0 {
+		return m.renderFooterHelpNotice()
+	}
+	remaining := len(m.currentMessages()) - lastVisible - 1
+	if remaining <= 0 {
+		return ""
+	}
+	if m.hasNewMessagesBelow(m.currentChat().ID) {
+		return fmt.Sprintf("↓ %d new below", remaining)
+	}
+	return fmt.Sprintf("↓ %d below", remaining)
 }
 
 func (m Model) footerChatTitle() string {
@@ -2551,7 +2750,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalInsert), Action: "compose in insert mode"},
 			{Key: keysFor(keys.InsertSend, keys.CommandRun, keys.SearchRun), Action: "send or run current prompt"},
 			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
-			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste image, remove"},
+			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste attachment, remove"},
 			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
 			{Key: keysFor(keys.VisualForward, keys.ForwardSearch, keys.ForwardToggle, keys.ForwardSend), Action: "forward selected messages"},
 			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
@@ -2565,7 +2764,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: "media", Action: "preview/open/save/hide, copy-image"},
 			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
 			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
-			{Key: "more", Action: "edit-message, sticker, preview-backend, attach, paste-image, delete-message-everybody"},
+			{Key: "more", Action: "edit-message, sticker, preview-backend, attach, paste-attachment, delete-message-everybody"},
 		},
 	}
 

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -88,10 +89,16 @@ type imageClipboardCommand struct {
 	path     string
 }
 
+const clipboardFileDropPrefix = "VIMWHAT_FILEDROP:"
+
 func pasteImageFromClipboard(paths config.Paths, commandTemplate string) tea.Cmd {
+	return pasteAttachmentFromClipboard(paths, commandTemplate)
+}
+
+func pasteAttachmentFromClipboard(paths config.Paths, commandTemplate string) tea.Cmd {
 	return func() tea.Msg {
-		attachment, err := readImageFromClipboard(context.Background(), paths, commandTemplate)
-		return ui.ClipboardImagePastedMsg{Attachment: attachment, Err: err}
+		attachment, err := readAttachmentFromClipboard(context.Background(), paths, commandTemplate)
+		return ui.ClipboardAttachmentPastedMsg{Attachment: attachment, Err: err}
 	}
 }
 
@@ -103,6 +110,10 @@ func copyImageToClipboard(commandTemplate string, item store.MediaMetadata) tea.
 }
 
 func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemplate string) (ui.Attachment, error) {
+	return readAttachmentFromClipboard(ctx, paths, commandTemplate)
+}
+
+func readAttachmentFromClipboard(ctx context.Context, paths config.Paths, commandTemplate string) (ui.Attachment, error) {
 	if strings.TrimSpace(paths.MediaDir) == "" {
 		return ui.Attachment{}, fmt.Errorf("media cache dir is required")
 	}
@@ -112,7 +123,7 @@ func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemp
 
 	commands := imagePasteCommands(commandTemplate, paths.MediaDir)
 	if len(commands) == 0 {
-		return ui.Attachment{}, fmt.Errorf("no image clipboard paste command found")
+		return ui.Attachment{}, fmt.Errorf("no clipboard attachment paste command found")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -132,9 +143,9 @@ func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemp
 		var attachment ui.Attachment
 		var err error
 		if candidate.pathMode {
-			attachment, err = readImageFromClipboardPathMode(ctx, candidate)
+			attachment, err = readAttachmentFromClipboardPathMode(ctx, candidate)
 		} else {
-			attachment, err = readImageFromClipboardStdout(ctx, paths.MediaDir, candidate.argv)
+			attachment, err = readAttachmentFromClipboardStdout(ctx, paths.MediaDir, candidate.argv)
 		}
 		if err == nil {
 			return attachment, nil
@@ -144,30 +155,33 @@ func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemp
 	if lastErr != nil {
 		return ui.Attachment{}, lastErr
 	}
-	return ui.Attachment{}, fmt.Errorf("no image clipboard paste command found")
+	return ui.Attachment{}, fmt.Errorf("no clipboard attachment paste command found")
 }
 
-func readImageFromClipboardPathMode(ctx context.Context, candidate imageClipboardCommand) (ui.Attachment, error) {
+func readAttachmentFromClipboardPathMode(ctx context.Context, candidate imageClipboardCommand) (ui.Attachment, error) {
 	target := strings.TrimSpace(candidate.path)
 	if target == "" {
-		return ui.Attachment{}, fmt.Errorf("clipboard image path is empty")
+		return ui.Attachment{}, fmt.Errorf("clipboard attachment path is empty")
 	}
 	if err := runClipboardCommand(ctx, candidate.argv, nil, nil); err != nil {
 		_ = os.Remove(target)
 		return ui.Attachment{}, err
 	}
-	return attachmentFromClipboardImagePath(target)
+	return ui.AttachmentFromPath(target)
 }
 
-func readImageFromClipboardStdout(ctx context.Context, mediaDir string, argv []string) (ui.Attachment, error) {
+func readAttachmentFromClipboardStdout(ctx context.Context, mediaDir string, argv []string) (ui.Attachment, error) {
 	var stdout bytes.Buffer
 	if err := runClipboardCommand(ctx, argv, nil, &stdout); err != nil {
 		return ui.Attachment{}, err
 	}
 	data := stdout.Bytes()
+	if attachment, ok, err := attachmentFromClipboardFileDrop(data); ok || err != nil {
+		return attachment, err
+	}
 	mimeType := http.DetectContentType(data)
 	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
-		return ui.Attachment{}, fmt.Errorf("clipboard does not contain an image")
+		return ui.Attachment{}, fmt.Errorf("clipboard does not contain an attachment")
 	}
 	target := clipboardImagePath(mediaDir, imageExtensionForMIME(mimeType))
 	tmp, err := os.CreateTemp(mediaDir, "clipboard-*.tmp")
@@ -188,19 +202,21 @@ func readImageFromClipboardStdout(ctx context.Context, mediaDir string, argv []s
 		_ = os.Remove(tmpPath)
 		return ui.Attachment{}, fmt.Errorf("store clipboard image: %w", err)
 	}
-	return attachmentFromClipboardImagePath(target)
+	return ui.AttachmentFromPath(target)
 }
 
-func attachmentFromClipboardImagePath(path string) (ui.Attachment, error) {
-	attachment, err := ui.AttachmentFromPath(path)
+func attachmentFromClipboardFileDrop(data []byte) (ui.Attachment, bool, error) {
+	raw := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(raw, clipboardFileDropPrefix) {
+		return ui.Attachment{}, false, nil
+	}
+	encoded := strings.TrimPrefix(raw, clipboardFileDropPrefix)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return ui.Attachment{}, err
+		return ui.Attachment{}, true, fmt.Errorf("decode clipboard file path: %w", err)
 	}
-	if media.MediaKind(attachment.MIMEType, attachment.FileName) != media.KindImage {
-		_ = os.Remove(path)
-		return ui.Attachment{}, fmt.Errorf("clipboard does not contain an image")
-	}
-	return attachment, nil
+	attachment, err := ui.AttachmentFromPath(string(decoded))
+	return attachment, true, err
 }
 
 func writeImageToClipboard(ctx context.Context, commandTemplate string, item store.MediaMetadata) error {

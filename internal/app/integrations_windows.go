@@ -48,6 +48,13 @@ function Write-ClipboardBytes([byte[]] $bytes) {
     $stdout.Flush()
     exit 0
 }
+function Write-ClipboardFileDrop([string] $path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { return }
+    $prefix = 'VIMWHAT_FILEDROP:'
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($path))
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($prefix + $encoded)
+    Write-ClipboardBytes $bytes
+}
 $img = [System.Windows.Forms.Clipboard]::GetImage()
 if ($null -ne $img) {
     $ms = New-Object System.IO.MemoryStream
@@ -81,7 +88,7 @@ if ($null -ne $data) {
 if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
     $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
     if ($null -ne $files -and $files.Count -gt 0 -and [System.IO.File]::Exists($files[0])) {
-        Write-ClipboardBytes ([System.IO.File]::ReadAllBytes($files[0]))
+        Write-ClipboardFileDrop $files[0]
     }
 }
 exit 2
