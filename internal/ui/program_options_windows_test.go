@@ -2,7 +2,11 @@
 
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	"golang.org/x/sys/windows"
+)
 
 func TestWindowsReportFocusDisabledByDefault(t *testing.T) {
 	t.Setenv("VIMWHAT_DISABLE_REPORT_FOCUS", "")
@@ -45,5 +49,33 @@ func TestWindowsReportFocusDisableWins(t *testing.T) {
 
 	if windowsReportFocusEnabled() {
 		t.Fatal("windowsReportFocusEnabled() = true, want false when disabled")
+	}
+}
+
+func TestWindowsOutputModeRequestsVirtualTerminalAndDelayedNewline(t *testing.T) {
+	mode := windowsOutputMode(0, true)
+	for _, flag := range []uint32{
+		windows.ENABLE_PROCESSED_OUTPUT,
+		windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+		windows.DISABLE_NEWLINE_AUTO_RETURN,
+	} {
+		if mode&flag == 0 {
+			t.Fatalf("windowsOutputMode(0, true) = %#x, missing flag %#x", mode, flag)
+		}
+	}
+}
+
+func TestWindowsOutputModeFallbackOmitsDelayedNewline(t *testing.T) {
+	mode := windowsOutputMode(0, false)
+	for _, flag := range []uint32{
+		windows.ENABLE_PROCESSED_OUTPUT,
+		windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+	} {
+		if mode&flag == 0 {
+			t.Fatalf("windowsOutputMode(0, false) = %#x, missing flag %#x", mode, flag)
+		}
+	}
+	if mode&windows.DISABLE_NEWLINE_AUTO_RETURN != 0 {
+		t.Fatalf("windowsOutputMode(0, false) = %#x, want delayed newline flag omitted", mode)
 	}
 }

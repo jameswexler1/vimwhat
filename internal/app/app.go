@@ -3956,6 +3956,9 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("leader key: %s", env.Config.LeaderKey),
 		fmt.Sprintf("emoji mode: %s -> %s (TERM=%s UTF-8=%s)", emojiMode, resolvedEmojiMode, emptyAsAuto(os.Getenv("TERM")), yesNo(config.LocaleLooksUTF8())),
 		fmt.Sprintf("terminal env: %s", terminalEnvSummary()),
+	}
+	lines = append(lines, ui.ProbeTerminalOutput().Lines()...)
+	lines = append(lines,
 		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
 		fmt.Sprintf("video player command: %s", emptyAsAuto(env.Config.VideoPlayerCommand)),
 		fmt.Sprintf("audio player command: %s", emptyAsAuto(env.Config.AudioPlayerCommand)),
@@ -3966,7 +3969,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("contact rows: %d", stats.Contacts),
 		fmt.Sprintf("media rows: %d", stats.MediaItems),
 		fmt.Sprintf("migration rows: %d", stats.Migrations),
-	}
+	)
 	if migrationErr != nil {
 		lines = append(lines, fmt.Sprintf("migration status: %v", migrationErr))
 	} else {

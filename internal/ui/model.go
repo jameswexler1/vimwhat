@@ -232,6 +232,7 @@ type Options struct {
 	Snapshot                 store.Snapshot
 	ConnectionState          ConnectionState
 	LiveUpdates              <-chan LiveUpdate
+	ReserveLastColumn        bool
 	BlockSending             bool
 	BlockAttachments         bool
 	RequireOnlineForSend     bool
@@ -271,6 +272,7 @@ type Options struct {
 type Model struct {
 	width                      int
 	height                     int
+	reserveLastColumn          bool
 	mode                       Mode
 	focus                      Focus
 	allChats                   []store.Chat
@@ -425,7 +427,16 @@ type syncOverlayState struct {
 	Receipts       int
 }
 
-func Run(opts Options) error {
+func Run(opts Options) (err error) {
+	report, restore := prepareTerminalOutput()
+	defer func() {
+		if restore != nil {
+			if restoreErr := restore(); err == nil {
+				err = restoreErr
+			}
+		}
+	}()
+	opts.ReserveLastColumn = opts.ReserveLastColumn || report.LastColumnGuard
 	p := tea.NewProgram(NewModel(opts), programOptions()...)
 	final, err := p.Run()
 	if closer, ok := final.(interface{ Close() error }); ok {
@@ -448,6 +459,7 @@ func NewModel(opts Options) Model {
 	}
 
 	model := Model{
+		reserveLastColumn:        opts.ReserveLastColumn,
 		mode:                     ModeNormal,
 		focus:                    FocusChats,
 		allChats:                 slices.Clone(chats),

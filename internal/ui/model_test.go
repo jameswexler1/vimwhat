@@ -2341,6 +2341,37 @@ func TestViewRendersPaneContentWithinTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestReserveLastColumnKeepsRenderedFrameOffTerminalEdge(t *testing.T) {
+	model := NewModel(Options{
+		ReserveLastColumn: true,
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Unread: 9, Pinned: true},
+				{ID: "chat-2", Title: "Project Maybewhats"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: strings.Repeat("message body ", 20)}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+	})
+	model.width = 80
+	model.height = 18
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+	model.status = strings.Repeat("status ", 20)
+	model.composer = strings.Repeat("composer ", 20)
+
+	view := model.View()
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > model.width-1 {
+			t.Fatalf("line %d width = %d, want <= %d with last-column guard\n%s", i+1, width, model.width-1, stripANSI(view))
+		}
+	}
+}
+
 func TestPanelSizingDoesNotWrapExactWidthContent(t *testing.T) {
 	model := NewModel(Options{})
 	model.focus = FocusMessages

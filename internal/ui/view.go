@@ -42,6 +42,9 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading..."
 	}
+	if m.reserveLastColumn && m.width > 1 {
+		m.width--
+	}
 
 	inputHeight := m.inputHeight()
 	bodyHeight := m.height - 1 - inputHeight

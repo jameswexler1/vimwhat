@@ -3149,6 +3149,9 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	if !strings.Contains(out.String(), "requested notification backend:") || !strings.Contains(out.String(), "notification delivery path:") {
 		t.Fatalf("doctor output = %q, want notification diagnostics", out.String())
 	}
+	if !strings.Contains(out.String(), "terminal output:") {
+		t.Fatalf("doctor output = %q, want terminal output diagnostics", out.String())
+	}
 }
 
 func TestRunMediaOpenUsesLocalDownloadedFile(t *testing.T) {
