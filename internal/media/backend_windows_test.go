@@ -98,6 +98,80 @@ func TestDetectWindowsForcedSixelBeatsExternal(t *testing.T) {
 	}
 }
 
+func TestDetectWindowsAutoKeepsExternalWhenWezTermSupportsSixel(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "rundll32.exe":
+			return `C:\Windows\System32\rundll32.exe`, nil
+		case "img2sixel":
+			return `C:\Program Files\libsixel\img2sixel.exe`, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
+	t.Setenv("TERM_PROGRAM", "wezterm")
+
+	report := Detect("auto")
+	if report.Selected != BackendExternal {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendExternal)
+	}
+	if report.Reasons[BackendSixel] != "available" {
+		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
+	}
+}
+
+func TestDetectWindowsExplicitSixelSelectsSixel(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "rundll32.exe":
+			return `C:\Windows\System32\rundll32.exe`, nil
+		case "img2sixel":
+			return `C:\Program Files\libsixel\img2sixel.exe`, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
+	t.Setenv("TERM_PROGRAM", "wezterm")
+
+	report := Detect("sixel")
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
+	}
+}
+
+func TestDetectWindowsAutoDoesNotSelectSixelWithoutForce(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "img2sixel" {
+			return `C:\Program Files\libsixel\img2sixel.exe`, nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "")
+	t.Setenv("TERM_PROGRAM", "wezterm")
+
+	report := Detect("auto")
+	if report.Selected != BackendNone {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendNone)
+	}
+	if report.Reasons[BackendSixel] != "available" {
+		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
+	}
+}
+
 func TestDetectWindowsNoBackend(t *testing.T) {
 	prevLookPath := lookPath
 	lookPath = func(name string) (string, error) {

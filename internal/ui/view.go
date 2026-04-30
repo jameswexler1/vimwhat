@@ -34,17 +34,16 @@ var (
 )
 
 const (
-	chatHeaderHeight = 1
-	chatCellHeight   = 4
+	chatHeaderHeight      = 1
+	chatCellHeight        = 4
+	lastColumnGuardMargin = 2
 )
 
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "loading..."
 	}
-	if m.reserveLastColumn && m.width > 1 {
-		m.width--
-	}
+	m = m.withLayoutWidth()
 
 	inputHeight := m.inputHeight()
 	bodyHeight := m.height - 1 - inputHeight
@@ -66,35 +65,53 @@ func (m Model) View() string {
 	return capLines(trimRightSpaces(rendered), m.height)
 }
 
+func (m Model) withLayoutWidth() Model {
+	m.width = m.layoutWidth()
+	m.reserveLastColumn = false
+	return m
+}
+
+func (m Model) layoutWidth() int {
+	if m.width <= 0 {
+		return 0
+	}
+	width := m.width
+	if m.reserveLastColumn {
+		width -= lastColumnGuardMargin
+	}
+	return max(1, width)
+}
+
 func (m Model) renderBody(height int) string {
+	width := m.layoutWidth()
 	if m.syncOverlay.Visible {
-		return m.renderSyncOverlay(m.width, height)
+		return m.renderSyncOverlay(width, height)
 	}
 	if m.inlineFallbackPrompt {
-		return m.renderInlineFallbackPrompt(m.width, height)
+		return m.renderInlineFallbackPrompt(width, height)
 	}
 	if m.mode == ModeForward {
-		return m.renderForwardPicker(m.width, height)
+		return m.renderForwardPicker(width, height)
 	}
 	if m.helpVisible {
 		style := m.panelStyle(m.focus)
-		return m.renderPanel(m.focus, m.width, height, m.renderHelp(panelContentWidth(style, m.width)))
+		return m.renderPanel(m.focus, width, height, m.renderHelp(panelContentWidth(style, width)))
 	}
 
-	chatWidth := max(24, m.width/4)
-	previewWidth := max(26, m.width/4)
-	messageWidth := m.width - chatWidth
+	chatWidth := max(24, width/4)
+	previewWidth := max(26, width/4)
+	messageWidth := width - chatWidth
 
 	if m.compactLayout {
 		switch m.focus {
 		case FocusChats:
 			style := m.panelStyle(FocusChats)
-			return m.renderPanel(FocusChats, m.width, height, m.renderChats(panelContentWidth(style, m.width), panelContentHeight(style, height)))
+			return m.renderPanel(FocusChats, width, height, m.renderChats(panelContentWidth(style, width), panelContentHeight(style, height)))
 		case FocusPreview:
-			return m.renderPanel(FocusPreview, m.width, height, m.renderInfo(panelContentWidth(m.panelStyle(FocusPreview), m.width)))
+			return m.renderPanel(FocusPreview, width, height, m.renderInfo(panelContentWidth(m.panelStyle(FocusPreview), width)))
 		default:
 			style := m.panelStyle(FocusMessages)
-			return m.renderPanel(FocusMessages, m.width, height, m.renderMessages(panelContentWidth(style, m.width), panelContentHeight(style, height)))
+			return m.renderPanel(FocusMessages, width, height, m.renderMessages(panelContentWidth(style, width), panelContentHeight(style, height)))
 		}
 	}
 
@@ -1979,6 +1996,7 @@ func (m Model) renderInfo(width int) string {
 }
 
 func (m Model) renderStatus() string {
+	width := m.layoutWidth()
 	chatFilter := "all"
 	if m.unreadOnly {
 		chatFilter = "unread"
@@ -1998,7 +2016,7 @@ func (m Model) renderStatus() string {
 		statusSegment(" "+mode+" ", uiTheme.BarBG, m.modeStatusColor(m.mode), true),
 		statusSegment(" "+focus+" ", primaryFG, borderColor, false),
 		m.renderConnectionStatus(),
-		statusSegment(" "+truncateDisplay(chatTitle, max(8, m.width/5))+" ", primaryFG, "", false),
+		statusSegment(" "+truncateDisplay(chatTitle, max(8, width/5))+" ", primaryFG, "", false),
 	}, "")
 
 	search := ""
@@ -2010,7 +2028,7 @@ func (m Model) renderStatus() string {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
 	centerStatus := m.sanitizeDisplayLine(m.status)
-	center := " " + truncateDisplay(centerStatus, max(8, m.width/3)) + " "
+	center := " " + truncateDisplay(centerStatus, max(8, width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -2025,15 +2043,15 @@ func (m Model) renderStatus() string {
 
 	used := lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
 	centerWidth := lipgloss.Width(center)
-	if used > m.width {
-		centerWidth = max(0, centerWidth-(used-m.width))
+	if used > width {
+		centerWidth = max(0, centerWidth-(used-width))
 		center = truncateDisplay(center, centerWidth)
 		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
 	}
-	if used > m.width {
-		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount, m.width)
+	if used > width {
+		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount, width)
 	}
-	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, m.width-used)))
+	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, width-used)))
 	return left + center + spacer + right
 }
 
@@ -2234,11 +2252,12 @@ func (m Model) renderInput() string {
 }
 
 func (m Model) renderPrompt(content, hint string) string {
+	width := m.layoutWidth()
 	if hint != "" {
 		content = content + "  " + hint
 	}
-	content = truncateDisplay(m.sanitizeDisplayText(content, false), max(1, m.width-1))
-	style := lipgloss.NewStyle().Foreground(softFG).Width(m.width)
+	content = truncateDisplay(m.sanitizeDisplayText(content, false), max(1, width-1))
+	style := lipgloss.NewStyle().Foreground(softFG).Width(width)
 	if !barsTransparent() {
 		style = style.Background(uiTheme.BarBG)
 	}

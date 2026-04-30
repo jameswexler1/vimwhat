@@ -68,6 +68,13 @@ type Previewer struct {
 	Timeout   time.Duration
 }
 
+type terminalCellPixels struct {
+	Width  int
+	Height int
+}
+
+var detectTerminalCellPixels = platformTerminalCellPixels
+
 func (p Preview) Ready() bool {
 	if p.Err != nil {
 		return false
@@ -343,9 +350,10 @@ func placeholderPreviewLines(width, height int, kind Kind) []string {
 }
 
 func runImg2Sixel(ctx context.Context, width, height int, source string) ([]string, error) {
+	cell := resolvedTerminalCellPixels()
 	args := []string{
-		"-w", fmt.Sprintf("%d", width*8),
-		"-h", fmt.Sprintf("%d", height*16),
+		"-w", fmt.Sprintf("%d", width*cell.Width),
+		"-h", fmt.Sprintf("%d", height*cell.Height),
 		source,
 	}
 	output, err := runPreviewCommand(ctx, "img2sixel", args...)
@@ -353,6 +361,14 @@ func runImg2Sixel(ctx context.Context, width, height int, source string) ([]stri
 		return nil, fmt.Errorf("img2sixel preview: %s: %w", strings.TrimSpace(string(output)), err)
 	}
 	return splitPreviewOutput(output), nil
+}
+
+func resolvedTerminalCellPixels() terminalCellPixels {
+	cell, ok := detectTerminalCellPixels()
+	if !ok || cell.Width <= 0 || cell.Height <= 0 {
+		return terminalCellPixels{Width: 8, Height: 16}
+	}
+	return cell
 }
 
 func (p Previewer) videoThumbnailPath(req PreviewRequest) string {

@@ -1745,8 +1745,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.keyMatches(msg, keys.InsertBackspace) || m.keyMatches(msg, keys.InsertBackspaceAlt):
 		m.backspaceComposer()
 	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.appendComposerText(msg.String())
+		if text := keyText(msg); text != "" {
+			m.appendComposerText(text)
 			m.sendOwnPresence(m.currentChat().ID, true)
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
@@ -1788,8 +1788,8 @@ func (m Model) handleMentionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 		m.sendOwnPresence(m.currentChat().ID, true)
 		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration), true
 	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.appendComposerText(msg.String())
+		if text := keyText(msg); text != "" {
+			m.appendComposerText(text)
 			m.updateActiveMentionFromComposer()
 			m.sendOwnPresence(m.currentChat().ID, true)
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration), true
@@ -1809,6 +1809,17 @@ func (m *Model) appendComposerText(text string) {
 		return
 	}
 	m.pruneComposerMentions()
+}
+
+func keyText(msg tea.KeyMsg) string {
+	switch msg.Type {
+	case tea.KeyRunes:
+		return string(msg.Runes)
+	case tea.KeySpace:
+		return " "
+	default:
+		return ""
+	}
 }
 
 func (m *Model) backspaceComposer() {
@@ -1999,8 +2010,8 @@ func (m Model) updateCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.keyMatches(msg, keys.CommandBackspace) || m.keyMatches(msg, keys.CommandBackspaceAlt):
 		m.commandLine = trimLastCluster(m.commandLine)
 	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.commandLine += msg.String()
+		if text := keyText(msg); text != "" {
+			m.commandLine += text
 		}
 	}
 
@@ -2032,8 +2043,8 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.keyMatches(msg, keys.SearchBackspace) || m.keyMatches(msg, keys.SearchBackspaceAlt):
 		m.searchLine = trimLastCluster(m.searchLine)
 	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.searchLine += msg.String()
+		if text := keyText(msg); text != "" {
+			m.searchLine += text
 		}
 	}
 
@@ -2062,8 +2073,8 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case m.keyMatches(msg, keys.ConfirmBackspace) || m.keyMatches(msg, keys.ConfirmBackspaceAlt):
 		m.confirmLine = trimLastCluster(m.confirmLine)
 	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.confirmLine += msg.String()
+		if text := keyText(msg); text != "" {
+			m.confirmLine += text
 		}
 	}
 
@@ -2085,8 +2096,8 @@ func (m Model) updateForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.forwardQuery = trimLastCluster(m.forwardQuery)
 			m.rebuildForwardCandidates()
 		default:
-			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-				m.forwardQuery += msg.String()
+			if text := keyText(msg); text != "" {
+				m.forwardQuery += text
 				m.rebuildForwardCandidates()
 			}
 		}
@@ -4219,25 +4230,26 @@ func (m Model) previewDimensions() (int, int) {
 		viewportLimit := max(4, geometry.height*45/100)
 		height = min(height, min(available, viewportLimit))
 	}
-	if m.compactLayout && m.width < 72 {
+	if m.compactLayout && m.layoutWidth() < 72 {
 		height = min(height, 10)
 	}
 	return width, max(4, height)
 }
 
 func (m Model) messagePaneContentWidth() int {
-	if m.width <= 0 {
+	width := m.layoutWidth()
+	if width <= 0 {
 		return 0
 	}
 
 	if m.compactLayout {
 		style := m.panelStyle(FocusMessages)
-		return panelContentWidth(style, m.width)
+		return panelContentWidth(style, width)
 	}
 
-	chatWidth := max(24, m.width/4)
-	previewWidth := max(26, m.width/4)
-	messageWidth := m.width - chatWidth
+	chatWidth := max(24, width/4)
+	previewWidth := max(26, width/4)
+	messageWidth := width - chatWidth
 	if m.infoPaneVisible {
 		messageWidth -= previewWidth
 	}

@@ -8,8 +8,7 @@ func platformClipboardCommands() [][]string {
 	return [][]string{{"clip.exe"}}
 }
 
-func platformImagePasteCommands(mediaDir string) []imageClipboardCommand {
-	target := clipboardImagePath(mediaDir, ".png")
+func platformImagePasteCommands(_ string) []imageClipboardCommand {
 	return []imageClipboardCommand{{
 		argv: []string{
 			"powershell.exe",
@@ -18,11 +17,8 @@ func platformImagePasteCommands(mediaDir string) []imageClipboardCommand {
 			"-NonInteractive",
 			"-STA",
 			"-Command",
-			"Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($null -eq $img) { exit 2 }; $img.Save($args[0], [System.Drawing.Imaging.ImageFormat]::Png)",
-			target,
+			windowsClipboardImagePasteCommand,
 		},
-		pathMode: true,
-		path:     target,
 	}}
 }
 
@@ -41,6 +37,55 @@ func platformImageCopyCommands(path string, _ string) []imageClipboardCommand {
 		pathMode: true,
 	}}
 }
+
+const windowsClipboardImagePasteCommand = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+function Write-ClipboardBytes([byte[]] $bytes) {
+    if ($null -eq $bytes -or $bytes.Length -eq 0) { return }
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($bytes, 0, $bytes.Length)
+    $stdout.Flush()
+    exit 0
+}
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if ($null -ne $img) {
+    $ms = New-Object System.IO.MemoryStream
+    try {
+        $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        Write-ClipboardBytes ($ms.ToArray())
+    } finally {
+        $ms.Dispose()
+        $img.Dispose()
+    }
+}
+$data = [System.Windows.Forms.Clipboard]::GetDataObject()
+if ($null -ne $data) {
+    foreach ($format in @("PNG", "JFIF", "GIF", "image/png")) {
+        if (-not $data.GetDataPresent($format)) { continue }
+		$value = $data.GetData($format)
+		if ($value -is [byte[]]) {
+			Write-ClipboardBytes ([byte[]]$value)
+		}
+        if ($value -is [System.IO.Stream]) {
+            $ms = New-Object System.IO.MemoryStream
+            try {
+                $value.CopyTo($ms)
+                Write-ClipboardBytes ($ms.ToArray())
+            } finally {
+                $ms.Dispose()
+            }
+        }
+    }
+}
+if ([System.Windows.Forms.Clipboard]::ContainsFileDropList()) {
+    $files = [System.Windows.Forms.Clipboard]::GetFileDropList()
+    if ($null -ne $files -and $files.Count -gt 0 -and [System.IO.File]::Exists($files[0])) {
+        Write-ClipboardBytes ([System.IO.File]::ReadAllBytes($files[0]))
+    }
+}
+exit 2
+`
 
 func platformDefaultFilePickerCommand() string {
 	return "powershell.exe -NoLogo -NoProfile -NonInteractive -STA -EncodedCommand " + windowsFilePickerEncodedCommand + " {chooser}"

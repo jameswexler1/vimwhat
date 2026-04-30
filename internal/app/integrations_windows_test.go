@@ -19,10 +19,16 @@ func TestPlatformAutoOpenCommandsUseNativeWindowsOpeners(t *testing.T) {
 	}
 }
 
-func TestWindowsClipboardImageCommandsUsePathMode(t *testing.T) {
+func TestWindowsClipboardImagePasteCommandReadsImageAndFileDropFormats(t *testing.T) {
 	paste := platformImagePasteCommands(`C:\Temp\vimwhat-media`)
-	if len(paste) == 0 || !paste[0].pathMode || paste[0].path == "" {
-		t.Fatalf("paste commands = %+v, want path-mode command", paste)
+	if len(paste) == 0 || paste[0].pathMode || paste[0].path != "" {
+		t.Fatalf("paste commands = %+v, want stdout command", paste)
+	}
+	script := strings.Join(paste[0].argv, " ")
+	for _, want := range []string{"GetImage", "GetDataObject", "GetFileDropList", "OpenStandardOutput"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("paste command missing %q: %s", want, script)
+		}
 	}
 
 	copyCommands := platformImageCopyCommands(`C:\Temp\photo.png`, "image/png")

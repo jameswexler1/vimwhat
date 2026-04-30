@@ -27,6 +27,7 @@ func prepareTerminalOutput() (TerminalReport, func() error) {
 	if err := windows.SetConsoleMode(handle, windowsOutputMode(original, true)); err == nil {
 		report.VTProcessing = true
 		report.DelayedNewline = true
+		report.LastColumnGuard = true
 		return report, func() error {
 			return windows.SetConsoleMode(handle, original)
 		}

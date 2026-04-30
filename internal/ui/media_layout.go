@@ -83,7 +83,7 @@ func (m Model) visibleOverlayPlacements() []media.Placement {
 }
 
 func (m Model) visibleMediaPlacements() []media.Placement {
-	if m.width <= 0 || m.height <= 0 {
+	if m.layoutWidth() <= 0 || m.height <= 0 {
 		return nil
 	}
 	geometry, ok := m.messagePaneGeometry()
@@ -136,7 +136,7 @@ func (m Model) visibleMediaPlacements() []media.Placement {
 }
 
 func (m Model) visibleChatAvatarPlacements() []media.Placement {
-	if m.width <= 0 || m.height <= 0 {
+	if m.layoutWidth() <= 0 || m.height <= 0 {
 		return nil
 	}
 	geometry, ok := m.chatPaneGeometry()
@@ -184,6 +184,7 @@ type paneGeometry struct {
 }
 
 func (m Model) messagePaneGeometry() (paneGeometry, bool) {
+	width := m.layoutWidth()
 	inputHeight := m.inputHeight()
 	bodyHeight := m.height - 1 - inputHeight
 	if bodyHeight < 1 {
@@ -192,12 +193,12 @@ func (m Model) messagePaneGeometry() (paneGeometry, bool) {
 
 	style := m.panelStyle(FocusMessages)
 	panelX := 0
-	panelWidth := m.width
+	panelWidth := width
 	if !m.compactLayout {
-		chatWidth := max(24, m.width/4)
-		previewWidth := max(26, m.width/4)
+		chatWidth := max(24, width/4)
+		previewWidth := max(26, width/4)
 		panelX = chatWidth
-		panelWidth = m.width - chatWidth
+		panelWidth = width - chatWidth
 		if m.infoPaneVisible {
 			panelWidth -= previewWidth
 		}
@@ -217,6 +218,7 @@ func (m Model) chatPaneGeometry() (paneGeometry, bool) {
 	if m.compactLayout && m.focus != FocusChats {
 		return paneGeometry{}, false
 	}
+	width := m.layoutWidth()
 	inputHeight := m.inputHeight()
 	bodyHeight := m.height - 1 - inputHeight
 	if bodyHeight < 1 {
@@ -224,9 +226,9 @@ func (m Model) chatPaneGeometry() (paneGeometry, bool) {
 	}
 
 	style := m.panelStyle(FocusChats)
-	panelWidth := m.width
+	panelWidth := width
 	if !m.compactLayout {
-		panelWidth = max(24, m.width/4)
+		panelWidth = max(24, width/4)
 	}
 	if panelWidth <= 0 {
 		return paneGeometry{}, false

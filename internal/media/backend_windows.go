@@ -2,6 +2,8 @@
 
 package media
 
+import "os"
+
 func platformSupportsUeberzugPP() bool {
 	return false
 }
@@ -19,5 +21,8 @@ func platformExternalOpenerUnavailableReason() string {
 }
 
 func platformBackendOrder() []Backend {
-	return []Backend{BackendSixel, BackendExternal, BackendChafa, BackendUeberzugPP}
+	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
+		return []Backend{BackendSixel, BackendExternal, BackendChafa, BackendUeberzugPP}
+	}
+	return []Backend{BackendExternal, BackendChafa, BackendUeberzugPP}
 }

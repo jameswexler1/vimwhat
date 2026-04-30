@@ -2366,9 +2366,78 @@ func TestReserveLastColumnKeepsRenderedFrameOffTerminalEdge(t *testing.T) {
 
 	view := model.View()
 	for i, line := range strings.Split(view, "\n") {
-		if width := lipgloss.Width(line); width > model.width-1 {
-			t.Fatalf("line %d width = %d, want <= %d with last-column guard\n%s", i+1, width, model.width-1, stripANSI(view))
+		if width := lipgloss.Width(line); width > model.width-lastColumnGuardMargin {
+			t.Fatalf("line %d width = %d, want <= %d with last-column guard\n%s", i+1, width, model.width-lastColumnGuardMargin, stripANSI(view))
 		}
+	}
+}
+
+func TestReserveLastColumnUsesGuardedGeometry(t *testing.T) {
+	model := NewModel(Options{
+		ReserveLastColumn: true,
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "hello"}},
+			},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 80
+	model.height = 20
+	model.focus = FocusMessages
+
+	if got, want := model.layoutWidth(), 78; got != want {
+		t.Fatalf("layoutWidth() = %d, want %d", got, want)
+	}
+	geometry, ok := model.messagePaneGeometry()
+	if !ok {
+		t.Fatal("messagePaneGeometry() returned false")
+	}
+	if right := geometry.x + geometry.width; right > model.width-lastColumnGuardMargin {
+		t.Fatalf("message geometry right edge = %d, want <= %d", right, model.width-lastColumnGuardMargin)
+	}
+
+	model.infoPaneVisible = true
+	geometry, ok = model.messagePaneGeometry()
+	if !ok {
+		t.Fatal("messagePaneGeometry() with info pane returned false")
+	}
+	if right := geometry.x + geometry.width; right > model.width-lastColumnGuardMargin {
+		t.Fatalf("message geometry with info right edge = %d, want <= %d", right, model.width-lastColumnGuardMargin)
+	}
+}
+
+func TestKeyTextUsesRunesForAltAndPasteInput(t *testing.T) {
+	if got := keyText(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("é"), Alt: true}); got != "é" {
+		t.Fatalf("alt rune text = %q, want é", got)
+	}
+	if got := keyText(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("pasted text"), Paste: true}); got != "pasted text" {
+		t.Fatalf("pasted rune text = %q, want pasted text", got)
+	}
+	if got := keyText(tea.KeyMsg{Type: tea.KeySpace}); got != " " {
+		t.Fatalf("space text = %q, want space", got)
+	}
+}
+
+func TestInsertAltRuneAppendsCharacterNotKeyName(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.focus = FocusMessages
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("é"), Alt: true})
+	model = updated.(Model)
+	if model.composer != "é" {
+		t.Fatalf("composer = %q, want é", model.composer)
 	}
 }
 
