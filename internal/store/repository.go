@@ -1448,8 +1448,8 @@ func (s *Store) SearchMentionCandidates(ctx context.Context, chatID, query strin
 			participant.UpdatedAt = time.Unix(updatedUnix, 0)
 		}
 		candidate := mentionCandidateForParticipant(participant, []Contact{
-			{JID: participant.JID, DisplayName: displayName, NotifyName: notifyName, Phone: phone},
 			{JID: participant.PhoneJID, DisplayName: phoneDisplayName, NotifyName: phoneNotifyName, Phone: phoneContactPhone},
+			{JID: participant.JID, DisplayName: displayName, NotifyName: notifyName, Phone: phone},
 			{JID: participant.LIDJID, DisplayName: lidDisplayName, NotifyName: lidNotifyName, Phone: lidPhone},
 		})
 		if candidate.JID == "" {
@@ -1506,6 +1506,8 @@ func upsertGroupParticipant(ctx context.Context, execer groupParticipantExecer, 
 func mentionCandidateForParticipant(participant GroupParticipant, contacts []Contact) MentionCandidate {
 	display := ""
 	var searchParts []string
+	var displayCandidates []string
+	var notifyCandidates []string
 	for _, contact := range contacts {
 		for _, value := range []string{contact.DisplayName, contact.NotifyName, contact.Phone, contact.JID} {
 			value = strings.TrimSpace(value)
@@ -1513,10 +1515,17 @@ func mentionCandidateForParticipant(participant GroupParticipant, contacts []Con
 				continue
 			}
 			searchParts = append(searchParts, value)
-			if display == "" && (value == contact.DisplayName || value == contact.NotifyName) {
-				display = value
-			}
 		}
+		if value := strings.TrimSpace(contact.DisplayName); value != "" {
+			displayCandidates = append(displayCandidates, value)
+		}
+		if value := strings.TrimSpace(contact.NotifyName); value != "" {
+			notifyCandidates = append(notifyCandidates, value)
+		}
+	}
+	display = firstNonEmptyString(displayCandidates...)
+	if display == "" {
+		display = firstNonEmptyString(notifyCandidates...)
 	}
 	if display == "" {
 		display = strings.TrimSpace(participant.DisplayName)
@@ -1538,6 +1547,15 @@ func mentionCandidateForParticipant(participant GroupParticipant, contacts []Con
 		IsAdmin:      participant.IsAdmin,
 		IsSuperAdmin: participant.IsSuperAdmin,
 	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mentionJIDUser(jid string) string {

@@ -270,9 +270,13 @@ func TestGroupMentionCandidatesAndMessageMentions(t *testing.T) {
 	if err := db.UpsertContact(ctx, Contact{JID: "111@s.whatsapp.net", DisplayName: "José Silva", Phone: "111"}); err != nil {
 		t.Fatalf("UpsertContact() error = %v", err)
 	}
+	if err := db.UpsertContact(ctx, Contact{JID: "333@s.whatsapp.net", DisplayName: "J Otávio", Phone: "333"}); err != nil {
+		t.Fatalf("UpsertContact(phone alias) error = %v", err)
+	}
 	if err := db.ReplaceGroupParticipants(ctx, "group@g.us", []GroupParticipant{
 		{ChatID: "group@g.us", JID: "111@s.whatsapp.net", DisplayName: "Jose fallback"},
 		{ChatID: "group@g.us", JID: "222@s.whatsapp.net", DisplayName: "Ana"},
+		{ChatID: "group@g.us", JID: "333333@lid", PhoneJID: "333@s.whatsapp.net", DisplayName: "José Otávio"},
 	}); err != nil {
 		t.Fatalf("ReplaceGroupParticipants() error = %v", err)
 	}
@@ -281,15 +285,22 @@ func TestGroupMentionCandidatesAndMessageMentions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchMentionCandidates(Jose) error = %v", err)
 	}
-	if len(candidates) != 1 || candidates[0].JID != "111@s.whatsapp.net" || candidates[0].DisplayName != "José Silva" {
+	if len(candidates) == 0 || candidates[0].JID != "111@s.whatsapp.net" || candidates[0].DisplayName != "José Silva" {
 		t.Fatalf("SearchMentionCandidates(Jose) = %+v, want contact display name", candidates)
 	}
 	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "José", 10)
 	if err != nil {
 		t.Fatalf("SearchMentionCandidates(José) error = %v", err)
 	}
-	if len(candidates) != 1 || candidates[0].JID != "111@s.whatsapp.net" {
+	if len(candidates) == 0 || candidates[0].JID != "111@s.whatsapp.net" {
 		t.Fatalf("SearchMentionCandidates(José) = %+v, want accented contact", candidates)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "Otavio", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(Otavio) error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].JID != "333333@lid" || candidates[0].DisplayName != "J Otávio" {
+		t.Fatalf("SearchMentionCandidates(Otavio) = %+v, want phone contact display name", candidates)
 	}
 	if err := db.ReplaceGroupParticipants(ctx, "group@g.us", []GroupParticipant{
 		{ChatID: "group@g.us", JID: "222@s.whatsapp.net", DisplayName: "Ana"},

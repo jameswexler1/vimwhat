@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waWeb"
+	wastore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
@@ -568,6 +569,110 @@ func TestNormalizeJoinedGroupIncludesParticipants(t *testing.T) {
 		!participants.Participants[0].IsAdmin {
 		t.Fatalf("participant event = %+v", participants)
 	}
+}
+
+func TestNormalizeJoinedGroupResolvesParticipantAliases(t *testing.T) {
+	ctx := context.Background()
+	client := newCanonicalTestClient(t, "333", "333333")
+	chat := types.NewJID("12345-678", types.GroupServer)
+	lid := types.NewJID("333333", types.HiddenUserServer)
+
+	normalized := client.normalizeWhatsmeowEvent(ctx, &events.JoinedGroup{
+		GroupInfo: types.GroupInfo{
+			JID: chat,
+			GroupName: types.GroupName{
+				Name: "Project Group",
+			},
+			Participants: []types.GroupParticipant{{
+				JID:         lid,
+				DisplayName: "José Otávio",
+			}},
+		},
+	})
+
+	if len(normalized) != 2 || normalized[1].Kind != EventGroupParticipants {
+		t.Fatalf("joined group normalized to %+v, want participant event", normalized)
+	}
+	participant := normalized[1].Participants.Participants[0]
+	if participant.JID != "333333@lid" || participant.PhoneJID != "333@s.whatsapp.net" {
+		t.Fatalf("participant aliases = %+v, want lid primary with phone alias", participant)
+	}
+}
+
+func TestNormalizeMessageMentionRewritesWireTokenToContactName(t *testing.T) {
+	ctx := context.Background()
+	client := newCanonicalTestClient(t, "333", "333333")
+	pn := types.NewJID("333", types.DefaultUserServer)
+	lid := types.NewJID("333333", types.HiddenUserServer)
+	client.client.Store = &wastore.Device{
+		Contacts: fakeContactStore{contacts: map[types.JID]types.ContactInfo{
+			pn: {FullName: "Geann"},
+		}},
+	}
+	when := time.Unix(1_700_000_000, 0)
+	chat := types.NewJID("12345-678", types.GroupServer)
+
+	normalized := client.normalizeWhatsmeowEvent(ctx, &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Chat:   chat,
+				Sender: pn,
+			},
+			ID:        "MSG1",
+			Timestamp: when,
+		},
+		Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("hi @333333"),
+			ContextInfo: &waE2E.ContextInfo{
+				MentionedJID: []string{lid.String()},
+			},
+		}},
+	})
+
+	if len(normalized) != 2 {
+		t.Fatalf("normalized = %+v, want chat and message", normalized)
+	}
+	message := normalized[1].Message
+	if message.Body != "hi @Geann" ||
+		len(message.Mentions) != 1 ||
+		message.Mentions[0].JID != "333333@lid" ||
+		message.Mentions[0].DisplayName != "Geann" ||
+		message.Mentions[0].StartByte != 3 ||
+		message.Mentions[0].EndByte != 9 {
+		t.Fatalf("message mention = body %q mentions %+v, want friendly contact mention", message.Body, message.Mentions)
+	}
+}
+
+type fakeContactStore struct {
+	contacts map[types.JID]types.ContactInfo
+}
+
+func (f fakeContactStore) PutPushName(context.Context, types.JID, string) (bool, string, error) {
+	return false, "", nil
+}
+
+func (f fakeContactStore) PutBusinessName(context.Context, types.JID, string) (bool, string, error) {
+	return false, "", nil
+}
+
+func (f fakeContactStore) PutContactName(context.Context, types.JID, string, string) error {
+	return nil
+}
+
+func (f fakeContactStore) PutAllContactNames(context.Context, []wastore.ContactEntry) error {
+	return nil
+}
+
+func (f fakeContactStore) PutManyRedactedPhones(context.Context, []wastore.RedactedPhoneEntry) error {
+	return nil
+}
+
+func (f fakeContactStore) GetContact(_ context.Context, jid types.JID) (types.ContactInfo, error) {
+	return f.contacts[jid], nil
+}
+
+func (f fakeContactStore) GetAllContacts(context.Context) (map[types.JID]types.ContactInfo, error) {
+	return f.contacts, nil
 }
 
 func TestNormalizeHistorySyncEventMarksMessagesHistorical(t *testing.T) {

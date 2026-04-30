@@ -21,7 +21,7 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 		if group == nil || group.JID.IsEmpty() {
 			continue
 		}
-		out = append(out, normalizeFullGroupInfoEvent(group, true)...)
+		out = append(out, c.normalizeFullGroupInfoEvent(ctx, group, true)...)
 	}
 
 	if c.client.Store != nil && c.client.Store.Contacts != nil {

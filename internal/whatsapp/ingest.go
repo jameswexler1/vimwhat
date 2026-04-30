@@ -49,6 +49,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			Status:          event.Message.Status,
 			QuotedMessageID: event.Message.QuotedMessageID,
 			QuotedRemoteID:  event.Message.QuotedRemoteID,
+			Mentions:        storeMessageMentions(event.Message.ID, event.Message.Mentions, event.Message.Timestamp),
 		}
 		var (
 			inserted bool
@@ -238,6 +239,29 @@ func timeOrNow(value time.Time) time.Time {
 		return time.Now()
 	}
 	return value
+}
+
+func storeMessageMentions(messageID string, mentions []MessageMentionEvent, updatedAt time.Time) []store.MessageMention {
+	if len(mentions) == 0 {
+		return nil
+	}
+	updatedAt = timeOrNow(updatedAt)
+	out := make([]store.MessageMention, 0, len(mentions))
+	for _, mention := range mentions {
+		jid := strings.TrimSpace(mention.JID)
+		if jid == "" {
+			continue
+		}
+		out = append(out, store.MessageMention{
+			MessageID:   messageID,
+			JID:         jid,
+			DisplayName: strings.TrimSpace(mention.DisplayName),
+			StartByte:   mention.StartByte,
+			EndByte:     mention.EndByte,
+			UpdatedAt:   updatedAt,
+		})
+	}
+	return out
 }
 
 func storeMediaDownloadDescriptor(input MediaDownloadDescriptor, messageID string) store.MediaDownloadDescriptor {

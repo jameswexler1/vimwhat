@@ -1912,17 +1912,15 @@ func (m Model) mentionsForSend(body string) []store.MessageMention {
 	leftTrimmed := strings.TrimLeftFunc(raw, unicode.IsSpace)
 	offset := len(raw) - len(leftTrimmed)
 	bodyEnd := offset + len(body)
-	seen := map[string]bool{}
 	var mentions []store.MessageMention
 	for _, mention := range m.validComposerMentions() {
 		if mention.EndByte <= offset || mention.StartByte >= bodyEnd {
 			continue
 		}
 		jid := strings.TrimSpace(mention.JID)
-		if jid == "" || seen[jid] {
+		if jid == "" {
 			continue
 		}
-		seen[jid] = true
 		mention.StartByte = max(0, mention.StartByte-offset)
 		mention.EndByte = min(len(body), mention.EndByte-offset)
 		mentions = append(mentions, mention)

@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waHistorySync "go.mau.fi/whatsmeow/proto/waHistorySync"
@@ -35,6 +38,11 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 		return c.normalizeContactEvent(ctx, event)
 	case *events.PushName:
 		return c.normalizePushNameEvent(ctx, event)
+	case *events.GroupInfo:
+		out := normalizeGroupInfoEvent(event.JID, "", event.Name)
+		return append(out, c.normalizeGroupParticipantDeltaEvent(ctx, event.JID, event.Join, event.Leave)...)
+	case *events.JoinedGroup:
+		return c.normalizeFullGroupInfoEvent(ctx, &event.GroupInfo, true)
 	default:
 		return normalizeWhatsmeowEvent(evt)
 	}
@@ -471,6 +479,7 @@ func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.
 	senderJID := canonicalDirectSenderJID(chatID, event.Info)
 	reaction, hasReaction := reactionEventForSender(chatID, senderJID, event)
 	body := messageBody(event.Message)
+	body, mentions := c.normalizeMessageMentions(ctx, body, messageContextInfo(event.Message))
 	media, hasMedia := mediaMetadata(messageID, event, event.Info.Timestamp)
 	quotedRemoteID, quotedMessageID := quotedIDs(chatID, event.Message)
 	notificationPreview := messageNotificationPreview(body, media, hasMedia)
@@ -530,6 +539,7 @@ func (c *Client) normalizeParsedMessageEvent(ctx context.Context, event *events.
 				QuotedMessageID:     quotedMessageID,
 				QuotedRemoteID:      quotedRemoteID,
 				ForwardPayload:      messageForwardPayload(event.Message),
+				Mentions:            mentions,
 			},
 		})
 	}
@@ -1096,6 +1106,35 @@ func normalizeFullGroupInfoEvent(group *types.GroupInfo, replaceParticipants boo
 	return out
 }
 
+func (c *Client) normalizeFullGroupInfoEvent(ctx context.Context, group *types.GroupInfo, replaceParticipants bool) []Event {
+	if group == nil {
+		return nil
+	}
+	out := normalizeGroupInfoEvent(group.JID, group.GroupName.Name, &group.GroupName)
+	if len(group.Participants) == 0 {
+		return out
+	}
+	participants := make([]GroupParticipantEvent, 0, len(group.Participants))
+	for _, participant := range group.Participants {
+		if event := c.groupParticipantEvent(ctx, participant); event.JID != "" {
+			participants = append(participants, event)
+		}
+	}
+	if len(participants) == 0 && !replaceParticipants {
+		return out
+	}
+	out = append(out, Event{
+		Kind: EventGroupParticipants,
+		Participants: GroupParticipantsEvent{
+			ChatID:       group.JID.String(),
+			Participants: participants,
+			Replace:      replaceParticipants,
+			UpdatedAt:    time.Now(),
+		},
+	})
+	return out
+}
+
 func normalizeGroupParticipantDeltaEvent(jid types.JID, join, leave []types.JID) []Event {
 	if !supportedChat(jid) || jid.Server != types.GroupServer || (len(join) == 0 && len(leave) == 0) {
 		return nil
@@ -1108,6 +1147,37 @@ func normalizeGroupParticipantDeltaEvent(jid types.JID, join, leave []types.JID)
 		participants = append(participants, GroupParticipantEvent{
 			JID: participantJID.ToNonAD().String(),
 		})
+	}
+	removeJIDs := make([]string, 0, len(leave))
+	for _, participantJID := range leave {
+		if participantJID.IsEmpty() {
+			continue
+		}
+		removeJIDs = append(removeJIDs, participantJID.ToNonAD().String())
+	}
+	return []Event{{
+		Kind: EventGroupParticipants,
+		Participants: GroupParticipantsEvent{
+			ChatID:       jid.String(),
+			Participants: participants,
+			RemoveJIDs:   removeJIDs,
+			UpdatedAt:    time.Now(),
+		},
+	}}
+}
+
+func (c *Client) normalizeGroupParticipantDeltaEvent(ctx context.Context, jid types.JID, join, leave []types.JID) []Event {
+	if !supportedChat(jid) || jid.Server != types.GroupServer || (len(join) == 0 && len(leave) == 0) {
+		return nil
+	}
+	participants := make([]GroupParticipantEvent, 0, len(join))
+	for _, participantJID := range join {
+		if participantJID.IsEmpty() {
+			continue
+		}
+		if event := c.groupParticipantEvent(ctx, types.GroupParticipant{JID: participantJID}); event.JID != "" {
+			participants = append(participants, event)
+		}
 	}
 	removeJIDs := make([]string, 0, len(leave))
 	for _, participantJID := range leave {
@@ -1149,6 +1219,38 @@ func groupParticipantEvent(participant types.GroupParticipant) GroupParticipantE
 	}
 	if lid := participant.LID.ToNonAD(); !lid.IsEmpty() {
 		event.LIDJID = lid.String()
+	}
+	return event
+}
+
+func (c *Client) groupParticipantEvent(ctx context.Context, participant types.GroupParticipant) GroupParticipantEvent {
+	event := groupParticipantEvent(participant)
+	if event.JID == "" {
+		return event
+	}
+	if event.PhoneJID == "" {
+		for _, candidate := range []string{event.JID, event.LIDJID} {
+			jid, err := types.ParseJID(candidate)
+			if err != nil || jid.Server != types.HiddenUserServer {
+				continue
+			}
+			if phone := c.lookupPNForLID(ctx, jid); !phone.IsEmpty() {
+				event.PhoneJID = phone.String()
+				break
+			}
+		}
+	}
+	if event.LIDJID == "" {
+		for _, candidate := range []string{event.JID, event.PhoneJID} {
+			jid, err := types.ParseJID(candidate)
+			if err != nil || jid.Server != types.DefaultUserServer {
+				continue
+			}
+			if lid := c.lookupLIDForPN(ctx, jid); !lid.IsEmpty() {
+				event.LIDJID = lid.String()
+				break
+			}
+		}
 	}
 	return event
 }
@@ -1272,6 +1374,170 @@ func messageBody(message *waE2E.Message) string {
 		return body
 	}
 	return ""
+}
+
+type mentionReplacement struct {
+	start       int
+	end         int
+	jid         string
+	displayName string
+}
+
+func (c *Client) normalizeMessageMentions(ctx context.Context, body string, contextInfo *waE2E.ContextInfo) (string, []MessageMentionEvent) {
+	mentionedJIDs := normalizeMentionedJIDs(contextInfo.GetMentionedJID())
+	if strings.TrimSpace(body) == "" || len(mentionedJIDs) == 0 {
+		return body, nil
+	}
+
+	replacements := make([]mentionReplacement, 0, len(mentionedJIDs))
+	for _, jid := range mentionedJIDs {
+		token := mentionWireText(jid)
+		if token == "" {
+			continue
+		}
+		start, end := findMentionToken(body, token, replacements)
+		if start < 0 {
+			continue
+		}
+		display := c.mentionDisplayName(ctx, jid)
+		if display == "" {
+			display = mentionJIDUser(jid)
+		}
+		if display == "" {
+			continue
+		}
+		replacements = append(replacements, mentionReplacement{
+			start:       start,
+			end:         end,
+			jid:         strings.TrimSpace(jid),
+			displayName: strings.Join(strings.Fields(display), " "),
+		})
+	}
+	if len(replacements) == 0 {
+		return body, nil
+	}
+	slices.SortFunc(replacements, func(left, right mentionReplacement) int {
+		return left.start - right.start
+	})
+
+	var out strings.Builder
+	out.Grow(len(body))
+	mentions := make([]MessageMentionEvent, 0, len(replacements))
+	last := 0
+	for _, item := range replacements {
+		if item.start < last || item.end > len(body) {
+			continue
+		}
+		out.WriteString(body[last:item.start])
+		start := out.Len()
+		out.WriteString("@")
+		out.WriteString(item.displayName)
+		end := out.Len()
+		mentions = append(mentions, MessageMentionEvent{
+			JID:         item.jid,
+			DisplayName: item.displayName,
+			StartByte:   start,
+			EndByte:     end,
+		})
+		last = item.end
+	}
+	out.WriteString(body[last:])
+	return out.String(), mentions
+}
+
+func (c *Client) mentionDisplayName(ctx context.Context, mentionedJID string) string {
+	jid, err := types.ParseJID(strings.TrimSpace(mentionedJID))
+	if err != nil {
+		return ""
+	}
+	var candidates []types.JID
+	switch jid.Server {
+	case types.HiddenUserServer:
+		candidates = append(candidates, c.lookupPNForLID(ctx, jid), jid.ToNonAD())
+	case types.DefaultUserServer:
+		candidates = append(candidates, jid.ToNonAD(), c.lookupLIDForPN(ctx, jid))
+	default:
+		candidates = append(candidates, jid.ToNonAD())
+	}
+	if c == nil || c.client == nil || c.client.Store == nil || c.client.Store.Contacts == nil {
+		return ""
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = candidate.ToNonAD()
+		if candidate.IsEmpty() || seen[candidate.String()] {
+			continue
+		}
+		seen[candidate.String()] = true
+		info, err := c.client.Store.Contacts.GetContact(ctx, candidate)
+		if err != nil {
+			continue
+		}
+		if display := firstNonEmpty(info.FullName, info.FirstName, info.BusinessName, info.PushName); display != "" {
+			return display
+		}
+	}
+	return ""
+}
+
+func findMentionToken(body, token string, existing []mentionReplacement) (int, int) {
+	searchStart := 0
+	for {
+		index := strings.Index(body[searchStart:], token)
+		if index < 0 {
+			return -1, -1
+		}
+		start := searchStart + index
+		end := start + len(token)
+		if mentionTokenHasBoundary(body, start, end) && !mentionTokenOverlaps(start, end, existing) {
+			return start, end
+		}
+		searchStart = end
+	}
+}
+
+func mentionTokenOverlaps(start, end int, existing []mentionReplacement) bool {
+	for _, item := range existing {
+		if start < item.end && end > item.start {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionTokenHasBoundary(body string, start, end int) bool {
+	if start > 0 {
+		prev, _ := utf8.DecodeLastRuneInString(body[:start])
+		if unicode.IsLetter(prev) || unicode.IsDigit(prev) || prev == '_' {
+			return false
+		}
+	}
+	if end < len(body) {
+		next, _ := utf8.DecodeRuneInString(body[end:])
+		if unicode.IsLetter(next) || unicode.IsDigit(next) || next == '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func mentionWireText(jid string) string {
+	user := mentionJIDUser(jid)
+	if user == "" {
+		return ""
+	}
+	return "@" + user
+}
+
+func mentionJIDUser(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(jid, "@"); ok {
+		return before
+	}
+	return jid
 }
 
 func mediaMetadata(messageID string, event *events.Message, timestamp time.Time) (MediaEvent, bool) {

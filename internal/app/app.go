@@ -1469,7 +1469,7 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 	defer cancel()
 	request := whatsapp.TextSendRequest{
 		ChatJID:       message.ChatJID,
-		Body:          body,
+		Body:          mentionWireBody(body, mentions),
 		RemoteID:      message.RemoteID,
 		MentionedJIDs: mentionedJIDs(mentions),
 	}
@@ -1683,7 +1683,7 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 		LocalPath:     attachment.LocalPath,
 		FileName:      attachment.FileName,
 		MIMEType:      attachment.MIMEType,
-		Caption:       message.Body,
+		Caption:       mentionWireBody(message.Body, mentions),
 		RemoteID:      message.RemoteID,
 		MentionedJIDs: mentionedJIDs(mentions),
 	}
@@ -3817,6 +3817,59 @@ func mentionedJIDs(mentions []store.MessageMention) []string {
 		out = append(out, jid)
 	}
 	return out
+}
+
+func mentionWireBody(body string, mentions []store.MessageMention) string {
+	if body == "" || len(mentions) == 0 {
+		return body
+	}
+	items := slices.Clone(mentions)
+	slices.SortStableFunc(items, func(left, right store.MessageMention) int {
+		if left.StartByte != right.StartByte {
+			return left.StartByte - right.StartByte
+		}
+		return left.EndByte - right.EndByte
+	})
+	var out strings.Builder
+	out.Grow(len(body))
+	last := 0
+	replaced := false
+	for _, mention := range items {
+		if mention.StartByte < last || mention.EndByte <= mention.StartByte || mention.EndByte > len(body) {
+			continue
+		}
+		if !strings.HasPrefix(body[mention.StartByte:mention.EndByte], "@") {
+			continue
+		}
+		token := mentionWireToken(mention.JID)
+		if token == "" {
+			continue
+		}
+		out.WriteString(body[last:mention.StartByte])
+		out.WriteString(token)
+		last = mention.EndByte
+		replaced = true
+	}
+	if !replaced {
+		return body
+	}
+	out.WriteString(body[last:])
+	return out.String()
+}
+
+func mentionWireToken(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return ""
+	}
+	user := jid
+	if before, _, ok := strings.Cut(jid, "@"); ok {
+		user = before
+	}
+	if user = strings.TrimSpace(user); user == "" {
+		return ""
+	}
+	return "@" + user
 }
 
 func pendingOutgoingMessage(outgoing ui.OutgoingMessage) store.Message {

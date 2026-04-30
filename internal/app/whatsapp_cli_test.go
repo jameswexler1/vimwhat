@@ -1711,7 +1711,7 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	}
 
 	request := <-session.sends
-	if request.request.ChatJID != chatJID || request.request.Body != "hello live @Ana" || request.request.RemoteID != "remote-1" {
+	if request.request.ChatJID != chatJID || request.request.Body != "hello live @222" || request.request.RemoteID != "remote-1" {
 		t.Fatalf("send request = %+v, want jid/body/remote id", request)
 	}
 	if len(request.request.MentionedJIDs) != 1 || request.request.MentionedJIDs[0] != "222@s.whatsapp.net" {
@@ -1723,6 +1723,9 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	}
 	if len(messages[0].Mentions) != 1 || messages[0].Mentions[0].JID != "222@s.whatsapp.net" {
 		t.Fatalf("stored mentions = %+v, want participant", messages[0].Mentions)
+	}
+	if messages[0].Body != "hello live @Ana" {
+		t.Fatalf("stored body = %q, want friendly mention text", messages[0].Body)
 	}
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "sent")
@@ -1829,7 +1832,13 @@ func TestHandleMediaSendRequestPersistsAndCompletes(t *testing.T) {
 	updates := make(chan ui.LiveUpdate, 4)
 	handleMediaSendRequest(ctx, db, session, updates, nil, true, mediaSendRequest{
 		ChatID: chatJID,
-		Body:   "caption",
+		Body:   "caption @Ana",
+		Mentions: []store.MessageMention{{
+			JID:         "222@s.whatsapp.net",
+			DisplayName: "Ana",
+			StartByte:   8,
+			EndByte:     12,
+		}},
 		Attachments: []ui.Attachment{{
 			LocalPath:     attachmentPath,
 			FileName:      "photo.jpg",
@@ -1844,7 +1853,7 @@ func TestHandleMediaSendRequestPersistsAndCompletes(t *testing.T) {
 		t.Fatalf("queued media send error = %v", queued.Err)
 	}
 	request := <-session.mediaSends
-	if request.ChatJID != chatJID || request.Caption != "caption" || request.LocalPath != attachmentPath || request.RemoteID != "remote-1" {
+	if request.ChatJID != chatJID || request.Caption != "caption @222" || request.LocalPath != attachmentPath || request.RemoteID != "remote-1" {
 		t.Fatalf("media request = %+v, want jid/caption/path/remote id", request)
 	}
 	messages := waitForStoredMessages(t, db, chatJID, 1)
@@ -1853,6 +1862,9 @@ func TestHandleMediaSendRequestPersistsAndCompletes(t *testing.T) {
 	}
 	if messages[0].Media[0].LocalPath != attachmentPath || messages[0].Media[0].DownloadState != "downloaded" {
 		t.Fatalf("stored media = %+v, want local downloaded attachment", messages[0].Media[0])
+	}
+	if messages[0].Body != "caption @Ana" || len(messages[0].Mentions) != 1 {
+		t.Fatalf("stored media body/mentions = %q %+v, want friendly mention", messages[0].Body, messages[0].Mentions)
 	}
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "attachment")
@@ -2252,7 +2264,7 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 		ChatJID:         chatJID,
 		Sender:          "me",
 		SenderJID:       "me",
-		Body:            "retry caption",
+		Body:            "@Ana retry caption",
 		Timestamp:       time.Unix(1_700_000_100, 0),
 		IsOutgoing:      true,
 		Status:          "failed",
@@ -2297,7 +2309,7 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 		t.Fatal("queued retry reused the failed message id")
 	}
 	sent := <-session.mediaSends
-	if sent.ChatJID != chatJID || sent.Caption != "retry caption" || sent.LocalPath != attachmentPath {
+	if sent.ChatJID != chatJID || sent.Caption != "@222 retry caption" || sent.LocalPath != attachmentPath {
 		t.Fatalf("media request = %+v, want chat/caption/path preserved", sent)
 	}
 	if sent.QuotedRemoteID != quoted.RemoteID || sent.QuotedSenderJID != quoted.SenderJID || sent.QuotedMessageBody != quoted.Body {

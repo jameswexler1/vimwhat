@@ -1546,7 +1546,15 @@ type MessageEvent struct {
 	QuotedMessageID     string
 	QuotedRemoteID      string
 	ForwardPayload      []byte
+	Mentions            []MessageMentionEvent
 	Historical          bool
+}
+
+type MessageMentionEvent struct {
+	JID         string
+	DisplayName string
+	StartByte   int
+	EndByte     int
 }
 
 type MessageDeleteEvent struct {
