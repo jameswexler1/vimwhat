@@ -74,11 +74,15 @@ type SyncProgressUpdate struct {
 }
 
 type PresenceUpdate struct {
-	ChatID    string
-	SenderJID string
-	Sender    string
-	Typing    bool
-	ExpiresAt time.Time
+	ChatID              string
+	SenderJID           string
+	Sender              string
+	TypingChanged       bool
+	Typing              bool
+	ExpiresAt           time.Time
+	AvailabilityChanged bool
+	Online              bool
+	LastSeen            time.Time
 }
 
 type OutgoingMessage struct {
@@ -638,18 +642,17 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 		m.refreshPreferredChatID = strings.TrimSpace(update.PreferredChatID)
 	}
 	if update.Presence.ChatID != "" {
-		presence := update.Presence
 		if m.presenceByChat == nil {
 			m.presenceByChat = map[string]PresenceUpdate{}
 		}
-		if presence.Typing {
-			if presence.ExpiresAt.IsZero() {
-				presence.ExpiresAt = time.Now().Add(presenceTTL)
-			}
-			m.presenceByChat[presence.ChatID] = presence
-			cmds = append(cmds, presenceExpiryCmd(presence.ChatID, presence.ExpiresAt))
+		presence := m.mergePresenceUpdate(update.Presence)
+		if presenceEmpty(presence) {
+			delete(m.presenceByChat, update.Presence.ChatID)
 		} else {
-			delete(m.presenceByChat, presence.ChatID)
+			m.presenceByChat[presence.ChatID] = presence
+			if presence.Typing && !presence.ExpiresAt.IsZero() {
+				cmds = append(cmds, presenceExpiryCmd(presence.ChatID, presence.ExpiresAt))
+			}
 		}
 	}
 
@@ -663,6 +666,39 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	}
 	cmds = append(cmds, m.waitForLiveUpdateCmd())
 	return m, batchCmds(cmds...)
+}
+
+func (m Model) mergePresenceUpdate(update PresenceUpdate) PresenceUpdate {
+	presence := m.presenceByChat[update.ChatID]
+	presence.ChatID = update.ChatID
+	if strings.TrimSpace(update.SenderJID) != "" {
+		presence.SenderJID = update.SenderJID
+	}
+	if strings.TrimSpace(update.Sender) != "" {
+		presence.Sender = update.Sender
+	}
+	if update.TypingChanged {
+		presence.TypingChanged = true
+		presence.Typing = update.Typing
+		if update.Typing {
+			presence.ExpiresAt = update.ExpiresAt
+			if presence.ExpiresAt.IsZero() {
+				presence.ExpiresAt = time.Now().Add(presenceTTL)
+			}
+		} else {
+			presence.ExpiresAt = time.Time{}
+		}
+	}
+	if update.AvailabilityChanged {
+		presence.AvailabilityChanged = true
+		presence.Online = update.Online
+		presence.LastSeen = update.LastSeen
+	}
+	return presence
+}
+
+func presenceEmpty(presence PresenceUpdate) bool {
+	return !presence.Typing && !presence.Online && presence.LastSeen.IsZero()
 }
 
 func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
@@ -822,7 +858,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case presenceExpiredMsg:
 		if presence, ok := m.presenceByChat[msg.ChatID]; ok && !presence.ExpiresAt.After(msg.At) {
-			delete(m.presenceByChat, msg.ChatID)
+			presence.Typing = false
+			presence.ExpiresAt = time.Time{}
+			if presenceEmpty(presence) {
+				delete(m.presenceByChat, msg.ChatID)
+			} else {
+				m.presenceByChat[msg.ChatID] = presence
+			}
 		}
 		return m, nil
 	case ownPresenceIdleMsg:

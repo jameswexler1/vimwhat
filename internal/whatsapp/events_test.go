@@ -495,8 +495,38 @@ func TestNormalizeChatPresenceEvent(t *testing.T) {
 	if len(normalized) != 1 || normalized[0].Kind != EventPresenceUpdate {
 		t.Fatalf("normalized = %+v, want presence event", normalized)
 	}
-	if normalized[0].Presence.ChatID != chat.String() || normalized[0].Presence.SenderJID != sender.String() || !normalized[0].Presence.Typing {
+	if normalized[0].Presence.ChatID != chat.String() || normalized[0].Presence.SenderJID != sender.String() || !normalized[0].Presence.TypingChanged || !normalized[0].Presence.Typing {
 		t.Fatalf("presence = %+v", normalized[0].Presence)
+	}
+}
+
+func TestNormalizePresenceEventTracksOnlineAndLastSeen(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	online := normalizeWhatsmeowEvent(&events.Presence{From: chat})
+	if len(online) != 1 || online[0].Kind != EventPresenceUpdate {
+		t.Fatalf("online normalized = %+v, want presence event", online)
+	}
+	if online[0].Presence.ChatID != chat.String() ||
+		!online[0].Presence.AvailabilityChanged ||
+		!online[0].Presence.Online ||
+		online[0].Presence.TypingChanged {
+		t.Fatalf("online presence = %+v", online[0].Presence)
+	}
+
+	lastSeen := time.Unix(1_700_000_000, 0)
+	offline := normalizeWhatsmeowEvent(&events.Presence{
+		From:        chat,
+		Unavailable: true,
+		LastSeen:    lastSeen,
+	})
+	if len(offline) != 1 || offline[0].Kind != EventPresenceUpdate {
+		t.Fatalf("offline normalized = %+v, want presence event", offline)
+	}
+	if offline[0].Presence.ChatID != chat.String() ||
+		!offline[0].Presence.AvailabilityChanged ||
+		offline[0].Presence.Online ||
+		!offline[0].Presence.LastSeen.Equal(lastSeen) {
+		t.Fatalf("offline presence = %+v", offline[0].Presence)
 	}
 }
 

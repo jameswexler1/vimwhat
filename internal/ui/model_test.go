@@ -3621,6 +3621,116 @@ func TestMessageStatusTicks(t *testing.T) {
 	}
 }
 
+func TestPresenceHeaderTypingOnlineAndLastSeen(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", JID: "chat-1@s.whatsapp.net", Title: "Alice", Kind: "direct", LastPreview: "latest message"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "latest message", Timestamp: time.Unix(1_700_000_000, 0)}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+
+	model, _ = model.handleLiveUpdate(LiveUpdate{Presence: PresenceUpdate{
+		ChatID:              "chat-1",
+		Sender:              "Alice",
+		AvailabilityChanged: true,
+		Online:              true,
+	}})
+	view := stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(view, "Alice") || !strings.Contains(view, "online") {
+		t.Fatalf("presence header missing title/online\n%s", view)
+	}
+	if preview := model.chatPreview(model.currentChat()); preview != "latest message" {
+		t.Fatalf("chat preview = %q, want message preview while online", preview)
+	}
+
+	expiresAt := time.Now().Add(time.Minute)
+	model, _ = model.handleLiveUpdate(LiveUpdate{Presence: PresenceUpdate{
+		ChatID:        "chat-1",
+		Sender:        "Alice",
+		TypingChanged: true,
+		Typing:        true,
+		ExpiresAt:     expiresAt,
+	}})
+	view = stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(view, "Alice typing...") || strings.Contains(view, "online") {
+		t.Fatalf("typing presence should override online\n%s", view)
+	}
+	if preview := model.chatPreview(model.currentChat()); preview != "Alice typing..." {
+		t.Fatalf("chat preview = %q, want typing preview", preview)
+	}
+
+	expired, _ := model.Update(presenceExpiredMsg{ChatID: "chat-1", At: expiresAt})
+	model = expired.(Model)
+	view = stripANSI(model.renderMessages(70, 8))
+	if strings.Contains(view, "typing") || !strings.Contains(view, "online") {
+		t.Fatalf("typing expiry should preserve online state\n%s", view)
+	}
+
+	lastSeen := time.Now().Add(-2 * time.Hour)
+	model, _ = model.handleLiveUpdate(LiveUpdate{Presence: PresenceUpdate{
+		ChatID:              "chat-1",
+		Sender:              "Alice",
+		AvailabilityChanged: true,
+		Online:              false,
+		LastSeen:            lastSeen,
+	}})
+	view = stripANSI(model.renderMessages(70, 8))
+	if !strings.Contains(view, "last seen") {
+		t.Fatalf("presence header missing last seen\n%s", view)
+	}
+}
+
+func TestLastSeenFormatting(t *testing.T) {
+	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.Local)
+	tests := map[string]struct {
+		lastSeen time.Time
+		want     string
+	}{
+		"today":      {lastSeen: time.Date(2026, 4, 30, 9, 5, 0, 0, time.Local), want: "last seen 09:05"},
+		"yesterday":  {lastSeen: time.Date(2026, 4, 29, 22, 15, 0, 0, time.Local), want: "last seen yesterday 22:15"},
+		"same year":  {lastSeen: time.Date(2026, 2, 3, 8, 0, 0, 0, time.Local), want: "last seen Feb 3 08:00"},
+		"prior year": {lastSeen: time.Date(2025, 12, 31, 23, 59, 0, 0, time.Local), want: "last seen Dec 31 2025 23:59"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := formatLastSeen(tt.lastSeen, now); got != tt.want {
+				t.Fatalf("formatLastSeen() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderMessagesWithPresenceHeaderStaysWithinHeight(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": numberedMessages(12),
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.presenceByChat["chat-1"] = PresenceUpdate{
+		ChatID:              "chat-1",
+		AvailabilityChanged: true,
+		Online:              true,
+	}
+
+	const height = 6
+	view := stripANSI(model.renderMessages(70, height))
+	if got := len(strings.Split(view, "\n")); got > height {
+		t.Fatalf("renderMessages produced %d lines, want <= %d\n%s", got, height, view)
+	}
+	if !strings.Contains(view, "online") {
+		t.Fatalf("renderMessages missing online header\n%s", view)
+	}
+}
+
 func TestShortMessageBubblesUseProportionalWidth(t *testing.T) {
 	now := time.Date(2026, 4, 21, 20, 59, 0, 0, time.UTC)
 	model := NewModel(Options{
@@ -7373,7 +7483,7 @@ func TestShortChatStartsAtTopEvenWhenNewestSelected(t *testing.T) {
 
 	view := stripANSI(model.renderMessages(70, 12))
 	lines := strings.Split(view, "\n")
-	if len(lines) < 2 || strings.TrimSpace(lines[1]) == "" {
+	if len(lines) < 3 || strings.TrimSpace(lines[2]) == "" {
 		t.Fatalf("short chat did not start at top\n%s", view)
 	}
 	if !strings.Contains(view, "first short") || !strings.Contains(view, "second short") {
@@ -7394,7 +7504,7 @@ func TestViewportDoesNotAllowBlankSpaceBelowNewestMessageWhenOverscrolled(t *tes
 	model.messageCursor = 18
 	model.messageScrollTop = 19
 
-	view := stripANSI(model.renderMessages(70, 8))
+	view := stripANSI(model.renderMessages(70, 10))
 	assertLineBeforeFooterContains(t, view, "message 19")
 	if !strings.Contains(view, "message 18") {
 		t.Fatalf("overscrolled viewport did not keep selected message visible\n%s", view)

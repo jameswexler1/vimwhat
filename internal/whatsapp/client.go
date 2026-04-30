@@ -76,6 +76,7 @@ type Adapter interface {
 	SendReaction(ctx context.Context, request ReactionSendRequest) (SendResult, error)
 	DeleteMessageForEveryone(ctx context.Context, request DeleteForEveryoneRequest) (SendResult, error)
 	EditMessage(ctx context.Context, request EditMessageRequest) (SendResult, error)
+	SetPresenceAvailable(ctx context.Context, available bool) error
 	SendChatPresence(ctx context.Context, chatJID string, composing bool) error
 	SubscribePresence(ctx context.Context, chatJID string) error
 	SubscribeEvents(ctx context.Context) (<-chan Event, error)
@@ -995,6 +996,20 @@ func (c *Client) SendChatPresence(ctx context.Context, chatJID string, composing
 	return nil
 }
 
+func (c *Client) SetPresenceAvailable(ctx context.Context, available bool) error {
+	if c == nil || c.client == nil {
+		return ErrClientNotOpen
+	}
+	state := types.PresenceUnavailable
+	if available {
+		state = types.PresenceAvailable
+	}
+	if err := c.client.SendPresence(ctx, state); err != nil {
+		return fmt.Errorf("set whatsapp presence: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) SubscribePresence(ctx context.Context, chatJID string) error {
 	if c == nil || c.client == nil {
 		return ErrClientNotOpen
@@ -1612,11 +1627,15 @@ type ReactionEvent struct {
 }
 
 type PresenceEvent struct {
-	ChatID    string
-	SenderJID string
-	Sender    string
-	Typing    bool
-	UpdatedAt time.Time
+	ChatID              string
+	SenderJID           string
+	Sender              string
+	TypingChanged       bool
+	Typing              bool
+	AvailabilityChanged bool
+	Online              bool
+	LastSeen            time.Time
+	UpdatedAt           time.Time
 }
 
 type AvatarEvent struct {

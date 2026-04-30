@@ -73,6 +73,7 @@ type fakeLiveWhatsAppSession struct {
 	deletes           chan whatsapp.DeleteForEveryoneRequest
 	edits             chan whatsapp.EditMessageRequest
 	presences         chan fakePresenceRequest
+	presenceAvailable chan bool
 	subscriptions     chan string
 	historyErr        error
 	downloadErr       error
@@ -317,6 +318,13 @@ func (s *fakeLiveWhatsAppSession) SendChatPresence(_ context.Context, chatID str
 	return s.presenceErr
 }
 
+func (s *fakeLiveWhatsAppSession) SetPresenceAvailable(_ context.Context, available bool) error {
+	if s.presenceAvailable != nil {
+		s.presenceAvailable <- available
+	}
+	return s.presenceErr
+}
+
 func (s *fakeLiveWhatsAppSession) SubscribePresence(_ context.Context, chatID string) error {
 	if s.subscriptions != nil {
 		s.subscriptions <- chatID
@@ -404,7 +412,8 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	})
 
 	session := &fakeLiveWhatsAppSession{
-		events: make(chan whatsapp.Event, 4),
+		events:            make(chan whatsapp.Event, 4),
+		presenceAvailable: make(chan bool, 2),
 	}
 	env := Environment{
 		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
@@ -424,6 +433,14 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.ConnectionState == ui.ConnectionOnline
 	})
+	select {
+	case available := <-session.presenceAvailable:
+		if !available {
+			t.Fatal("initial presence availability = false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial presence availability")
+	}
 
 	when := time.Unix(1_700_000_000, 0)
 	session.events <- whatsapp.Event{
@@ -463,11 +480,58 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 		t.Fatalf("connect/subscribe called = %v/%v", session.connectCalled, session.subscribeCalled)
 	}
 
+	session.events <- whatsapp.Event{
+		Kind:       whatsapp.EventConnectionState,
+		Connection: whatsapp.ConnectionEvent{State: whatsapp.ConnectionOnline},
+	}
+	select {
+	case available := <-session.presenceAvailable:
+		if !available {
+			t.Fatal("reconnected presence availability = false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconnected presence availability")
+	}
+
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("runLiveWhatsApp did not stop after cancellation")
+	}
+}
+
+func TestLiveUpdateForPresenceEventPreservesTypingAndAvailabilityFields(t *testing.T) {
+	updatedAt := time.Unix(1_700_000_000, 0)
+	typing := liveUpdateForPresenceEvent(whatsapp.PresenceEvent{
+		ChatID:        "chat-1",
+		SenderJID:     "alice@s.whatsapp.net",
+		Sender:        "Alice",
+		TypingChanged: true,
+		Typing:        true,
+		UpdatedAt:     updatedAt,
+	}).Presence
+	if typing.ChatID != "chat-1" || !typing.TypingChanged || !typing.Typing || !typing.ExpiresAt.Equal(updatedAt.Add(6*time.Second)) {
+		t.Fatalf("typing presence = %+v", typing)
+	}
+	if typing.AvailabilityChanged || typing.Online || !typing.LastSeen.IsZero() {
+		t.Fatalf("typing presence mixed availability fields = %+v", typing)
+	}
+
+	lastSeen := time.Unix(1_700_001_000, 0)
+	availability := liveUpdateForPresenceEvent(whatsapp.PresenceEvent{
+		ChatID:              "chat-1",
+		SenderJID:           "alice@s.whatsapp.net",
+		Sender:              "Alice",
+		AvailabilityChanged: true,
+		Online:              false,
+		LastSeen:            lastSeen,
+	}).Presence
+	if availability.ChatID != "chat-1" || !availability.AvailabilityChanged || availability.Online || !availability.LastSeen.Equal(lastSeen) {
+		t.Fatalf("availability presence = %+v", availability)
+	}
+	if availability.TypingChanged || availability.Typing || !availability.ExpiresAt.IsZero() {
+		t.Fatalf("availability presence mixed typing fields = %+v", availability)
 	}
 }
 

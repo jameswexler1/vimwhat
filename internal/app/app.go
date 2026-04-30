@@ -851,6 +851,7 @@ func runLiveWhatsApp(
 		})
 		return
 	}
+	markLivePresenceAvailable(ctx, live, updates)
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
 
 	var protocolWG sync.WaitGroup
@@ -973,6 +974,9 @@ func runLiveWhatsApp(
 			viewState = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, appFocusUpdates, visibleChatUpdates, viewState)
 			if event.Kind == whatsapp.EventConnectionState {
 				online = event.Connection.State == whatsapp.ConnectionOnline
+				if online {
+					markLivePresenceAvailable(ctx, live, updates)
+				}
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
 				continue
 			}
@@ -2642,6 +2646,19 @@ func handlePresenceSubscribeRequest(ctx context.Context, live WhatsAppLiveSessio
 	_ = live.SubscribePresence(presenceCtx, chatID)
 }
 
+func markLivePresenceAvailable(ctx context.Context, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate) {
+	if live == nil {
+		return
+	}
+	presenceCtx, cancel := context.WithTimeout(ctx, presenceSendTimeout)
+	defer cancel()
+	if err := live.SetPresenceAvailable(presenceCtx, true); err != nil {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+			Status: fmt.Sprintf("presence availability failed: %s", shortStatusError(err)),
+		})
+	}
+}
+
 func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest, online bool, request mediaDownloadRequest) {
 	if request.Result == nil {
 		return
@@ -3663,19 +3680,25 @@ func liveUpdateForConnectionEvent(event whatsapp.ConnectionEvent) ui.LiveUpdate 
 }
 
 func liveUpdateForPresenceEvent(event whatsapp.PresenceEvent) ui.LiveUpdate {
-	expiresAt := event.UpdatedAt
-	if expiresAt.IsZero() {
-		expiresAt = time.Now()
+	presence := ui.PresenceUpdate{
+		ChatID:              event.ChatID,
+		SenderJID:           event.SenderJID,
+		Sender:              event.Sender,
+		TypingChanged:       event.TypingChanged,
+		Typing:              event.Typing,
+		AvailabilityChanged: event.AvailabilityChanged,
+		Online:              event.Online,
+		LastSeen:            event.LastSeen,
 	}
-	expiresAt = expiresAt.Add(6 * time.Second)
+	if event.TypingChanged && event.Typing {
+		expiresAt := event.UpdatedAt
+		if expiresAt.IsZero() {
+			expiresAt = time.Now()
+		}
+		presence.ExpiresAt = expiresAt.Add(6 * time.Second)
+	}
 	return ui.LiveUpdate{
-		Presence: ui.PresenceUpdate{
-			ChatID:    event.ChatID,
-			SenderJID: event.SenderJID,
-			Sender:    event.Sender,
-			Typing:    event.Typing,
-			ExpiresAt: expiresAt,
-		},
+		Presence: presence,
 	}
 }
 

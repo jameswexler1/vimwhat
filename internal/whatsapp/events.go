@@ -34,6 +34,8 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 		return c.normalizePictureEvent(ctx, event)
 	case *events.ChatPresence:
 		return c.normalizeChatPresenceEvent(ctx, event)
+	case *events.Presence:
+		return c.normalizePresenceEvent(ctx, event)
 	case *events.Contact:
 		return c.normalizeContactEvent(ctx, event)
 	case *events.PushName:
@@ -105,6 +107,8 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 		return normalizePictureEvent(event)
 	case *events.ChatPresence:
 		return normalizeChatPresenceEvent(event)
+	case *events.Presence:
+		return normalizePresenceEvent(event)
 	case *events.GroupInfo:
 		out := normalizeGroupInfoEvent(event.JID, "", event.Name)
 		return append(out, normalizeGroupParticipantDeltaEvent(event.JID, event.Join, event.Leave)...)
@@ -612,11 +616,42 @@ func (c *Client) normalizeChatPresenceEvent(ctx context.Context, event *events.C
 	return []Event{{
 		Kind: EventPresenceUpdate,
 		Presence: PresenceEvent{
-			ChatID:    chatID,
-			SenderJID: senderJID,
-			Sender:    display,
-			Typing:    event.State == types.ChatPresenceComposing,
-			UpdatedAt: time.Now(),
+			ChatID:        chatID,
+			SenderJID:     senderJID,
+			Sender:        display,
+			TypingChanged: true,
+			Typing:        event.State == types.ChatPresenceComposing,
+			UpdatedAt:     time.Now(),
+		},
+	}}
+}
+
+func (c *Client) normalizePresenceEvent(ctx context.Context, event *events.Presence) []Event {
+	if event == nil || event.From.IsEmpty() || !supportedChat(event.From) || event.From.Server == types.GroupServer {
+		return nil
+	}
+	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.From, types.EmptyJID)
+	if canonicalChatJID.IsEmpty() {
+		canonicalChatJID = canonicalizableChatJID(event.From)
+	}
+	if canonicalChatJID.IsEmpty() || canonicalChatJID.Server == types.GroupServer {
+		return nil
+	}
+	chatID := canonicalChatJID.String()
+	display := chatID
+	if canonicalChatJID.User != "" {
+		display = canonicalChatJID.User
+	}
+	return []Event{{
+		Kind: EventPresenceUpdate,
+		Presence: PresenceEvent{
+			ChatID:              chatID,
+			SenderJID:           chatID,
+			Sender:              display,
+			AvailabilityChanged: true,
+			Online:              !event.Unavailable,
+			LastSeen:            event.LastSeen,
+			UpdatedAt:           time.Now(),
 		},
 	}}
 }
@@ -944,11 +979,39 @@ func normalizeChatPresenceEvent(event *events.ChatPresence) []Event {
 	return []Event{{
 		Kind: EventPresenceUpdate,
 		Presence: PresenceEvent{
-			ChatID:    event.Chat.String(),
-			SenderJID: senderJID,
-			Sender:    display,
-			Typing:    event.State == types.ChatPresenceComposing,
-			UpdatedAt: time.Now(),
+			ChatID:        event.Chat.String(),
+			SenderJID:     senderJID,
+			Sender:        display,
+			TypingChanged: true,
+			Typing:        event.State == types.ChatPresenceComposing,
+			UpdatedAt:     time.Now(),
+		},
+	}}
+}
+
+func normalizePresenceEvent(event *events.Presence) []Event {
+	if event == nil || event.From.IsEmpty() || !supportedChat(event.From) || event.From.Server == types.GroupServer {
+		return nil
+	}
+	chat := canonicalizableChatJID(event.From)
+	if chat.IsEmpty() || chat.Server == types.GroupServer {
+		return nil
+	}
+	chatID := chat.String()
+	display := chatID
+	if chat.User != "" {
+		display = chat.User
+	}
+	return []Event{{
+		Kind: EventPresenceUpdate,
+		Presence: PresenceEvent{
+			ChatID:              chatID,
+			SenderJID:           chatID,
+			Sender:              display,
+			AvailabilityChanged: true,
+			Online:              !event.Unavailable,
+			LastSeen:            event.LastSeen,
+			UpdatedAt:           time.Now(),
 		},
 	}}
 }

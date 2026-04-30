@@ -1183,6 +1183,7 @@ func (m Model) renderMessages(width, height int) string {
 		title = "Messages"
 	}
 	header := m.renderMessageHeader(title, width)
+	headerLines := strings.Split(header, "\n")
 
 	if chat.ID == "" {
 		return strings.Join(clipLinesSlice([]string{
@@ -1194,7 +1195,7 @@ func (m Model) renderMessages(width, height int) string {
 	}
 
 	messages := m.currentMessages()
-	bodyHeight := max(1, height-1)
+	bodyHeight := max(1, height-len(headerLines))
 	footer := m.renderMessageFooter(max(1, width-2))
 	footerHeight := min(countLines(footer), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
@@ -1223,7 +1224,7 @@ func (m Model) renderMessages(width, height int) string {
 		}
 		body = append(body, padLines(strings.Split(clipLines(footer, footerHeight), "\n"), footerHeight)...)
 	}
-	return strings.Join(clipLinesSlice(append([]string{header}, body...), height), "\n")
+	return strings.Join(clipLinesSlice(append(headerLines, body...), height), "\n")
 }
 
 func (m Model) messageBlocksForRange(messages []store.Message, width, start, end int, visibleOverlays map[string]bool) []messageBlock {
@@ -1320,10 +1321,18 @@ func (m Model) renderMessageHeader(title string, width int) string {
 		parts = append(parts, "draft")
 	}
 
-	return lipgloss.NewStyle().
+	titleLine := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(accentFG).
 		Render(truncateDisplay(strings.Join(parts, "  "), width))
+	if m.currentChat().ID == "" {
+		return titleLine
+	}
+	presence := truncateDisplay(m.currentPresenceHeaderText(), width)
+	presenceLine := lipgloss.NewStyle().
+		Foreground(softFG).
+		Render(presence)
+	return titleLine + "\n" + presenceLine
 }
 
 func messageDate(message store.Message) string {
@@ -2001,13 +2010,6 @@ func (m Model) renderStatus() string {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
 	centerStatus := m.sanitizeDisplayLine(m.status)
-	if presence := m.currentPresenceText(); presence != "" {
-		if centerStatus != "" && centerStatus != "ready" {
-			centerStatus += " | " + presence
-		} else {
-			centerStatus = presence
-		}
-	}
 	center := " " + truncateDisplay(centerStatus, max(8, m.width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
@@ -2035,8 +2037,28 @@ func (m Model) renderStatus() string {
 	return left + center + spacer + right
 }
 
-func (m Model) currentPresenceText() string {
-	return m.chatPresenceText(m.currentChat().ID)
+func (m Model) currentPresenceHeaderText() string {
+	return m.chatPresenceHeaderText(m.currentChat().ID, time.Now())
+}
+
+func (m Model) chatPresenceHeaderText(chatID string, now time.Time) string {
+	if chatID == "" || len(m.presenceByChat) == 0 {
+		return ""
+	}
+	presence, ok := m.presenceByChat[chatID]
+	if !ok {
+		return ""
+	}
+	if typing := m.presenceTypingText(presence, now); typing != "" {
+		return typing
+	}
+	if presence.Online {
+		return "online"
+	}
+	if lastSeen := formatLastSeen(presence.LastSeen, now); lastSeen != "" {
+		return lastSeen
+	}
+	return ""
 }
 
 func (m Model) chatPresenceText(chatID string) string {
@@ -2044,7 +2066,14 @@ func (m Model) chatPresenceText(chatID string) string {
 		return ""
 	}
 	presence, ok := m.presenceByChat[chatID]
-	if !ok || !presence.Typing || (!presence.ExpiresAt.IsZero() && time.Now().After(presence.ExpiresAt)) {
+	if !ok {
+		return ""
+	}
+	return m.presenceTypingText(presence, time.Now())
+}
+
+func (m Model) presenceTypingText(presence PresenceUpdate, now time.Time) string {
+	if !presence.Typing || (!presence.ExpiresAt.IsZero() && now.After(presence.ExpiresAt)) {
 		return ""
 	}
 	name := strings.TrimSpace(m.sanitizeDisplayLine(presence.Sender))
@@ -2054,7 +2083,34 @@ func (m Model) chatPresenceText(chatID string) string {
 	if name == "" {
 		name = "someone"
 	}
-	return name + " typing"
+	return name + " typing..."
+}
+
+func formatLastSeen(lastSeen, now time.Time) string {
+	if lastSeen.IsZero() {
+		return ""
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	lastSeen = lastSeen.In(now.Location())
+	if sameDate(lastSeen, now) {
+		return "last seen " + lastSeen.Format("15:04")
+	}
+	yesterday := now.AddDate(0, 0, -1)
+	if sameDate(lastSeen, yesterday) {
+		return "last seen yesterday " + lastSeen.Format("15:04")
+	}
+	if lastSeen.Year() == now.Year() {
+		return "last seen " + lastSeen.Format("Jan 2 15:04")
+	}
+	return "last seen " + lastSeen.Format("Jan 2 2006 15:04")
+}
+
+func sameDate(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
 
 func (m Model) searchStatusSegment(queryWidth int) string {
