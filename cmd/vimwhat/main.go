@@ -1,3 +1,7 @@
+// vimwhat - vim-modal WhatsApp TUI
+// Copyright (C) 2026 James Wexler
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package main
 
 import (
