@@ -45,7 +45,8 @@ func DefaultFileContent(paths Paths) string {
 	b.WriteString("# - Linux: $XDG_CONFIG_HOME/vimwhat/config.toml\n")
 	b.WriteString("# - Windows: %APPDATA%\\vimwhat\\config.toml\n")
 	b.WriteString("# Leave command fields empty to use built-in platform auto defaults.\n")
-	b.WriteString("# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.\n\n")
+	b.WriteString("# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.\n")
+	b.WriteString("# Composer Shift+Enter only works when the terminal reports it distinctly; ctrl+j is the reliable newline fallback.\n\n")
 
 	fmt.Fprintf(&b, "editor = %q\n", cfg.Editor)
 	fmt.Fprintf(&b, "preview_backend = %q\n", cfg.PreviewBackend)

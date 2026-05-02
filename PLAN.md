@@ -272,6 +272,7 @@ The recent-sticker send milestone now has an implemented first pass:
 The composer, forwarding, and presence polish milestone now has an implemented first pass:
 
 - `Shift+Enter` is the generated default alternate newline binding for insert mode, with `ctrl+j` retained as the portable fallback and all bindings kept editable through config.
+- The insert composer soft-wraps long input by display width inside the footer, preserves explicit newlines in the draft/body, and keeps the cursor visible without relying on terminal edge wrapping.
 - Visual mode can forward the selected message range through a dedicated recipient picker, defaulting to `key_visual_forward = "f"`; the picker uses Vim-style `j`/`k` movement and `/` contact search before typing filter text.
 - Forwarding preserves WhatsApp forwarded metadata for received source messages, while self-authored outgoing source messages are resent without the forwarded tag.
 - WhatsApp message protobuf payloads are persisted for ingested messages so forwarding can resend the original supported message shape instead of reconstructing from rendered text/media metadata.

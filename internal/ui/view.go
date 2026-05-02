@@ -37,6 +37,7 @@ const (
 	chatHeaderHeight      = 1
 	chatCellHeight        = 4
 	lastColumnGuardMargin = 2
+	maxComposerHeight     = 12
 )
 
 func (m Model) View() string {
@@ -1354,22 +1355,26 @@ func (m Model) renderMessages(width, height int) string {
 
 	messages := m.currentMessages()
 	bodyHeight := max(1, height-len(headerLines))
-	footerHeight := min(countLines(m.renderMessageFooter(max(1, width-2))), bodyHeight)
+	footerWidth := max(1, width-2)
+	footerHeight := min(countLines(m.renderMessageFooter(footerWidth)), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
 	blocks := m.messageBlocks(messages, width, m.visibleOverlayIdentifiers())
+	spans := m.messageViewportSpansForHeight(blocks, messages, messageHeight)
+	footer := m.renderMessageFooterWithNotice(footerWidth, m.footerNoticeForViewport(blocks, spans))
+	finalFooterHeight := min(countLines(footer), bodyHeight)
+	if finalFooterHeight != footerHeight {
+		footerHeight = finalFooterHeight
+		messageHeight = max(1, bodyHeight-footerHeight)
+		spans = m.messageViewportSpansForHeight(blocks, messages, messageHeight)
+		footer = m.renderMessageFooterWithNotice(footerWidth, m.footerNoticeForViewport(blocks, spans))
+	}
 
 	body := make([]string, 0, bodyHeight)
-	var spans []messageBlockSpan
 	if len(blocks) == 0 {
 		body = append(body, lipgloss.NewStyle().Foreground(softFG).Render("No messages in current chat."))
 	} else {
-		cursorBlock := messageBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, len(messages)-1))
-		scrollBlock := messageBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, len(messages)-1))
-		scrollBlock = dividerViewportScrollTop(blocks, scrollBlock, cursorBlock, messageHeight)
-		spans = messageViewportSpans(blocks, scrollBlock, cursorBlock, messageHeight)
 		body = append(body, messageLinesForSpans(blocks, spans)...)
 	}
-	footer := m.renderMessageFooterWithNotice(max(1, width-2), m.footerNoticeForViewport(blocks, spans))
 	if footerHeight > 0 {
 		if len(blocks) == 0 || messageBlocksHeight(blocks) <= messageHeight {
 			body = padLines(body, messageHeight)
@@ -1379,6 +1384,16 @@ func (m Model) renderMessages(width, height int) string {
 		body = append(body, padLines(strings.Split(clipLines(footer, footerHeight), "\n"), footerHeight)...)
 	}
 	return strings.Join(clipLinesSlice(append(headerLines, body...), height), "\n")
+}
+
+func (m Model) messageViewportSpansForHeight(blocks []messageBlock, messages []store.Message, height int) []messageBlockSpan {
+	if len(blocks) == 0 {
+		return nil
+	}
+	cursorBlock := messageBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, len(messages)-1))
+	scrollBlock := messageBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, len(messages)-1))
+	scrollBlock = dividerViewportScrollTop(blocks, scrollBlock, cursorBlock, height)
+	return messageViewportSpans(blocks, scrollBlock, cursorBlock, height)
 }
 
 func (m Model) messageBlocks(messages []store.Message, width int, visibleOverlays map[string]bool) []messageBlock {
@@ -2584,16 +2599,17 @@ func (m Model) renderComposerWithNotice(width int, notice string) string {
 	lines = append(lines, attachmentLines...)
 	lines = append(lines, m.mentionSuggestionLines(width)...)
 
-	bodyLines := composerLines(m.composer)
-	maxBodyLines := max(1, m.composerHeight()-1-len(attachmentLines)-m.mentionSuggestionHeight())
+	bodyLines := m.composerVisualLines(width)
+	maxBodyLines := max(1, maxComposerHeight-len(lines))
 	if len(bodyLines) > maxBodyLines {
 		bodyLines = bodyLines[len(bodyLines)-maxBodyLines:]
 	}
 	for i, line := range bodyLines {
+		cursor := ""
 		if i == len(bodyLines)-1 {
-			line = tailDisplay(line+"▌", max(1, width-2))
+			cursor = "▌"
 		}
-		lines = append(lines, truncateDisplay("> "+line, width))
+		lines = append(lines, truncateDisplay("> "+line+cursor, width))
 	}
 
 	style := lipgloss.NewStyle().Foreground(primaryFG).Width(width)
@@ -2682,20 +2698,6 @@ func (m Model) inputHeight() int {
 	default:
 		return 0
 	}
-}
-
-func (m Model) composerHeight() int {
-	if m.mode != ModeInsert {
-		return 0
-	}
-	extra := len(m.attachments) + 2 + m.mentionSuggestionHeight()
-	if m.replyTo != nil {
-		extra++
-	}
-	if m.editTarget != nil {
-		extra++
-	}
-	return min(12, max(3, len(composerLines(m.composer))+extra))
 }
 
 func (m Model) renderHelp(width int) string {
@@ -2937,9 +2939,58 @@ func (m Model) panelStyle(focus Focus) lipgloss.Style {
 		Padding(0, 1)
 }
 
-func composerLines(value string) []string {
+func (m Model) composerVisualLines(width int) []string {
+	return wrapComposerText(m.sanitizeDisplayText(m.composer, true), composerBodyWidth(width))
+}
+
+func composerBodyWidth(width int) int {
+	return max(1, width-displayWidth("> ")-displayWidth("▌"))
+}
+
+func wrapComposerText(value string, width int) []string {
+	width = max(1, width)
 	if value == "" {
 		return []string{""}
 	}
-	return strings.Split(value, "\n")
+
+	var out []string
+	for _, line := range strings.Split(value, "\n") {
+		out = append(out, wrapComposerLine(line, width)...)
+	}
+	return out
+}
+
+func wrapComposerLine(value string, width int) []string {
+	width = max(1, width)
+	if value == "" {
+		return []string{""}
+	}
+
+	var out []string
+	var line strings.Builder
+	current := 0
+	graphemes := uniseg.NewGraphemes(value)
+	for graphemes.Next() {
+		cluster := graphemes.Str()
+		clusterWidth := displayWidth(cluster)
+		if line.Len() > 0 && current+clusterWidth > width {
+			out = append(out, line.String())
+			line.Reset()
+			current = 0
+		}
+		line.WriteString(cluster)
+		current += clusterWidth
+		if current >= width {
+			out = append(out, line.String())
+			line.Reset()
+			current = 0
+		}
+	}
+	if line.Len() > 0 {
+		out = append(out, line.String())
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }

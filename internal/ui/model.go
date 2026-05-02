@@ -869,6 +869,9 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
 	}
+	if m.terminalOverlayBackendActive() {
+		m.pauseOverlays(true, true)
+	}
 	m.refreshPreferredChatID = ""
 	if m.focus == FocusMessages {
 		m.handleCurrentChatActivated()
@@ -936,6 +939,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reportAppFocusChanged(false)
 		return m, nil
 	case tea.WindowSizeMsg:
+		viewportChanged := msg.Width != m.width || msg.Height != m.height
 		m.width = msg.Width
 		m.height = msg.Height
 		m.compactLayout = msg.Width < 110
@@ -943,6 +947,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focus = FocusMessages
 		}
 		m.keepActiveChatVisible()
+		if viewportChanged && m.terminalOverlayBackendActive() {
+			m.pauseOverlays(true, true)
+		}
 		return m.withPreviewCmd(nil)
 	case clipboardCopiedMsg:
 		if msg.Err != nil {
@@ -3447,6 +3454,10 @@ func (m *Model) ensureSixelManager() {
 		return
 	}
 	m.sixel = media.NewSixelManagerForWriter(m.sixelWriter)
+}
+
+func (m Model) terminalOverlayBackendActive() bool {
+	return m.previewReport.Selected == media.BackendUeberzugPP || m.previewReport.Selected == media.BackendSixel
 }
 
 func batchCmds(cmds ...tea.Cmd) tea.Cmd {

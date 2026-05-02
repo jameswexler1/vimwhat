@@ -1102,6 +1102,59 @@ func TestSnapshotAppendPreservesHistoryPositionAndShowsNewMessagesIndicator(t *t
 	}
 }
 
+func TestNewMessageNoticeAndWrappedComposerStayWithinMessagePane(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: strings.Repeat("older message ", 8)},
+				{ID: "m-2", ChatID: "chat-1", Body: strings.Repeat("current message ", 8)},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+	model.mode = ModeInsert
+	model.messageCursor = 0
+	model.messageScrollTop = 0
+	model.composer = strings.Repeat("composer wraps ", 6)
+
+	err := model.applySnapshot(store.Snapshot{
+		Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+		MessagesByChat: map[string][]store.Message{"chat-1": {
+			{ID: "m-1", ChatID: "chat-1", Body: strings.Repeat("older message ", 8)},
+			{ID: "m-2", ChatID: "chat-1", Body: strings.Repeat("current message ", 8)},
+			{ID: "m-3", ChatID: "chat-1", Body: "new one"},
+			{ID: "m-4", ChatID: "chat-1", Body: "new two"},
+		}},
+		DraftsByChat: map[string]string{},
+		ActiveChatID: "chat-1",
+	}, "chat-1", "")
+	if err != nil {
+		t.Fatalf("applySnapshot() error = %v", err)
+	}
+
+	const width = 48
+	const height = 10
+	view := stripANSI(model.renderMessages(width, height))
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("renderMessages() produced %d lines, want <= %d\n%s", len(lines), height, view)
+	}
+	for i, line := range lines {
+		if got := lipgloss.Width(line); got > width {
+			t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, got, width, view)
+		}
+	}
+	if !strings.Contains(view, "↓ 3 new below") {
+		t.Fatalf("renderMessages() missing new-message notice\n%s", view)
+	}
+	if len(renderedComposerBodyLines(view)) < 2 {
+		t.Fatalf("renderMessages() did not wrap composer footer\n%s", view)
+	}
+}
+
 func TestMovingToLatestMessageClearsNewMessagesIndicator(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -3750,6 +3803,84 @@ func TestDisplayHelpersKeepEmojiClustersIntact(t *testing.T) {
 				t.Fatalf("truncateDisplay() split or dropped emoji cluster: %q", truncated)
 			}
 		})
+	}
+}
+
+func TestWrapComposerTextPreservesTextAndHardNewlines(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		width int
+		want  []string
+	}{
+		{name: "empty", value: "", width: 8, want: []string{""}},
+		{name: "hard newlines", value: "one\n\ntwo", width: 8, want: []string{"one", "", "two"}},
+		{name: "long word", value: "abcdefghij", width: 4, want: []string{"abcd", "efgh", "ij"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wrapComposerText(tt.value, tt.width)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("wrapComposerText() = %#v, want %#v", got, tt.want)
+			}
+			if strings.Join(got, "\n") == tt.value && strings.Contains(tt.value, "\n") {
+				return
+			}
+			if strings.Join(got, "") != strings.ReplaceAll(tt.value, "\n", "") {
+				t.Fatalf("wrapComposerText() lost text: got %#v from %q", got, tt.value)
+			}
+		})
+	}
+}
+
+func TestWrapComposerTextKeepsDisplayWidth(t *testing.T) {
+	value := "olá José 👩‍⚕️ abcdefghij"
+	lines := wrapComposerText(value, 7)
+	for _, line := range lines {
+		if width := displayWidth(line); width > 7 {
+			t.Fatalf("wrapped line width = %d, want <= 7: %#v", width, lines)
+		}
+	}
+	if got := strings.Join(lines, ""); got != value {
+		t.Fatalf("wrapped text = %q, want %q", got, value)
+	}
+}
+
+func TestComposerWrapsLongInputInsideFooterWidth(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "hello world from composer"
+
+	const width = 18
+	footer := stripANSI(model.renderComposer(width))
+	if strings.Contains(footer, "~") {
+		t.Fatalf("composer footer truncated long input:\n%s", footer)
+	}
+	var bodyLines []string
+	for i, line := range strings.Split(footer, "\n") {
+		if lineWidth := lipgloss.Width(line); lineWidth > width {
+			t.Fatalf("line %d width = %d, want <= %d\n%s", i+1, lineWidth, width, footer)
+		}
+		if strings.HasPrefix(line, "> ") {
+			body := strings.TrimPrefix(line, "> ")
+			body = strings.TrimRight(body, " ")
+			body = strings.TrimSuffix(body, "▌")
+			bodyLines = append(bodyLines, body)
+		}
+	}
+	if len(bodyLines) < 2 {
+		t.Fatalf("composer body did not wrap: %#v\n%s", bodyLines, footer)
+	}
+	if got := strings.Join(bodyLines, ""); got != model.composer {
+		t.Fatalf("rendered composer body = %q, want %q\n%s", got, model.composer, footer)
 	}
 }
 
@@ -6648,6 +6779,69 @@ func TestCustomInsertSendAndNewlineKeys(t *testing.T) {
 }
 
 func TestShiftEnterAddsComposerNewline(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{name: "kitty csi u", msg: rawStringMsg("\x1b[13;2u")},
+		{name: "tilde sequence", msg: rawStringMsg("\x1b[13;2~")},
+		{name: "modify other keys", msg: rawStringMsg("\x1b[27;2;13~")},
+		{name: "bubble tea unknown csi u", msg: rawStringMsg("?CSI[49 51 59 50 117]?")},
+		{name: "bubble tea unknown tilde", msg: rawStringMsg("?CSI[49 51 59 50 126]?")},
+		{name: "bubble tea unknown modify other keys", msg: rawStringMsg("?CSI[50 55 59 50 59 49 51 126]?")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := NewModel(Options{
+				Snapshot: store.Snapshot{
+					Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+					MessagesByChat: map[string][]store.Message{"chat-1": nil},
+					DraftsByChat:   map[string]string{},
+					ActiveChatID:   "chat-1",
+				},
+			})
+			model.mode = ModeInsert
+			model.composer = "hello"
+
+			updated, _ := model.Update(tt.msg)
+			model = updated.(Model)
+			if model.composer != "hello\n" {
+				t.Fatalf("composer after shift+enter = %q, want newline", model.composer)
+			}
+			if got := len(model.messagesByChat["chat-1"]); got != 0 {
+				t.Fatalf("shift+enter sent %d messages, want 0", got)
+			}
+		})
+	}
+}
+
+func TestAltEnterCanBeConfiguredForComposerNewline(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.InsertNewlineAlt = "alt+enter"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "hello"
+
+	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	model = updated.(Model)
+	if model.composer != "hello\n" {
+		t.Fatalf("composer after alt+enter = %q, want newline", model.composer)
+	}
+	if got := len(model.messagesByChat["chat-1"]); got != 0 {
+		t.Fatalf("alt+enter sent %d messages, want 0", got)
+	}
+}
+
+func TestPlainEnterStillSendsComposer(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -6659,10 +6853,13 @@ func TestShiftEnterAddsComposerNewline(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "hello"
 
-	updated, _ := model.Update(rawStringMsg("\x1b[13;2u"))
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
-	if model.composer != "hello\n" {
-		t.Fatalf("composer after shift+enter = %q, want newline", model.composer)
+	if got := len(model.messagesByChat["chat-1"]); got != 1 {
+		t.Fatalf("plain enter sent %d messages, want 1", got)
+	}
+	if strings.TrimSpace(model.composer) != "" {
+		t.Fatalf("composer after plain enter = %q, want empty", model.composer)
 	}
 }
 
@@ -7040,6 +7237,59 @@ func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 	view = stripANSI(model.View())
 	if strings.Contains(view, "fallback-overlay-line") {
 		t.Fatalf("View() rendered low-resolution fallback after overlay resume\n%s", view)
+	}
+}
+
+func TestSnapshotReloadPausesTerminalOverlays(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want overlay command")
+	}
+	model = applyOverlayCmd(t, model, cmd)
+
+	updated, _ := model.handleSnapshotReloaded(snapshotReloadedMsg{
+		ActiveChatID: "chat-1",
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "reloaded"},
+				{ID: "m-2", ChatID: "chat-1", Sender: "Bob", Body: "new"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model = updated
+	if !model.mediaOverlayPaused || !model.avatarOverlayPaused {
+		t.Fatalf("overlay pause = media:%v avatar:%v, want both paused", model.mediaOverlayPaused, model.avatarOverlayPaused)
+	}
+	if model.overlayPauseGeneration == 0 {
+		t.Fatal("overlayPauseGeneration was not incremented")
+	}
+}
+
+func TestWindowResizePausesTerminalOverlays(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendSixel)
+	model.sixel = media.NewSixelManagerForWriter(&bytes.Buffer{})
+	model.sixelSignature = "active"
+
+	updated, cmd := model.Update(tea.WindowSizeMsg{Width: model.width + 5, Height: model.height + 1})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("WindowSizeMsg command = nil, want clear/resume overlay command")
+	}
+	if !model.mediaOverlayPaused || !model.avatarOverlayPaused {
+		t.Fatalf("overlay pause = media:%v avatar:%v, want both paused", model.mediaOverlayPaused, model.avatarOverlayPaused)
 	}
 }
 
@@ -7547,11 +7797,12 @@ func TestComposerShowsTailOfLongLastLine(t *testing.T) {
 	model.composer = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 	view := stripANSI(model.renderComposer(18))
-	if !strings.Contains(view, "uvwxyz▌") {
-		t.Fatalf("renderComposer() did not keep the typed tail visible\n%s", view)
+	bodyLines := renderedComposerBodyLines(view)
+	if len(bodyLines) < 2 {
+		t.Fatalf("renderComposer() did not wrap long input\n%s", view)
 	}
-	if strings.Contains(view, "> 0123456789abcd") {
-		t.Fatalf("renderComposer() still showed the truncated line head\n%s", view)
+	if got := strings.Join(bodyLines, ""); got != model.composer {
+		t.Fatalf("renderComposer() body = %q, want %q\n%s", got, model.composer, view)
 	}
 }
 
@@ -7569,8 +7820,10 @@ func TestComposerTailPreservesGraphemeClusters(t *testing.T) {
 	model.composer = "ok 👩🏻‍⚕️👩🏻‍⚕️ pronto"
 
 	view := stripANSI(model.renderComposer(16))
-	if !strings.Contains(view, "pronto▌") {
-		t.Fatalf("renderComposer() missing grapheme-safe tail\n%s", view)
+	body := strings.Join(renderedComposerBodyLines(view), "")
+	want := model.sanitizeDisplayText(model.composer, true)
+	if body != want {
+		t.Fatalf("renderComposer() body = %q, want %q\n%s", body, want, view)
 	}
 	if strings.Contains(view, "�") {
 		t.Fatalf("renderComposer() split a grapheme cluster\n%s", view)
@@ -7964,6 +8217,20 @@ var (
 
 func stripANSI(value string) string {
 	return ansiRE.ReplaceAllString(value, "")
+}
+
+func renderedComposerBodyLines(view string) []string {
+	var bodyLines []string
+	for _, line := range strings.Split(view, "\n") {
+		if !strings.HasPrefix(line, "> ") {
+			continue
+		}
+		body := strings.TrimPrefix(line, "> ")
+		body = strings.TrimRight(body, " ")
+		body = strings.TrimSuffix(body, "▌")
+		bodyLines = append(bodyLines, body)
+	}
+	return bodyLines
 }
 
 func assertViewWithinBounds(t *testing.T, model Model) {
