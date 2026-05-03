@@ -2484,6 +2484,22 @@ func TestReserveLastColumnKeepsRenderedFrameOffTerminalEdge(t *testing.T) {
 	}
 }
 
+func TestFinalFrameClampTruncatesOverwideANSILines(t *testing.T) {
+	content := lipgloss.NewStyle().Foreground(accentFG).Render(strings.Repeat("wide", 20)) + "\n" +
+		lipgloss.NewStyle().Bold(true).Render(strings.Repeat("status", 20)) + "\n" +
+		"extra"
+	clamped := stripANSI(clampFrame(content, 17, 2))
+	lines := strings.Split(clamped, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("clampFrame() produced %d lines, want 2\n%s", len(lines), clamped)
+	}
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width > 17 {
+			t.Fatalf("line %d width = %d, want <= 17\n%s", i+1, width, clamped)
+		}
+	}
+}
+
 func TestReserveLastColumnUsesGuardedGeometry(t *testing.T) {
 	model := NewModel(Options{
 		ReserveLastColumn: true,
@@ -6471,11 +6487,30 @@ func TestPausedOverlayClearDoesNotRaceAfterResume(t *testing.T) {
 	}
 	resumed, resumeCmd := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
 	model = resumed.(Model)
-	if model.mediaOverlayPaused {
-		t.Fatal("mediaOverlayPaused = true after resume")
+	if !model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = false before pause clear applied")
 	}
 	if resumeCmd != nil {
-		model = applyOverlayCmd(t, model, resumeCmd)
+		t.Fatal("resume command queued before pause clear applied")
+	}
+
+	msg := staleClear()
+	clearMsg, ok := msg.(mediaOverlayMsg)
+	if !ok {
+		t.Fatalf("stale clear command message = %T, want mediaOverlayMsg", msg)
+	}
+	updated, resumeCmd := model.Update(clearMsg)
+	model = updated.(Model)
+	if model.overlaySyncPending {
+		t.Fatal("overlaySyncPending = true after pause clear applied")
+	}
+	if resumeCmd == nil {
+		t.Fatal("resume command = nil after pause clear applied")
+	}
+	resumed, _ = model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
+	model = resumed.(Model)
+	if model.mediaOverlayPaused {
+		t.Fatal("mediaOverlayPaused = true after serialized resume")
 	}
 	overlay.Reset()
 
@@ -6529,6 +6564,37 @@ func TestOverlayResumeResyncsWhenPauseClearAppliedFirst(t *testing.T) {
 	}
 	if model.overlaySignature == "" {
 		t.Fatal("overlaySignature is empty after applied resume")
+	}
+}
+
+func TestRepeatedOverlayPauseDoesNotInvalidatePendingClear(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	var overlay bytes.Buffer
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+
+	initial := model.syncOverlayCmd()
+	if initial == nil {
+		t.Fatal("initial syncOverlayCmd() = nil, want add command")
+	}
+	model = applyOverlayCmd(t, model, initial)
+	overlay.Reset()
+
+	model.pauseOverlays(true, false)
+	clearCmd := model.syncOverlayCmd()
+	if clearCmd == nil {
+		t.Fatal("paused syncOverlayCmd() = nil, want clear command")
+	}
+	model.pauseOverlays(true, false)
+	if msg := clearCmd(); msg == nil {
+		t.Fatal("clear command returned nil message")
+	}
+	if !strings.Contains(overlay.String(), `"action":"remove"`) {
+		t.Fatalf("repeated pause invalidated pending clear:\n%s", overlay.String())
 	}
 }
 
@@ -7226,10 +7292,18 @@ func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 		t.Fatalf("View() rendered low-resolution fallback while overlay was paused\n%s", view)
 	}
 
-	resumed, _ := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
+	cleared, resumeCmd := model.Update(mediaOverlayMsg{Signature: ""})
+	model = cleared.(Model)
+	if resumeCmd == nil {
+		t.Fatal("resume command = nil after paused overlay clear")
+	}
+	resumed, addCmd := model.Update(overlayResumeMsg{Generation: model.overlayPauseGeneration})
 	model = resumed.(Model)
 	if model.mediaOverlayPaused {
 		t.Fatal("mediaOverlayPaused = true, want resumed")
+	}
+	if addCmd != nil {
+		model = applyOverlayCmd(t, model, addCmd)
 	}
 	if model.overlaySignature == "" && !model.overlaySyncPending {
 		t.Fatal("overlay is neither active nor pending after resume")

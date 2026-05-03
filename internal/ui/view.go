@@ -63,7 +63,7 @@ func (m Model) View() string {
 		Width(m.width).
 		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 
-	return capLines(trimRightSpaces(rendered), m.height)
+	return clampFrame(rendered, m.width, m.height)
 }
 
 func (m Model) withLayoutWidth() Model {
@@ -143,11 +143,11 @@ func (m Model) renderSyncOverlay(width, height int) string {
 		Width(max(1, panelWidth-2))
 
 	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
-	title := "Syncing WhatsApp updates"
-	subtitle := "New chats and messages are being applied locally."
+	title := firstNonEmpty(m.syncOverlay.Title, "Syncing WhatsApp updates")
+	subtitle := firstNonEmpty(m.syncOverlay.Subtitle, "New chats and messages are being applied locally.")
 	if m.syncOverlay.Completed {
-		title = "Sync complete"
-		subtitle = "Latest WhatsApp data was applied."
+		title = firstNonEmpty(m.syncOverlay.Title, "Sync complete")
+		subtitle = firstNonEmpty(m.syncOverlay.Subtitle, "Latest WhatsApp data was applied.")
 	}
 
 	lines := []string{
@@ -490,6 +490,28 @@ func capLines(content string, height int) string {
 		lines = lines[:height]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func clampFrame(content string, width, height int) string {
+	width = max(1, width)
+	height = max(1, height)
+	lines := strings.Split(trimRightSpaces(content), "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		lines[i] = truncateDisplay(line, width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func trimRightSpaces(content string) string {

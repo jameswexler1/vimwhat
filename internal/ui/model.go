@@ -66,6 +66,8 @@ type LiveUpdate struct {
 type SyncProgressUpdate struct {
 	Active         bool
 	Completed      bool
+	Title          string
+	Subtitle       string
 	Total          int
 	Processed      int
 	AppDataChanges int
@@ -453,6 +455,8 @@ type syncOverlayState struct {
 	Active         bool
 	Completed      bool
 	Generation     int
+	Title          string
+	Subtitle       string
 	Total          int
 	Processed      int
 	AppDataChanges int
@@ -751,6 +755,8 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	m.syncOverlay.Visible = update.Active || update.Completed
 	m.syncOverlay.Active = update.Active
 	m.syncOverlay.Completed = update.Completed
+	m.syncOverlay.Title = strings.TrimSpace(update.Title)
+	m.syncOverlay.Subtitle = strings.TrimSpace(update.Subtitle)
 	m.syncOverlay.Total = max(0, update.Total)
 	m.syncOverlay.Processed = max(0, update.Processed)
 	m.syncOverlay.AppDataChanges = max(0, update.AppDataChanges)
@@ -764,19 +770,26 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 		m.leaderPending = false
 		m.leaderSequence = ""
 		if strings.TrimSpace(m.status) == "" || m.status == "ready" {
-			m.status = "syncing WhatsApp updates"
+			m.status = syncProgressStatus(update, "syncing WhatsApp updates")
 		}
 		return m, nil
 	}
 	if update.Completed {
 		if strings.TrimSpace(m.status) == "" || strings.Contains(strings.ToLower(m.status), "syncing") {
-			m.status = "sync complete"
+			m.status = syncProgressStatus(update, "sync complete")
 		}
 		generation := m.syncOverlay.Generation
 		return m, syncOverlayDoneCmd(generation)
 	}
 	m.syncOverlay = syncOverlayState{}
 	return m, nil
+}
+
+func syncProgressStatus(update SyncProgressUpdate, fallback string) string {
+	if title := strings.TrimSpace(update.Title); title != "" {
+		return title
+	}
+	return fallback
 }
 
 func syncOverlayDoneCmd(generation int) tea.Cmd {
@@ -1022,6 +1035,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.overlaySyncPending = false
 			m.overlayPendingSignature = ""
 		}
+		if m.mediaOverlayPaused || m.avatarOverlayPaused {
+			return m.withPreviewCmd(nil)
+		}
 		return m, nil
 	case sixelOverlayMsg:
 		if msg.Err != nil {
@@ -1036,9 +1052,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sixelSyncPending = false
 			m.sixelPendingSignature = ""
 		}
+		if m.mediaOverlayPaused || m.avatarOverlayPaused {
+			return m.withPreviewCmd(nil)
+		}
 		return m, nil
 	case overlayResumeMsg:
 		if msg.Generation != m.overlayPauseGeneration {
+			return m, nil
+		}
+		if m.overlaySyncPending || m.sixelSyncPending {
+			m.overlayResumeQueued = 0
 			return m, nil
 		}
 		if m.overlay != nil {
@@ -3396,9 +3419,9 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	next, stickerCmd := next.ensureVisibleStickerMedia()
 	next.maybePromptInlineFallback()
 	next, previewCmd := next.queueRequestedPreviewCmd()
-	resumeCmd := next.queueOverlayResumeCmd()
 	overlayCmd := next.syncOverlayCmd()
 	sixelCmd := next.syncSixelCmd()
+	resumeCmd := next.queueOverlayResumeCmd()
 	return next, batchCmds(cmd, stickerCmd, previewCmd, overlayCmd, sixelCmd, resumeCmd)
 }
 
@@ -3406,14 +3429,20 @@ func (m *Model) pauseOverlays(mediaPreview, chatAvatars bool) {
 	if !mediaPreview && !chatAvatars {
 		return
 	}
+	changed := false
 	if mediaPreview {
+		changed = changed || !m.mediaOverlayPaused
 		m.mediaOverlayPaused = true
 	}
 	if chatAvatars {
+		changed = changed || !m.avatarOverlayPaused
 		m.avatarOverlayPaused = true
 	}
 	m.overlayPauseGeneration++
 	m.overlayResumeQueued = 0
+	if !changed {
+		return
+	}
 	if m.overlay != nil {
 		m.overlay.Invalidate()
 	}
@@ -3424,6 +3453,9 @@ func (m *Model) pauseOverlays(mediaPreview, chatAvatars bool) {
 
 func (m *Model) queueOverlayResumeCmd() tea.Cmd {
 	if !m.mediaOverlayPaused && !m.avatarOverlayPaused {
+		return nil
+	}
+	if m.overlaySyncPending || m.sixelSyncPending {
 		return nil
 	}
 	if m.overlayResumeQueued == m.overlayPauseGeneration {

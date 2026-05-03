@@ -502,6 +502,7 @@ var (
 	offlineSyncProgressEvery = 150 * time.Millisecond
 	offlineSyncInactivity    = 15 * time.Second
 	offlineSyncMaxDuration   = 60 * time.Second
+	databaseImportInactivity = 750 * time.Millisecond
 )
 
 type textSendRequest struct {
@@ -903,9 +904,12 @@ func runLiveWhatsApp(
 	var offlineSyncIdleTimerC <-chan time.Time
 	var offlineSyncMaxTimer *time.Timer
 	var offlineSyncMaxTimerC <-chan time.Time
-	resetOfflineSyncIdleTimer := func() {
+	resetOfflineSyncIdleTimer := func(duration time.Duration) {
+		if duration <= 0 {
+			duration = offlineSyncInactivity
+		}
 		if offlineSyncIdleTimer == nil {
-			offlineSyncIdleTimer = time.NewTimer(offlineSyncInactivity)
+			offlineSyncIdleTimer = time.NewTimer(duration)
 		} else {
 			if !offlineSyncIdleTimer.Stop() {
 				select {
@@ -913,7 +917,7 @@ func runLiveWhatsApp(
 				default:
 				}
 			}
-			offlineSyncIdleTimer.Reset(offlineSyncInactivity)
+			offlineSyncIdleTimer.Reset(duration)
 		}
 		offlineSyncIdleTimerC = offlineSyncIdleTimer.C
 	}
@@ -987,7 +991,7 @@ func runLiveWhatsApp(
 				now := time.Now()
 				if event.Offline.Active {
 					syncUpdate := offlineSync.start(event.Offline, now)
-					resetOfflineSyncIdleTimer()
+					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 					startOfflineSyncMaxTimer()
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 						Status: "syncing WhatsApp updates",
@@ -999,6 +1003,16 @@ func runLiveWhatsApp(
 					finishOfflineSync("sync complete", event.Offline)
 					continue
 				}
+			}
+			manualHistoryImport := isManualHistoryImportEvent(event, historyInflight)
+			if isImplicitDatabaseImportEvent(event, manualHistoryImport) && !offlineSync.active {
+				syncUpdate := offlineSync.startImplicit(time.Now())
+				resetOfflineSyncIdleTimer(offlineSync.idleDuration())
+				startOfflineSyncMaxTimer()
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: "updating local database",
+					Sync:   &syncUpdate,
+				})
 			}
 			if event.Kind == whatsapp.EventChatUpsert {
 				mergedAliases, err := mergeEventChatAliases(ctx, env.Store, event.Chat)
@@ -1057,7 +1071,7 @@ func runLiveWhatsApp(
 					if syncUpdate, ok := offlineSync.markProcessed(time.Now()); ok {
 						sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 					}
-					resetOfflineSyncIdleTimer()
+					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 					continue
 				}
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
@@ -1072,7 +1086,7 @@ func runLiveWhatsApp(
 			}
 			if offlineSync.active {
 				syncUpdate, shouldSend := offlineSync.markProcessed(time.Now())
-				resetOfflineSyncIdleTimer()
+				resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 				if shouldSend {
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 				}
@@ -1221,13 +1235,21 @@ func runLiveWhatsApp(
 				})
 			}
 		case <-offlineSyncIdleTimerC:
-			finishOfflineSync("sync stalled; refreshed latest data", whatsapp.OfflineSyncEvent{
+			status := "sync stalled; refreshed latest data"
+			if offlineSync.implicit {
+				status = "database update complete"
+			}
+			finishOfflineSync(status, whatsapp.OfflineSyncEvent{
 				Completed: true,
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
 			})
 		case <-offlineSyncMaxTimerC:
-			finishOfflineSync("sync timed out; refreshed latest data", whatsapp.OfflineSyncEvent{
+			status := "sync timed out; refreshed latest data"
+			if offlineSync.implicit {
+				status = "database update timed out; refreshed latest data"
+			}
+			finishOfflineSync(status, whatsapp.OfflineSyncEvent{
 				Completed: true,
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
@@ -1240,6 +1262,7 @@ func runLiveWhatsApp(
 
 type offlineSyncState struct {
 	active         bool
+	implicit       bool
 	dirty          bool
 	total          int
 	processed      int
@@ -1251,9 +1274,21 @@ type offlineSyncState struct {
 }
 
 func (s *offlineSyncState) start(event whatsapp.OfflineSyncEvent, now time.Time) ui.SyncProgressUpdate {
+	dirty := false
+	processed := 0
+	if s.active && s.implicit {
+		dirty = s.dirty
+		processed = s.processed
+	}
+	total := max(0, event.Total)
+	if processed > total {
+		total = processed
+	}
 	*s = offlineSyncState{
 		active:         true,
-		total:          max(0, event.Total),
+		dirty:          dirty,
+		total:          total,
+		processed:      processed,
 		appDataChanges: max(0, event.AppDataChanges),
 		messages:       max(0, event.Messages),
 		notifications:  max(0, event.Notifications),
@@ -1261,6 +1296,22 @@ func (s *offlineSyncState) start(event whatsapp.OfflineSyncEvent, now time.Time)
 		lastProgress:   now,
 	}
 	return s.liveUpdate(true, false)
+}
+
+func (s *offlineSyncState) startImplicit(now time.Time) ui.SyncProgressUpdate {
+	*s = offlineSyncState{
+		active:       true,
+		implicit:     true,
+		lastProgress: now,
+	}
+	return s.liveUpdate(true, false)
+}
+
+func (s offlineSyncState) idleDuration() time.Duration {
+	if s.implicit {
+		return databaseImportInactivity
+	}
+	return offlineSyncInactivity
 }
 
 func (s *offlineSyncState) markProcessed(now time.Time) (ui.SyncProgressUpdate, bool) {
@@ -1296,7 +1347,7 @@ func (s *offlineSyncState) finish(event whatsapp.OfflineSyncEvent) (ui.SyncProgr
 }
 
 func (s offlineSyncState) liveUpdate(active, completed bool) ui.SyncProgressUpdate {
-	return ui.SyncProgressUpdate{
+	update := ui.SyncProgressUpdate{
 		Active:         active,
 		Completed:      completed,
 		Total:          s.total,
@@ -1306,6 +1357,16 @@ func (s offlineSyncState) liveUpdate(active, completed bool) ui.SyncProgressUpda
 		Notifications:  s.notifications,
 		Receipts:       s.receipts,
 	}
+	if s.implicit {
+		if completed {
+			update.Title = "Database update complete"
+			update.Subtitle = "Latest local WhatsApp data is ready."
+		} else {
+			update.Title = "Updating local database"
+			update.Subtitle = "Historical chats and messages are being applied locally."
+		}
+	}
+	return update
 }
 
 type metadataRefreshResult struct {
@@ -3585,6 +3646,61 @@ func isHistoricalImportEvent(event whatsapp.Event) bool {
 	default:
 		return false
 	}
+}
+
+func isImplicitDatabaseImportEvent(event whatsapp.Event, manualHistoryImport bool) bool {
+	if manualHistoryImport {
+		return false
+	}
+	return isHistoricalImportEvent(event) || event.Kind == whatsapp.EventHistoryStatus
+}
+
+func isManualHistoryImportEvent(event whatsapp.Event, historyInflight map[string]time.Time) bool {
+	if len(historyInflight) == 0 {
+		return false
+	}
+	chatID := historicalImportChatID(event)
+	if chatID == "" {
+		return false
+	}
+	_, ok := historyInflight[chatID]
+	return ok
+}
+
+func historicalImportChatID(event whatsapp.Event) string {
+	switch event.Kind {
+	case whatsapp.EventChatUpsert:
+		if event.Chat.Historical {
+			return event.Chat.ID
+		}
+	case whatsapp.EventMessageUpsert:
+		if event.Message.Historical {
+			return event.Message.ChatID
+		}
+	case whatsapp.EventMessageEdit:
+		if event.Edit.Historical {
+			return event.Edit.ChatID
+		}
+	case whatsapp.EventMessageDelete:
+		if event.Delete.Historical {
+			return event.Delete.ChatID
+		}
+	case whatsapp.EventMediaMetadata:
+		if event.Media.Historical {
+			return chatIDFromLocalMessageID(event.Media.MessageID)
+		}
+	case whatsapp.EventHistoryStatus:
+		return event.History.ChatID
+	}
+	return ""
+}
+
+func chatIDFromLocalMessageID(messageID string) string {
+	chatID, _, ok := strings.Cut(strings.TrimSpace(messageID), "/")
+	if !ok {
+		return ""
+	}
+	return chatID
 }
 
 func handleHistoryRequest(

@@ -750,6 +750,164 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 	}
 }
 
+func TestRunLiveWhatsAppShowsProgressForImplicitHistoricalImport(t *testing.T) {
+	prevInactivity := databaseImportInactivity
+	databaseImportInactivity = 50 * time.Millisecond
+	t.Cleanup(func() {
+		databaseImportInactivity = prevInactivity
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 8),
+	}
+	notifier := &fakeNotifier{
+		notifications: make(chan notify.Notification, 4),
+		report:        notify.Report{Selected: notify.BackendCommand},
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		OpenNotifier: func(config.Config) notify.Notifier {
+			return notifier
+		},
+	}
+
+	updates := make(chan ui.LiveUpdate, 16)
+	go runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+
+	when := time.Unix(1_700_000_000, 0)
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-1",
+			JID:           "chat-1@s.whatsapp.net",
+			Title:         "Alice",
+			Kind:          "direct",
+			LastMessageAt: when,
+			Historical:    true,
+		},
+	}
+	start := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Active
+	})
+	if start.Sync.Title != "Updating local database" || start.Refresh {
+		t.Fatalf("implicit import start update = %+v", start)
+	}
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "historical message",
+			NotificationPreview: "historical message",
+			Timestamp:           when,
+			Status:              "received",
+			Historical:          true,
+		},
+	}
+	_ = waitForStoredMessages(t, db, "chat-1", 1)
+
+	completed := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Completed
+	})
+	if !completed.Refresh || completed.Sync.Title != "Database update complete" || completed.Sync.Processed == 0 {
+		t.Fatalf("implicit import completed update = %+v", completed)
+	}
+	assertNotificationCount(t, notifier.notifications, 0)
+}
+
+func TestRunLiveWhatsAppMergesImplicitImportIntoOfflineSyncPreview(t *testing.T) {
+	prevInactivity := databaseImportInactivity
+	databaseImportInactivity = time.Hour
+	t.Cleanup(func() {
+		databaseImportInactivity = prevInactivity
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	session := &fakeLiveWhatsAppSession{
+		events: make(chan whatsapp.Event, 8),
+	}
+	env := Environment{
+		Paths: config.Paths{SessionFile: "/tmp/vimwhat-session.sqlite3"},
+		Store: db,
+		OpenWhatsAppSession: func(context.Context, string) (WhatsAppSession, error) {
+			return session, nil
+		},
+		OpenNotifier: func(config.Config) notify.Notifier {
+			return &fakeNotifier{notifications: make(chan notify.Notification, 4)}
+		},
+	}
+
+	updates := make(chan ui.LiveUpdate, 16)
+	go runLiveWhatsApp(ctx, env, updates, make(chan string, 16), make(chan textSendRequest, 16), make(chan mediaSendRequest, 16), make(chan readReceiptRequest, 16), make(chan reactionRequest, 16), make(chan deleteEveryoneRequest, 16), make(chan editMessageRequest, 16), make(chan forwardMessagesRequest, 16), make(chan presenceRequest, 16), make(chan presenceSubscribeRequest, 16), make(chan mediaDownloadRequest, 16), make(chan stickerSyncRequest, 16), make(chan string, 16), make(chan bool, 16), make(chan []string, 16))
+
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.ConnectionState == ui.ConnectionOnline
+	})
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:         "chat-1",
+			JID:        "chat-1@s.whatsapp.net",
+			Title:      "Alice",
+			Kind:       "direct",
+			Historical: true,
+		},
+	}
+	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Active && update.Sync.Title == "Updating local database"
+	})
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventOfflineSync,
+		Offline: whatsapp.OfflineSyncEvent{
+			Active:   true,
+			Total:    10,
+			Messages: 9,
+		},
+	}
+	preview := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Active && update.Sync.Total == 10
+	})
+	if preview.Sync.Processed == 0 || preview.Sync.Title != "" || preview.Sync.Messages != 9 {
+		t.Fatalf("merged offline sync preview = %+v", preview)
+	}
+}
+
 func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T) {
 	prevInactivity := offlineSyncInactivity
 	prevMaxDuration := offlineSyncMaxDuration
