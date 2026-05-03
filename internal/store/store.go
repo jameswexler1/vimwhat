@@ -246,6 +246,14 @@ var migrations = []migration{
 			`ALTER TABLE chats ADD COLUMN muted_until INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		name: "0013_denormalized_chat_preview",
+		sql: []string{
+			`ALTER TABLE chats ADD COLUMN last_preview TEXT NOT NULL DEFAULT ''`,
+			`UPDATE chats
+			SET last_preview = ` + chatPreviewSQL("chats.id"),
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {
@@ -287,6 +295,8 @@ func (s *Store) initialize(ctx context.Context) error {
 		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA synchronous = NORMAL`,
 		`PRAGMA temp_store = MEMORY`,
+		`PRAGMA cache_size = -32000`,
+		`PRAGMA mmap_size = 134217728`,
 		`CREATE TABLE IF NOT EXISTS schema_migrations (
 			id INTEGER PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE,
@@ -302,6 +312,9 @@ func (s *Store) initialize(ctx context.Context) error {
 
 	if err := s.applyMigrations(ctx); err != nil {
 		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA optimize`); err != nil {
+		return fmt.Errorf("optimize sqlite: %w", err)
 	}
 
 	return nil

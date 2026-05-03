@@ -874,9 +874,11 @@ func refreshMergedChatState(ctx context.Context, tx *sql.Tx, merged chatMergeRow
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE chats
-		SET unread_count = ?, pinned = ?, muted = ?, muted_until = ?, last_message_at = ?, updated_at = ?
+		SET unread_count = ?, pinned = ?, muted = ?, muted_until = ?, last_message_at = ?,
+			last_preview = `+chatPreviewSQL("?")+`,
+			updated_at = ?
 		WHERE id = ?
-	`, merged.Unread, boolToInt(merged.Pinned), boolToInt(merged.Muted), chatMuteUntilUnix(merged), lastMessageAt, time.Now().Unix(), canonicalID); err != nil {
+	`, merged.Unread, boolToInt(merged.Pinned), boolToInt(merged.Muted), chatMuteUntilUnix(merged), lastMessageAt, canonicalID, time.Now().Unix(), canonicalID); err != nil {
 		return fmt.Errorf("refresh merged chat %s: %w", canonicalID, err)
 	}
 	return nil

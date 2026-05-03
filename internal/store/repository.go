@@ -18,7 +18,11 @@ const (
 					FROM media_metadata visible_mm
 					WHERE visible_mm.message_id = m.id
 				))`
-	chatLastPreviewSQL = `COALESCE((
+	chatLastPreviewSQL = `c.last_preview AS last_preview`
+)
+
+func chatPreviewSQL(chatIDExpr string) string {
+	return `COALESCE((
 					SELECT CASE
 						WHEN trim(m.body) <> '' THEN m.body
 						ELSE COALESCE((
@@ -32,15 +36,15 @@ const (
 							ORDER BY mm.file_name ASC
 							LIMIT 1
 						), '')
-				END
+					END
 					FROM messages m
-					WHERE m.chat_id = c.id
+					WHERE m.chat_id = ` + chatIDExpr + `
 						AND m.deleted_at = 0
 						AND ` + renderableMessageWhereSQL + `
 					ORDER BY m.timestamp_unix DESC, m.id DESC
 					LIMIT 1
-				), '') AS last_preview`
-)
+				), '')`
+}
 
 type ChatUpsertOptions struct {
 	PreserveUnreadOnUpdate bool
@@ -668,6 +672,48 @@ func (s *Store) chatTitleState(ctx context.Context, id string) (Chat, bool, erro
 	return chat, true, nil
 }
 
+type chatPreviewExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func refreshChatPreview(ctx context.Context, execer chatPreviewExecer, chatID string) error {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return nil
+	}
+	if _, err := execer.ExecContext(ctx, `
+		UPDATE chats
+		SET last_preview = `+chatPreviewSQL("?")+`,
+			updated_at = ?
+		WHERE id = ?
+	`, chatID, time.Now().Unix(), chatID); err != nil {
+		return fmt.Errorf("refresh chat preview %s: %w", chatID, err)
+	}
+	return nil
+}
+
+func refreshChatPreviewForMessage(ctx context.Context, execer chatPreviewExecer, messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return nil
+	}
+
+	var chatID string
+	err := execer.QueryRowContext(ctx, `
+		SELECT chat_id
+		FROM messages
+		WHERE id = ?
+	`, messageID).Scan(&chatID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("load chat for preview message %s: %w", messageID, err)
+	}
+	return refreshChatPreview(ctx, execer, chatID)
+}
+
 func (s *Store) AddMessage(ctx context.Context, message Message) error {
 	_, err := s.addMessage(ctx, message, false)
 	return err
@@ -844,6 +890,10 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		_ = tx.Rollback()
 		return false, fmt.Errorf("chat %s does not exist", message.ChatID)
 	}
+	if err := refreshChatPreview(ctx, tx, message.ChatID); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit add message: %w", err)
@@ -972,6 +1022,10 @@ func (s *Store) UpdateMessageBody(ctx context.Context, messageID, body string, e
 	`, editedAt.Unix(), chatID); err != nil {
 		_ = tx.Rollback()
 		return false, fmt.Errorf("touch chat %s after edit: %w", chatID, err)
+	}
+	if err := refreshChatPreview(ctx, tx, chatID); err != nil {
+		_ = tx.Rollback()
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit edit message: %w", err)
@@ -1162,6 +1216,10 @@ func (s *Store) markMessageDeleted(ctx context.Context, messageID, reason string
 	`, chatID, now, chatID); err != nil {
 		_ = tx.Rollback()
 		return false, fmt.Errorf("refresh chat %s after delete: %w", chatID, err)
+	}
+	if err := refreshChatPreview(ctx, tx, chatID); err != nil {
+		_ = tx.Rollback()
+		return false, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1693,12 +1751,27 @@ func replaceMessageMentions(ctx context.Context, execer groupParticipantExecer, 
 }
 
 func (s *Store) UpsertMediaMetadata(ctx context.Context, media MediaMetadata) error {
-	return s.UpsertMediaMetadataWithDownload(ctx, media, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin upsert media metadata: %w", err)
+	}
+	if err := upsertMediaMetadata(ctx, tx, media); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := refreshChatPreviewForMessage(ctx, tx, media.MessageID); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit upsert media metadata: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) UpsertMediaMetadataWithDownload(ctx context.Context, media MediaMetadata, descriptor *MediaDownloadDescriptor) error {
 	if descriptor == nil {
-		return upsertMediaMetadata(ctx, s.db, media)
+		return s.UpsertMediaMetadata(ctx, media)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -1713,6 +1786,10 @@ func (s *Store) UpsertMediaMetadataWithDownload(ctx context.Context, media Media
 		descriptor.MessageID = media.MessageID
 	}
 	if err := upsertMediaDownloadDescriptor(ctx, tx, *descriptor); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := refreshChatPreviewForMessage(ctx, tx, media.MessageID); err != nil {
 		_ = tx.Rollback()
 		return err
 	}

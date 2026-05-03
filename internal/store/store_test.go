@@ -89,8 +89,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 12 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=12", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 13 {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=13", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -1066,12 +1066,64 @@ func TestMessageMediaAndLocalDelete(t *testing.T) {
 	if len(messages) != 0 {
 		t.Fatalf("messages after delete = %+v, want none", messages)
 	}
+	chats, err = store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() after delete error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "" {
+		t.Fatalf("chat preview after delete = %+v, want empty preview", chats)
+	}
 	results, err := store.SearchMessages(ctx, "chat-1", "report", 10)
 	if err != nil {
 		t.Fatalf("SearchMessages() after delete error = %v", err)
 	}
 	if len(results) != 0 {
 		t.Fatalf("search results after delete = %+v, want none", results)
+	}
+}
+
+func TestDeleteCurrentPreviewFallsBackToPreviousRenderableMessage(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	if err := store.AddMessage(ctx, Message{
+		ID:        "old",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "previous",
+		Timestamp: base,
+	}); err != nil {
+		t.Fatalf("AddMessage(old) error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{
+		ID:        "new",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "latest",
+		Timestamp: base.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("AddMessage(new) error = %v", err)
+	}
+
+	if err := store.DeleteMessage(ctx, "new"); err != nil {
+		t.Fatalf("DeleteMessage(new) error = %v", err)
+	}
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "previous" || !chats[0].LastMessageAt.Equal(base) {
+		t.Fatalf("chat after deleting current preview = %+v, want previous preview and timestamp", chats)
 	}
 }
 
@@ -1547,6 +1599,9 @@ func TestAddOlderMessageDoesNotMoveChatBackward(t *testing.T) {
 	if !chats[0].LastMessageAt.Equal(newer) {
 		t.Fatalf("LastMessageAt = %s, want %s", chats[0].LastMessageAt, newer)
 	}
+	if chats[0].LastPreview != "new" {
+		t.Fatalf("LastPreview = %q, want newest message preview", chats[0].LastPreview)
+	}
 }
 
 func TestSeedAndClearDemoData(t *testing.T) {
@@ -1612,6 +1667,80 @@ func TestSeedAndClearDemoData(t *testing.T) {
 	}
 	if stats.Chats != 0 || stats.Messages != 0 || stats.Drafts != 0 || stats.MediaItems != 0 {
 		t.Fatalf("Stats() after clear = %+v, want all zero", stats)
+	}
+}
+
+func TestDenormalizedChatPreviewMigrationBackfillsExistingMessages(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	applyMigrationsBefore(t, ctx, db, "0013_denormalized_chat_preview")
+
+	base := time.Unix(1_700_000_000, 0)
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{
+			query: `INSERT INTO chats (
+				id, jid, title, title_source, kind, avatar_id, avatar_path, avatar_thumb_path,
+				avatar_updated_at, unread_count, pinned, muted, muted_until, last_message_at,
+				created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: []any{"chat-1", "chat-1@s.whatsapp.net", "Alice", "", "direct", "", "", "", 0, 0, 0, 0, 0, base.Add(time.Minute).Unix(), base.Unix(), base.Unix()},
+		},
+		{
+			query: `INSERT INTO messages (
+				id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+				deleted_at, deleted_reason, edited_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: []any{"old", "old", "chat-1", "chat-1@s.whatsapp.net", "Alice", "alice@s.whatsapp.net", "older text", base.Unix(), 0, "", "", "", 0, "", 0},
+		},
+		{
+			query: `INSERT INTO messages (
+				id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
+				timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
+				deleted_at, deleted_reason, edited_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: []any{"sticker", "sticker", "chat-1", "chat-1@s.whatsapp.net", "Alice", "alice@s.whatsapp.net", "", base.Add(time.Minute).Unix(), 0, "", "", "", 0, "", 0},
+		},
+		{
+			query: `INSERT INTO media_metadata (
+				message_id, media_kind, mime_type, file_name, size_bytes, local_path,
+				thumbnail_path, download_state, is_animated, is_lottie, accessibility_label, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			args: []any{"sticker", "sticker", "image/webp", "sticker.webp", 0, "", "", "remote", 0, 0, "waving hand", base.Unix()},
+		},
+	}
+	for _, stmt := range statements {
+		if _, err := db.ExecContext(ctx, stmt.query, stmt.args...); err != nil {
+			_ = db.Close()
+			t.Fatalf("prepare preview backfill row error = %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close pre-migration db error = %v", err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() migrated db error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "Sticker: waving hand" {
+		t.Fatalf("chat preview after migration = %+v, want sticker preview backfilled", chats)
 	}
 }
 
@@ -1684,8 +1813,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 12 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want twelve applied and none pending", applied, pending)
+	if len(applied) != 13 || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want thirteen applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
@@ -1708,4 +1837,25 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if len(messages) != 1 || messages[0].RemoteID != "remote-1" {
 		t.Fatalf("messages after migration = %+v", messages)
 	}
+}
+
+func applyMigrationsBefore(t *testing.T, ctx context.Context, db *sql.DB, stopName string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, applied_at INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("create schema_migrations error = %v", err)
+	}
+	for _, migration := range migrations {
+		if migration.name == stopName {
+			return
+		}
+		for _, stmt := range migration.sql {
+			if _, err := db.ExecContext(ctx, stmt); err != nil {
+				t.Fatalf("apply setup migration %s statement %q error = %v", migration.name, stmt, err)
+			}
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, migration.name, time.Now().Unix()); err != nil {
+			t.Fatalf("record setup migration %s error = %v", migration.name, err)
+		}
+	}
+	t.Fatalf("migration %s not found", stopName)
 }
