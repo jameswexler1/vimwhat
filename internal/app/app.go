@@ -177,6 +177,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
 		RequireOnlineForSend: liveEnabled,
+		BlockLiveStartup:     liveEnabled && initialConnection == ui.ConnectionPaired,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			if liveEnabled {
 				if len(outgoing.Attachments) > 0 {
@@ -503,6 +504,7 @@ var (
 	offlineSyncInactivity    = 15 * time.Second
 	offlineSyncMaxDuration   = 60 * time.Second
 	databaseImportInactivity = 750 * time.Millisecond
+	liveStartupSyncSettle    = 300 * time.Millisecond
 )
 
 type textSendRequest struct {
@@ -816,6 +818,7 @@ func runLiveWhatsApp(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			ConnectionState: ui.ConnectionOffline,
 			Status:          fmt.Sprintf("whatsapp open failed: %s", shortStatusError(err)),
+			Sync:            &ui.SyncProgressUpdate{},
 		})
 		return
 	}
@@ -828,6 +831,7 @@ func runLiveWhatsApp(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			ConnectionState: ui.ConnectionOffline,
 			Status:          "whatsapp live session unavailable",
+			Sync:            &ui.SyncProgressUpdate{},
 		})
 		return
 	}
@@ -837,6 +841,7 @@ func runLiveWhatsApp(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			ConnectionState: ui.ConnectionOffline,
 			Status:          fmt.Sprintf("whatsapp subscribe failed: %s", shortStatusError(err)),
+			Sync:            &ui.SyncProgressUpdate{},
 		})
 		return
 	}
@@ -852,6 +857,7 @@ func runLiveWhatsApp(
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			ConnectionState: state,
 			Status:          fmt.Sprintf("whatsapp connect failed: %s", shortStatusError(err)),
+			Sync:            &ui.SyncProgressUpdate{},
 		})
 		return
 	}
@@ -898,6 +904,53 @@ func runLiveWhatsApp(
 	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
+	startupSyncPending := true
+	var startupSyncTimer *time.Timer
+	var startupSyncTimerC <-chan time.Time
+	stopStartupSyncTimer := func() {
+		if startupSyncTimer != nil {
+			if !startupSyncTimer.Stop() {
+				select {
+				case <-startupSyncTimer.C:
+				default:
+				}
+			}
+		}
+		startupSyncTimerC = nil
+	}
+	startStartupSyncTimer := func() {
+		duration := liveStartupSyncSettle
+		if duration <= 0 {
+			duration = 1 * time.Millisecond
+		}
+		if startupSyncTimer == nil {
+			startupSyncTimer = time.NewTimer(duration)
+		} else {
+			if !startupSyncTimer.Stop() {
+				select {
+				case <-startupSyncTimer.C:
+				default:
+				}
+			}
+			startupSyncTimer.Reset(duration)
+		}
+		startupSyncTimerC = startupSyncTimer.C
+	}
+	resolveStartupSyncOverlay := func() {
+		if !startupSyncPending {
+			return
+		}
+		startupSyncPending = false
+		stopStartupSyncTimer()
+	}
+	clearStartupSyncOverlay := func() {
+		if !startupSyncPending {
+			return
+		}
+		resolveStartupSyncOverlay()
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &ui.SyncProgressUpdate{}})
+	}
+	startStartupSyncTimer()
 	offlineSync := offlineSyncState{}
 	startStickerSync(ctx, env.Store, live, env.Paths, updates, nil, online)
 	var offlineSyncIdleTimer *time.Timer
@@ -971,10 +1024,12 @@ func runLiveWhatsApp(
 		pendingPreferredChatID = ""
 	}
 	defer clearOfflineSyncTimers()
+	defer stopStartupSyncTimer()
 	for {
 		select {
 		case event, ok := <-events:
 			if !ok {
+				clearStartupSyncOverlay()
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOffline})
 				return
 			}
@@ -983,6 +1038,8 @@ func runLiveWhatsApp(
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				if online {
 					markLivePresenceAvailable(ctx, live, updates)
+				} else {
+					clearStartupSyncOverlay()
 				}
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
 				continue
@@ -990,6 +1047,7 @@ func runLiveWhatsApp(
 			if event.Kind == whatsapp.EventOfflineSync {
 				now := time.Now()
 				if event.Offline.Active {
+					resolveStartupSyncOverlay()
 					syncUpdate := offlineSync.start(event.Offline, now)
 					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 					startOfflineSyncMaxTimer()
@@ -1006,6 +1064,7 @@ func runLiveWhatsApp(
 			}
 			manualHistoryImport := isManualHistoryImportEvent(event, historyInflight)
 			if isImplicitDatabaseImportEvent(event, manualHistoryImport) && !offlineSync.active {
+				resolveStartupSyncOverlay()
 				syncUpdate := offlineSync.startImplicit(time.Now())
 				resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 				startOfflineSyncMaxTimer()
@@ -1254,6 +1313,12 @@ func runLiveWhatsApp(
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
 			})
+		case <-startupSyncTimerC:
+			if offlineSync.active {
+				resolveStartupSyncOverlay()
+				continue
+			}
+			clearStartupSyncOverlay()
 		case <-ctx.Done():
 			return
 		}

@@ -1354,6 +1354,49 @@ func TestSyncOverlayRendersAndBlocksInput(t *testing.T) {
 	}
 }
 
+func TestLiveStartupOverlayRendersAndBlocksInput(t *testing.T) {
+	model := NewModel(Options{
+		BlockLiveStartup: true,
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 96
+	model.height = 24
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"Connecting to WhatsApp", "Checking for new chats", "Input is paused"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("startup overlay missing %q\n%s", want, view)
+		}
+	}
+
+	blocked, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if blocked.(Model).activeChat != 0 {
+		t.Fatalf("activeChat = %d, want input blocked at 0", blocked.(Model).activeChat)
+	}
+}
+
+func TestLiveStartupOverlayClearsOnEmptySyncUpdate(t *testing.T) {
+	model := NewModel(Options{BlockLiveStartup: true})
+	model.width = 80
+	model.height = 20
+
+	updated, _ := model.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{}})
+	if updated.syncOverlay.Visible {
+		t.Fatal("startup overlay remained visible after empty sync update")
+	}
+	if view := stripANSI(updated.View()); strings.Contains(view, "Connecting to WhatsApp") {
+		t.Fatalf("startup overlay did not clear\n%s", view)
+	}
+}
+
 func TestSyncOverlayCompletesAndClears(t *testing.T) {
 	model := NewModel(Options{})
 	model.width = 80

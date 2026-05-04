@@ -261,6 +261,7 @@ type Options struct {
 	BlockSending                 bool
 	BlockAttachments             bool
 	RequireOnlineForSend         bool
+	BlockLiveStartup             bool
 	PersistMessage               func(OutgoingMessage) (store.Message, error)
 	SendSticker                  func(chatID string, sticker store.RecentSticker) (store.Message, error)
 	RetryMessage                 func(message store.Message) (store.Message, error)
@@ -465,6 +466,18 @@ type syncOverlayState struct {
 	Receipts       int
 }
 
+func initialSyncOverlay(blockLiveStartup bool) syncOverlayState {
+	if !blockLiveStartup {
+		return syncOverlayState{}
+	}
+	return syncOverlayState{
+		Visible:  true,
+		Active:   true,
+		Title:    "Connecting to WhatsApp",
+		Subtitle: "Checking for new chats and messages before the app becomes interactive.",
+	}
+}
+
 func Run(opts Options) (err error) {
 	report, restore := prepareTerminalOutput()
 	defer func() {
@@ -564,6 +577,7 @@ func NewModel(opts Options) Model {
 		presenceSubscribed:           map[string]bool{},
 		messageLimitsByChat:          map[string]int{},
 		historyRequestedByChat:       map[string]bool{},
+		syncOverlay:                  initialSyncOverlay(opts.BlockLiveStartup),
 		pollTerminalSize:             opts.PollTerminalSize,
 	}
 	if model.pasteAttachmentFromClipboard == nil {
@@ -769,7 +783,7 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	if update.Active {
 		m.leaderPending = false
 		m.leaderSequence = ""
-		if strings.TrimSpace(m.status) == "" || m.status == "ready" {
+		if syncProgressShouldReplaceStatus(m.status) {
 			m.status = syncProgressStatus(update, "syncing WhatsApp updates")
 		}
 		return m, nil
@@ -790,6 +804,15 @@ func syncProgressStatus(update SyncProgressUpdate, fallback string) string {
 		return title
 	}
 	return fallback
+}
+
+func syncProgressShouldReplaceStatus(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status == "" ||
+		status == "ready" ||
+		strings.Contains(status, "syncing") ||
+		strings.Contains(status, "updating local database") ||
+		strings.Contains(status, "connecting to whatsapp")
 }
 
 func syncOverlayDoneCmd(generation int) tea.Cmd {
