@@ -1604,6 +1604,104 @@ func TestAddOlderMessageDoesNotMoveChatBackward(t *testing.T) {
 	}
 }
 
+func TestOlderMediaMetadataDoesNotRefreshChatPreview(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	newer := time.Unix(1_700_000_000, 0)
+	older := newer.Add(-24 * time.Hour)
+	if err := store.AddMessage(ctx, Message{ID: "old", ChatID: "chat-1", Sender: "Alice", Timestamp: older}); err != nil {
+		t.Fatalf("AddMessage(old) error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{ID: "new", ChatID: "chat-1", Sender: "Alice", Body: "new", Timestamp: newer}); err != nil {
+		t.Fatalf("AddMessage(new) error = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE chats SET updated_at = ? WHERE id = ?`, int64(123), "chat-1"); err != nil {
+		t.Fatalf("set chat updated_at error = %v", err)
+	}
+
+	if err := store.UpsertMediaMetadata(ctx, MediaMetadata{
+		MessageID:          "old",
+		Kind:               "sticker",
+		MIMEType:           "image/webp",
+		FileName:           "sticker.webp",
+		AccessibilityLabel: "old sticker",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadata(old) error = %v", err)
+	}
+
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "new" {
+		t.Fatalf("ListChats() = %+v, want newest preview unchanged", chats)
+	}
+	var updatedAt int64
+	if err := store.db.QueryRowContext(ctx, `SELECT updated_at FROM chats WHERE id = ?`, "chat-1").Scan(&updatedAt); err != nil {
+		t.Fatalf("load chat updated_at error = %v", err)
+	}
+	if updatedAt != 123 {
+		t.Fatalf("chat updated_at = %d, want old value preserved", updatedAt)
+	}
+}
+
+func TestOlderMediaMetadataRefreshesEmptyChatPreview(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+
+	newer := time.Unix(1_700_000_000, 0)
+	older := newer.Add(-24 * time.Hour)
+	if err := store.AddMessage(ctx, Message{ID: "new", ChatID: "chat-1", Sender: "Alice", Timestamp: newer}); err != nil {
+		t.Fatalf("AddMessage(new) error = %v", err)
+	}
+	if err := store.AddMessage(ctx, Message{ID: "old", ChatID: "chat-1", Sender: "Alice", Timestamp: older}); err != nil {
+		t.Fatalf("AddMessage(old) error = %v", err)
+	}
+
+	if err := store.UpsertMediaMetadata(ctx, MediaMetadata{
+		MessageID:          "old",
+		Kind:               "sticker",
+		MIMEType:           "image/webp",
+		FileName:           "sticker.webp",
+		AccessibilityLabel: "old sticker",
+	}); err != nil {
+		t.Fatalf("UpsertMediaMetadata(old) error = %v", err)
+	}
+
+	chats, err := store.ListChats(ctx)
+	if err != nil {
+		t.Fatalf("ListChats() error = %v", err)
+	}
+	if len(chats) != 1 || chats[0].LastPreview != "Sticker: old sticker" {
+		t.Fatalf("ListChats() = %+v, want older media preview to fill empty chat preview", chats)
+	}
+}
+
 func TestSeedAndClearDemoData(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

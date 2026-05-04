@@ -693,6 +693,10 @@ func refreshChatPreview(ctx context.Context, execer chatPreviewExecer, chatID st
 	return nil
 }
 
+func messageRenderableForPreview(message Message) bool {
+	return message.DeletedAt.IsZero() && (strings.TrimSpace(message.Body) != "" || len(message.Media) > 0)
+}
+
 func refreshChatPreviewForMessage(ctx context.Context, execer chatPreviewExecer, messageID string) error {
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {
@@ -700,16 +704,29 @@ func refreshChatPreviewForMessage(ctx context.Context, execer chatPreviewExecer,
 	}
 
 	var chatID string
+	var previewMessageID string
 	err := execer.QueryRowContext(ctx, `
-		SELECT chat_id
-		FROM messages
-		WHERE id = ?
-	`, messageID).Scan(&chatID)
+		SELECT base.chat_id, COALESCE((
+			SELECT m.id
+			FROM messages m
+			WHERE m.chat_id = base.chat_id
+				AND m.deleted_at = 0
+				AND `+renderableMessageWhereSQL+`
+			ORDER BY m.timestamp_unix DESC, m.id DESC
+			LIMIT 1
+		), '')
+		FROM messages base
+		JOIN chats c ON c.id = base.chat_id
+		WHERE base.id = ?
+	`, messageID).Scan(&chatID, &previewMessageID)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil
 		}
 		return fmt.Errorf("load chat for preview message %s: %w", messageID, err)
+	}
+	if previewMessageID != messageID {
+		return nil
 	}
 	return refreshChatPreview(ctx, execer, chatID)
 }
@@ -774,12 +791,26 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		return false, fmt.Errorf("begin add message: %w", err)
 	}
 
-	var existing int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE id = ?`, message.ID).Scan(&existing); err != nil {
+	var previousLastMessageAt int64
+	var previousLastPreview string
+	if err := tx.QueryRowContext(ctx, `SELECT last_message_at, last_preview FROM chats WHERE id = ?`, message.ChatID).Scan(&previousLastMessageAt, &previousLastPreview); err != nil {
 		_ = tx.Rollback()
-		return false, fmt.Errorf("check existing message %s: %w", message.ID, err)
+		if err == sql.ErrNoRows {
+			return false, fmt.Errorf("chat %s does not exist", message.ChatID)
+		}
+		return false, fmt.Errorf("load chat %s: %w", message.ChatID, err)
 	}
-	isNew := existing == 0
+
+	var previousMessageTimestamp sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT timestamp_unix FROM messages WHERE id = ?`, message.ID).Scan(&previousMessageTimestamp)
+	if err != nil && err != sql.ErrNoRows {
+		_ = tx.Rollback()
+		return false, fmt.Errorf("load existing message %s: %w", message.ID, err)
+	}
+	isNew := !previousMessageTimestamp.Valid
+	refreshPreview := !isNew ||
+		message.Timestamp.Unix() >= previousLastMessageAt ||
+		(strings.TrimSpace(previousLastPreview) == "" && messageRenderableForPreview(message))
 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO messages (
@@ -890,9 +921,11 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		_ = tx.Rollback()
 		return false, fmt.Errorf("chat %s does not exist", message.ChatID)
 	}
-	if err := refreshChatPreview(ctx, tx, message.ChatID); err != nil {
-		_ = tx.Rollback()
-		return false, err
+	if refreshPreview {
+		if err := refreshChatPreview(ctx, tx, message.ChatID); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

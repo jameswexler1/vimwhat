@@ -780,6 +780,27 @@ type stickerSyncResult struct {
 	Err      error
 }
 
+type stickerSyncCompletion struct {
+	Result        stickerSyncResult
+	Update        ui.LiveUpdate
+	StickerEvents []whatsapp.Event
+}
+
+type startupAppStateUpdate struct {
+	Done   bool
+	Update ui.LiveUpdate
+}
+
+type pendingNotificationCandidate struct {
+	View   notificationContext
+	Result whatsapp.ApplyResult
+}
+
+type notificationGate struct {
+	Pending    bool
+	Candidates []pendingNotificationCandidate
+}
+
 type avatarRefreshRequest struct {
 	ChatID string
 }
@@ -952,7 +973,8 @@ func runLiveWhatsApp(
 	}
 	startStartupSyncTimer()
 	offlineSync := offlineSyncState{}
-	startStickerSync(ctx, env.Store, live, env.Paths, updates, nil, online)
+	startupAppStateUpdates := startStartupAppStateSync(ctx, env.Store, live, env.Paths, &protocolWG, online)
+	notifications := notificationGate{Pending: startupAppStateUpdates != nil}
 	var offlineSyncIdleTimer *time.Timer
 	var offlineSyncIdleTimerC <-chan time.Time
 	var offlineSyncMaxTimer *time.Timer
@@ -1154,12 +1176,7 @@ func runLiveWhatsApp(
 			if isHistoricalImportEvent(event) {
 				continue
 			}
-			if note, ok := buildNotification(context.Background(), env.Store, viewState, result); ok {
-				if strings.TrimSpace(note.IconPath) == "" {
-					enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, result.Message.ChatID)
-				}
-				queueNotification(notificationJobs, note)
-			}
+			notifications.QueueOrSend(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight, viewState, result)
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 				Refresh:         true,
 				PreferredChatID: pendingPreferredChatID,
@@ -1240,6 +1257,25 @@ func runLiveWhatsApp(
 				}
 			}
 			metadataResults = nil
+		case startupUpdate, ok := <-startupAppStateUpdates:
+			if !ok {
+				startupAppStateUpdates = nil
+				if notifications.Pending {
+					notifications.Flush(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight)
+				}
+				continue
+			}
+			if startupUpdate.Done {
+				notifications.Flush(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight)
+			}
+			update := startupUpdate.Update
+			if offlineSync.active && update.Refresh {
+				offlineSync.dirty = true
+				update.Refresh = false
+			}
+			if update.Refresh || strings.TrimSpace(update.Status) != "" {
+				sendLiveUpdate(ctx, updates, update)
+			}
 		case request, ok := <-mediaDownloadRequests:
 			if !ok {
 				return
@@ -2830,12 +2866,62 @@ func sendMediaDownloadResult(ctx context.Context, request mediaDownloadRequest, 
 	}
 }
 
-func startStickerSync(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, updates chan<- ui.LiveUpdate, wg *sync.WaitGroup, online bool) {
-	result := make(chan stickerSyncResult, 1)
-	handleStickerSyncRequest(ctx, db, live, paths, updates, wg, online, stickerSyncRequest{
-		Context: ctx,
-		Result:  result,
-	})
+func startStartupAppStateSync(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, wg *sync.WaitGroup, online bool) <-chan startupAppStateUpdate {
+	out := make(chan startupAppStateUpdate, 4)
+	if wg != nil {
+		wg.Add(1)
+	}
+	go func() {
+		if wg != nil {
+			defer wg.Done()
+		}
+		defer close(out)
+		sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
+			Update: ui.LiveUpdate{Status: "syncing WhatsApp app state"},
+		})
+		if db == nil {
+			sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
+				Done:   true,
+				Update: ui.LiveUpdate{Status: "app-state sync failed: store is required"},
+			})
+			return
+		}
+		if live == nil {
+			sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
+				Done:   true,
+				Update: ui.LiveUpdate{Status: "app-state sync failed: whatsapp live session unavailable"},
+			})
+			return
+		}
+		if !online {
+			sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
+				Done:   true,
+				Update: ui.LiveUpdate{Status: "app-state sync needs WhatsApp online"},
+			})
+			return
+		}
+		request := stickerSyncRequest{Context: ctx}
+		completion := runStickerSync(ctx, db, live, paths, request, false)
+		sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
+			Done:   true,
+			Update: completion.Update,
+		})
+		if len(completion.StickerEvents) == 0 {
+			return
+		}
+		cacheUpdate := cacheStartupStickerFiles(ctx, db, live, paths, completion.StickerEvents)
+		if cacheUpdate.Refresh || strings.TrimSpace(cacheUpdate.Status) != "" {
+			sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{Update: cacheUpdate})
+		}
+	}()
+	return out
+}
+
+func sendStartupAppStateUpdate(ctx context.Context, updates chan<- startupAppStateUpdate, update startupAppStateUpdate) {
+	select {
+	case updates <- update:
+	case <-ctx.Done():
+	}
 }
 
 func handleStickerSyncRequest(
@@ -2877,11 +2963,11 @@ func handleStickerSyncRequest(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			completeStickerSyncRequest(ctx, db, live, paths, updates, request)
+			completeStickerSyncRequest(ctx, db, live, paths, updates, request, true)
 		}()
 		return
 	}
-	completeStickerSyncRequest(ctx, db, live, paths, updates, request)
+	completeStickerSyncRequest(ctx, db, live, paths, updates, request, true)
 }
 
 func completeStickerSyncRequest(
@@ -2891,7 +2977,23 @@ func completeStickerSyncRequest(
 	paths config.Paths,
 	updates chan<- ui.LiveUpdate,
 	request stickerSyncRequest,
+	cacheFiles bool,
 ) {
+	completion := runStickerSync(ctx, db, live, paths, request, cacheFiles)
+	sendStickerSyncResult(ctx, request, completion.Result.Stickers, completion.Result.Err)
+	if completion.Update.Refresh || strings.TrimSpace(completion.Update.Status) != "" {
+		sendLiveUpdate(ctx, updates, completion.Update)
+	}
+}
+
+func runStickerSync(
+	ctx context.Context,
+	db *store.Store,
+	live WhatsAppLiveSession,
+	paths config.Paths,
+	request stickerSyncRequest,
+	cacheFiles bool,
+) stickerSyncCompletion {
 	syncCtx, cancel := stickerSyncContext(ctx, request.Context)
 	defer cancel()
 
@@ -2903,25 +3005,37 @@ func completeStickerSyncRequest(
 	cacheFailures := 0
 	var cacheErr error
 	var applyErr error
+	var stickerEvents []whatsapp.Event
 	for _, event := range events {
 		cacheUsable := false
 		switch event.Kind {
 		case whatsapp.EventRecentSticker:
-			prepared, err := prepareRecentStickerEvent(syncCtx, db, live, paths, event.Sticker)
-			if err != nil {
-				cacheFailures++
-				if cacheErr == nil {
-					cacheErr = err
+			event.Sticker = normalizeRecentStickerMetadata(event.Sticker)
+			if cacheFiles {
+				prepared, err := prepareRecentStickerEvent(syncCtx, db, live, paths, event.Sticker)
+				if err != nil {
+					cacheFailures++
+					if cacheErr == nil {
+						cacheErr = err
+					}
+				} else {
+					event.Sticker = prepared
+					cacheUsable = stickerPickerUsable(store.RecentSticker{
+						ID:        prepared.ID,
+						MIMEType:  prepared.MIMEType,
+						FileName:  prepared.FileName,
+						LocalPath: prepared.LocalPath,
+						IsLottie:  prepared.IsLottie,
+					})
 				}
 			} else {
-				event.Sticker = prepared
-				cacheUsable = stickerPickerUsable(store.RecentSticker{
-					ID:        prepared.ID,
-					MIMEType:  prepared.MIMEType,
-					FileName:  prepared.FileName,
-					LocalPath: prepared.LocalPath,
-					IsLottie:  prepared.IsLottie,
-				})
+				if current, ok, err := db.RecentSticker(syncCtx, event.Sticker.ID); err != nil {
+					applyErr = errors.Join(applyErr, fmt.Errorf("load recent sticker %s: %w", event.Sticker.ID, err))
+				} else if ok && mediaPathAvailable(current.LocalPath) {
+					event.Sticker.LocalPath = current.LocalPath
+					cacheUsable = stickerPickerUsable(current)
+				}
+				stickerEvents = append(stickerEvents, event)
 			}
 		case whatsapp.EventRecentStickerRemove:
 		case whatsapp.EventChatUpsert:
@@ -2947,18 +3061,82 @@ func completeStickerSyncRequest(
 	}
 
 	err := stickerSyncResultError(cached, metadataSynced, cacheFailures, cacheErr, syncErr, applyErr)
-	sendStickerSyncResult(ctx, request, cached, err)
+	completion := stickerSyncCompletion{
+		Result: stickerSyncResult{
+			Stickers: cached,
+			Err:      err,
+		},
+		StickerEvents: stickerEvents,
+	}
 	if err != nil {
-		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		completion.Update = ui.LiveUpdate{
 			Refresh: metadataSynced > 0 || settingsSynced > 0,
 			Status:  fmt.Sprintf("sticker sync failed: %s", shortStatusError(err)),
-		})
-		return
+		}
+		return completion
 	}
-	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+	completion.Update = ui.LiveUpdate{
 		Refresh: metadataSynced > 0 || settingsSynced > 0,
 		Status:  stickerSyncStatus(cached, metadataSynced, settingsSynced, cacheFailures, cacheErr, errors.Join(syncErr, applyErr)),
-	})
+	}
+	return completion
+}
+
+func normalizeRecentStickerMetadata(event whatsapp.RecentStickerEvent) whatsapp.RecentStickerEvent {
+	if strings.TrimSpace(event.FileName) == "" {
+		event.FileName = "sticker" + recentStickerExtension(event.MIMEType, event.FileName, event.IsLottie)
+	}
+	return event
+}
+
+func cacheStartupStickerFiles(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, events []whatsapp.Event) ui.LiveUpdate {
+	cacheCtx, cancel := context.WithTimeout(ctx, stickerSyncTimeout)
+	defer cancel()
+
+	ingestor := whatsapp.Ingestor{Store: db}
+	cached := 0
+	cacheFailures := 0
+	var cacheErr error
+	var applyErr error
+	for _, event := range events {
+		if event.Kind != whatsapp.EventRecentSticker {
+			continue
+		}
+		prepared, err := prepareRecentStickerEvent(cacheCtx, db, live, paths, event.Sticker)
+		if err != nil {
+			cacheFailures++
+			if cacheErr == nil {
+				cacheErr = err
+			}
+			continue
+		}
+		event.Sticker = prepared
+		if !stickerPickerUsable(store.RecentSticker{
+			ID:        prepared.ID,
+			MIMEType:  prepared.MIMEType,
+			FileName:  prepared.FileName,
+			LocalPath: prepared.LocalPath,
+			IsLottie:  prepared.IsLottie,
+		}) {
+			continue
+		}
+		if _, err := ingestor.Apply(cacheCtx, event); err != nil {
+			applyErr = errors.Join(applyErr, fmt.Errorf("apply cached sticker event: %w", err))
+			continue
+		}
+		cached++
+	}
+	if cached > 0 {
+		status := fmt.Sprintf("cached %d WhatsApp sticker(s)", cached)
+		if cacheFailures > 0 {
+			status = fmt.Sprintf("%s; %d unavailable", status, cacheFailures)
+		}
+		return ui.LiveUpdate{Refresh: true, Status: status}
+	}
+	if cacheErr != nil || applyErr != nil {
+		return ui.LiveUpdate{Status: fmt.Sprintf("sticker cache incomplete: %s", shortStatusError(errors.Join(cacheErr, applyErr)))}
+	}
+	return ui.LiveUpdate{}
 }
 
 func stickerSyncResultError(cached, metadataSynced, cacheFailures int, cacheErr, syncErr, applyErr error) error {

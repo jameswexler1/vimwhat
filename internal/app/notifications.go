@@ -86,6 +86,79 @@ func queueNotification(jobs chan<- notify.Notification, job notify.Notification)
 	}
 }
 
+func (g *notificationGate) QueueOrSend(
+	ctx context.Context,
+	db *store.Store,
+	jobs chan<- notify.Notification,
+	avatarJobs chan<- avatarRefreshRequest,
+	avatarInflight map[string]bool,
+	view notificationContext,
+	result whatsapp.ApplyResult,
+) {
+	if g != nil && g.Pending {
+		if !notificationMaySend(view, result) {
+			return
+		}
+		if len(g.Candidates) >= notificationQueueSize {
+			return
+		}
+		g.Candidates = append(g.Candidates, pendingNotificationCandidate{
+			View:   view,
+			Result: result,
+		})
+		return
+	}
+	queueNotificationForResult(ctx, db, jobs, avatarJobs, avatarInflight, view, result)
+}
+
+func (g *notificationGate) Flush(
+	ctx context.Context,
+	db *store.Store,
+	jobs chan<- notify.Notification,
+	avatarJobs chan<- avatarRefreshRequest,
+	avatarInflight map[string]bool,
+) {
+	if g == nil || !g.Pending {
+		return
+	}
+	candidates := g.Candidates
+	g.Pending = false
+	g.Candidates = nil
+	for _, candidate := range candidates {
+		queueNotificationForResult(ctx, db, jobs, avatarJobs, avatarInflight, candidate.View, candidate.Result)
+	}
+}
+
+func queueNotificationForResult(
+	ctx context.Context,
+	db *store.Store,
+	jobs chan<- notify.Notification,
+	avatarJobs chan<- avatarRefreshRequest,
+	avatarInflight map[string]bool,
+	view notificationContext,
+	result whatsapp.ApplyResult,
+) {
+	note, ok := buildNotification(ctx, db, view, result)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(note.IconPath) == "" {
+		enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, result.Message.ChatID)
+	}
+	queueNotification(jobs, note)
+}
+
+func notificationMaySend(view notificationContext, result whatsapp.ApplyResult) bool {
+	if !result.MessageInserted {
+		return false
+	}
+	message := result.Message
+	if message.IsOutgoing || message.Historical || strings.TrimSpace(message.ChatID) == "" {
+		return false
+	}
+	return !suppressActiveChatNotification(message.ChatID, view)
+}
+
 type notificationContext struct {
 	activeChatID  string
 	appFocused    bool
