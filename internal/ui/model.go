@@ -408,6 +408,7 @@ type Model struct {
 	overlaySignature             string
 	overlaySyncPending           bool
 	overlayPendingSignature      string
+	overlayConsecutiveFailures   int
 	sixel                        *media.SixelManager
 	sixelWriter                  io.Writer
 	sixelSignature               string
@@ -537,7 +538,7 @@ const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
 const syncOverlayCompleteDelay = 600 * time.Millisecond
 const overlayResumeDelay = 80 * time.Millisecond
-const terminalMediaSyncTimeout = 2 * time.Second
+const terminalMediaSyncTimeout = 5 * time.Second
 const sixelPaintDelay = 40 * time.Millisecond
 const terminalSizePollInterval = 250 * time.Millisecond
 
@@ -1599,16 +1600,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.withPreviewCmd(nil)
 	case mediaOverlayMsg:
 		if msg.Err != nil {
+			if !m.overlaySyncPending || msg.Signature != m.overlayPendingSignature {
+				return m, nil
+			}
+			failedOverlay := m.overlay
+			retry := m.overlayConsecutiveFailures == 0
 			m.overlaySignature = ""
 			m.overlaySyncPending = false
 			m.overlayPendingSignature = ""
+			m.overlay = nil
+			m.overlayConsecutiveFailures++
 			m.status = fmt.Sprintf("overlay failed: %s", shortError(msg.Err))
-			return m, nil
+			closeCmd := closeOverlayManagerCmd(failedOverlay)
+			if !retry {
+				return m, closeCmd
+			}
+			return m.withPreviewCmd(closeCmd)
 		}
 		if m.overlaySyncPending && msg.Signature == m.overlayPendingSignature {
 			m.overlaySignature = msg.Signature
 			m.overlaySyncPending = false
 			m.overlayPendingSignature = ""
+			m.overlayConsecutiveFailures = 0
 		}
 		if m.mediaOverlayPaused || m.avatarOverlayPaused {
 			return m.withPreviewCmd(nil)
@@ -3962,6 +3975,16 @@ func (m *Model) clearOverlayPause() {
 	}
 }
 
+func closeOverlayManagerCmd(manager *media.OverlayManager) tea.Cmd {
+	if manager == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		_ = manager.Close()
+		return nil
+	}
+}
+
 func (m *Model) ensureSixelManager() {
 	if m.previewReport.Selected != media.BackendSixel || m.sixel != nil || m.sixelWriter == nil {
 		return
@@ -4439,9 +4462,6 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 			continue
 		}
 		requests = append(requests, request)
-		if len(requests) >= 8 {
-			break
-		}
 	}
 	return requests
 }

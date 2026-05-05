@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -3151,6 +3152,49 @@ func TestChatAvatarPreviewRequestsUseOverlayBackendWhenSelected(t *testing.T) {
 	}
 }
 
+func TestChatAvatarPreviewRequestsCoverAllVisibleChats(t *testing.T) {
+	tempDir := t.TempDir()
+	chats := make([]store.Chat, 0, 12)
+	messages := map[string][]store.Message{}
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("chat-%02d", i)
+		chats = append(chats, store.Chat{
+			ID:         id,
+			Title:      fmt.Sprintf("Chat %02d", i),
+			AvatarPath: filepath.Join(tempDir, id+".jpg"),
+		})
+		messages[id] = nil
+	}
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats:          chats,
+			MessagesByChat: messages,
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-00",
+		},
+	})
+	model.width = 120
+	model.height = 80
+	model.focus = FocusChats
+
+	visible := len(model.visibleChatIDs())
+	if visible != len(chats) {
+		t.Fatalf("visible chat setup = %d, want %d", visible, len(chats))
+	}
+	requests := model.requestedAvatarPreviewRequests()
+	if len(requests) != visible {
+		t.Fatalf("requestedAvatarPreviewRequests() = %d request(s), want %d", len(requests), visible)
+	}
+}
+
 func TestChatAvatarPreviewRendersCachedInlinePreview(t *testing.T) {
 	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
 	model := NewModel(Options{
@@ -3483,7 +3527,7 @@ func TestChatAvatarOverlayStaysActiveWhenFocusMovesWithinVisibleChats(t *testing
 	}
 }
 
-func TestPendingChatAvatarOverlayDoesNotBlankFallback(t *testing.T) {
+func TestPendingChatAvatarOverlayReservesOverlaySpace(t *testing.T) {
 	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
 	model := NewModel(Options{
 		Paths: testPaths(t),
@@ -3513,8 +3557,8 @@ func TestPendingChatAvatarOverlayDoesNotBlankFallback(t *testing.T) {
 		t.Fatal("syncOverlayCmd() = nil, want avatar overlay command")
 	}
 	pendingView := stripANSI(model.renderChatCell(model.chats[0], false, 40))
-	if !strings.Contains(pendingView, "low-avatar-1") {
-		t.Fatalf("pending avatar overlay blanked fallback before command applied\n%s", pendingView)
+	if strings.Contains(pendingView, "low-avatar") || strings.Contains(pendingView, "[A]") {
+		t.Fatalf("pending avatar overlay rendered low-resolution fallback\n%s", pendingView)
 	}
 
 	model = applyOverlayCmd(t, model, cmd)
@@ -6793,6 +6837,42 @@ func TestSyncOverlayCmdIncludesChatAvatarPlacements(t *testing.T) {
 	}
 }
 
+func TestOverlayErrorResetsManagerAndQueuesSingleRetry(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	failedOverlay := model.overlay
+
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want overlay command")
+	}
+	pendingSignature := model.overlayPendingSignature
+	updated, retryCmd := model.Update(mediaOverlayMsg{
+		Signature: pendingSignature,
+		Err:       errors.New("ueberzug timeout"),
+	})
+	model = updated.(Model)
+	if retryCmd == nil {
+		t.Fatal("overlay error retry command = nil, want cleanup plus retry")
+	}
+	if model.overlay == nil || model.overlay == failedOverlay {
+		t.Fatal("overlay manager was not replaced after sync failure")
+	}
+	if !model.overlaySyncPending || model.overlayPendingSignature == "" {
+		t.Fatalf("overlay pending = %v signature %q, want queued retry", model.overlaySyncPending, model.overlayPendingSignature)
+	}
+	if model.overlayConsecutiveFailures != 1 {
+		t.Fatalf("overlayConsecutiveFailures = %d, want 1", model.overlayConsecutiveFailures)
+	}
+	if !strings.Contains(model.status, "overlay failed") {
+		t.Fatalf("status = %q, want overlay failure", model.status)
+	}
+}
+
 func TestSyncOverlayCmdClearsWhileSyncOverlayVisible(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("image"), 0o644); err != nil {
@@ -7438,6 +7518,35 @@ func TestScrollingPausedOverlayReservesBlankAndResyncs(t *testing.T) {
 	view = stripANSI(model.View())
 	if strings.Contains(view, "fallback-overlay-line") {
 		t.Fatalf("View() rendered low-resolution fallback after overlay resume\n%s", view)
+	}
+}
+
+func TestPendingMediaOverlayDoesNotRenderLowResolutionFallback(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	preview := model.previewCache[media.PreviewKey(request)]
+	preview.Lines = []string{"fallback-overlay-line"}
+	model.previewCache[media.PreviewKey(request)] = preview
+
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want pending overlay command")
+	}
+	if !model.overlaySyncPending || model.overlayPendingSignature == "" {
+		t.Fatal("overlay sync was not marked pending")
+	}
+	view := stripANSI(model.View())
+	if strings.Contains(view, "fallback-overlay-line") {
+		t.Fatalf("View() rendered low-resolution fallback while overlay was pending\n%s", view)
 	}
 }
 

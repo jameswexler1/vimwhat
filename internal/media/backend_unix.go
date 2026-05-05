@@ -27,5 +27,5 @@ func platformExternalOpenerUnavailableReason() string {
 }
 
 func platformBackendOrder() []Backend {
-	return []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal}
+	return []Backend{BackendUeberzugPP, BackendSixel, BackendChafa, BackendExternal}
 }

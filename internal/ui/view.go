@@ -1152,6 +1152,9 @@ func (m Model) chatAvatarOverlayVisible(preview media.Preview) bool {
 	if strings.TrimSpace(m.overlaySignature) != "" && overlaySignatureContainsIdentifier(m.overlaySignature, identifier) {
 		return true
 	}
+	if m.overlaySyncPending && strings.TrimSpace(m.overlayPendingSignature) != "" && overlaySignatureContainsIdentifier(m.overlayPendingSignature, identifier) {
+		return true
+	}
 	if !m.avatarOverlayPaused {
 		return false
 	}

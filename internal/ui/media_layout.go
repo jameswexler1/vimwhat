@@ -50,13 +50,20 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 }
 
 func (m Model) visibleOverlayIdentifiers() map[string]bool {
-	if strings.TrimSpace(m.overlaySignature) == "" && !m.mediaOverlayPaused && !m.avatarOverlayPaused {
+	if strings.TrimSpace(m.overlaySignature) == "" && strings.TrimSpace(m.overlayPendingSignature) == "" && !m.mediaOverlayPaused && !m.avatarOverlayPaused {
 		return map[string]bool{}
 	}
 	visible := map[string]bool{}
 	if strings.TrimSpace(m.overlaySignature) != "" {
 		for _, placement := range m.visibleOverlayPlacements() {
 			if overlaySignatureContainsIdentifier(m.overlaySignature, placement.Identifier) {
+				visible[placement.Identifier] = true
+			}
+		}
+	}
+	if m.overlaySyncPending && strings.TrimSpace(m.overlayPendingSignature) != "" {
+		for _, placement := range m.visibleOverlayPlacements() {
+			if overlaySignatureContainsIdentifier(m.overlayPendingSignature, placement.Identifier) {
 				visible[placement.Identifier] = true
 			}
 		}

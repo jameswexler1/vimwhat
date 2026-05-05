@@ -66,6 +66,59 @@ func TestDetectFallsBackInPriorityOrder(t *testing.T) {
 	}
 }
 
+func TestDetectAutoPrefersUeberzugPPOverSixelOnLinux(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "chafa", "img2sixel", "ueberzugpp", "xdg-open":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("TERM_PROGRAM", "wezterm")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
+	t.Setenv("DISPLAY", ":0")
+
+	report := Detect("auto")
+	if report.Selected != BackendUeberzugPP {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendUeberzugPP)
+	}
+	if report.Reasons[BackendSixel] != "available" {
+		t.Fatalf("sixel reason = %q, want available", report.Reasons[BackendSixel])
+	}
+}
+
+func TestDetectExplicitSixelOverridesAvailableUeberzugPPOnLinux(t *testing.T) {
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		switch name {
+		case "chafa", "img2sixel", "ueberzugpp", "xdg-open":
+			return "/usr/bin/" + name, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("TERM_PROGRAM", "wezterm")
+	t.Setenv("VIMWHAT_FORCE_SIXEL", "0")
+	t.Setenv("DISPLAY", ":0")
+
+	report := Detect("sixel")
+	if report.Selected != BackendSixel {
+		t.Fatalf("Selected = %q, want %q", report.Selected, BackendSixel)
+	}
+}
+
 func TestDetectChafaExplicitBeatsAvailableUeberzugPP(t *testing.T) {
 	prevLookPath := lookPath
 	lookPath = func(name string) (string, error) {
