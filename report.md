@@ -356,15 +356,24 @@ Implemented in the follow-up fix pass:
 - `SearchMessages` now uses the maintained `message_fts` table for candidate selection while preserving the existing `textmatch.Contains` accent behavior as a final filter.
 - Media download requests now carry the caller timeout into the worker/protocol download path.
 - Recent sticker file download now has a per-sticker timeout.
+- Recent sticker live events now ingest metadata immediately and move renderable file caching into a bounded worker pool, so slow sticker downloads no longer stop the main WhatsApp event loop.
 - Overlay and Sixel sync commands now use bounded contexts, and the media writers honor canceled contexts before terminal writes.
 - Clipboard image paste/copy now rejects payloads/files above a 64 MiB ceiling instead of buffering unbounded data.
 - Notification queuing now applies short backpressure and emits a status when a burst overflows the pending or delivery queues.
+- Bubble Tea send, draft-save, mark-read, reaction, retry, sticker-send, lazy message load, older-history load, message filter, and mention autocomplete callbacks now run as `tea.Cmd` operations with typed result messages.
+- UI-facing store callbacks in app wiring now use bounded read/write contexts, and background send/status/reaction/edit/delete/forward writes use short child contexts.
+
+Verification after the latest fix pass:
+
+- `make test`: passed.
+- `make lint`: passed.
+- `make test-windows`: passed.
+- `GOCACHE=/tmp/vimwhat-go-build go test -race -count=1 ./internal/ui`: passed.
 
 Still needing a larger refactor:
 
-- Send, mark-read, reaction, filter/search, and several store-backed UI actions still need a full conversion to asynchronous `tea.Cmd` result messages to make Bubble Tea `Update` consistently non-blocking.
-- Recent sticker metadata is still prepared inline when it already has enough information for immediate cache lookup; the longer-term design should ingest metadata first and perform file downloads in a bounded worker.
-- SQLite is still intentionally single-connection; more UI calls need bounded async command wrappers before changing the store connection model.
+- Chat search refresh during snapshot application still has a synchronous store-backed path and should be moved behind a result message before broadening search UI features.
+- SQLite is still intentionally single-connection; keep the bounded context policy in place before evaluating whether the store connection model needs to change.
 
 ## Manual Validation Checklist
 

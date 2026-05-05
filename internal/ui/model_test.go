@@ -29,6 +29,42 @@ func (m rawStringMsg) String() string {
 	return string(m)
 }
 
+func runImmediateCmd(t *testing.T, model Model, cmd tea.Cmd) Model {
+	t.Helper()
+	if cmd == nil {
+		return model
+	}
+	msg, ok := immediateCmdMsg(cmd)
+	if !ok {
+		return model
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, nextCmd := range batch {
+			model = runImmediateCmd(t, model, nextCmd)
+		}
+		return model
+	}
+	updated, nextCmd := model.Update(msg)
+	next, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("updated model type = %T, want Model", updated)
+	}
+	return runImmediateCmd(t, next, nextCmd)
+}
+
+func immediateCmdMsg(cmd tea.Cmd) (tea.Msg, bool) {
+	done := make(chan tea.Msg, 1)
+	go func() {
+		done <- cmd()
+	}()
+	select {
+	case msg := <-done:
+		return msg, true
+	case <-time.After(100 * time.Millisecond):
+		return nil, false
+	}
+}
+
 func TestInsertBackspacePreservesUTF8(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -101,8 +137,9 @@ func TestInsertMentionAutocompleteSelectsAndSendsMention(t *testing.T) {
 	})
 	model.mode = ModeInsert
 
-	typedAt, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
+	typedAt, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
 	model = typedAt.(Model)
+	model = runImmediateCmd(t, model, cmd)
 	if !model.mentionActive || len(model.mentionCandidates) != 1 {
 		t.Fatalf("mention state after @ = active %v candidates %+v", model.mentionActive, model.mentionCandidates)
 	}
@@ -116,8 +153,9 @@ func TestInsertMentionAutocompleteSelectsAndSendsMention(t *testing.T) {
 	}
 	model.composer += "hello"
 
-	sent, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	sent, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
 	model = sent.(Model)
+	model = runImmediateCmd(t, model, cmd)
 	if !persisted {
 		t.Fatal("message was not persisted")
 	}
@@ -297,8 +335,9 @@ func TestInsertEscPersistsDraft(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "draft text"
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
 	got := updated.(Model)
+	got = runImmediateCmd(t, got, cmd)
 	if got.mode != ModeNormal {
 		t.Fatalf("mode = %s, want %s", got.mode, ModeNormal)
 	}
@@ -330,8 +369,9 @@ func TestInsertSendClearsDraft(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "send this"
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Model)
+	got = runImmediateCmd(t, got, cmd)
 	if !cleared {
 		t.Fatal("draft was not cleared after send")
 	}
@@ -343,6 +383,43 @@ func TestInsertSendClearsDraft(t *testing.T) {
 	}
 	if len(got.messagesByChat["chat-1"]) != 1 {
 		t.Fatalf("message count = %d, want 1", len(got.messagesByChat["chat-1"]))
+	}
+}
+
+func TestInsertSendDefersPersistUntilCommand(t *testing.T) {
+	var called bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PersistMessage: func(outgoing OutgoingMessage) (store.Message, error) {
+			called = true
+			return store.Message{ID: "persisted-1", ChatID: outgoing.ChatID, Sender: "me", Body: outgoing.Body, IsOutgoing: true}, nil
+		},
+	})
+	model.mode = ModeInsert
+	model.composer = "send later"
+
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Model)
+	if called {
+		t.Fatal("PersistMessage ran before returned command was executed")
+	}
+	if cmd == nil {
+		t.Fatal("send command = nil, want async persist command")
+	}
+	if len(got.messagesByChat["chat-1"]) != 1 || got.messagesByChat["chat-1"][0].Body != "send later" {
+		t.Fatalf("optimistic messages = %+v", got.messagesByChat["chat-1"])
+	}
+	got = runImmediateCmd(t, got, cmd)
+	if !called {
+		t.Fatal("PersistMessage did not run after command execution")
+	}
+	if got.messagesByChat["chat-1"][0].ID != "persisted-1" {
+		t.Fatalf("persisted message = %+v", got.messagesByChat["chat-1"][0])
 	}
 }
 
@@ -386,8 +463,8 @@ func TestReplyKeyStartsInsertAndSendCarriesQuote(t *testing.T) {
 		t.Fatalf("reply state = mode %s reply %+v", replying.mode, replying.replyTo)
 	}
 	replying.composer = "reply body"
-	sentModel, _ := replying.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := sentModel.(Model)
+	sentModel, cmd := replying.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, sentModel.(Model), cmd)
 	if sent.Quote == nil || sent.Quote.ID != "m-1" || sent.Quote.RemoteID != "remote-1" {
 		t.Fatalf("sent quote = %+v", sent.Quote)
 	}
@@ -512,8 +589,8 @@ func TestReactCommandUsesFocusedMessage(t *testing.T) {
 	})
 	model.focus = FocusMessages
 
-	updated, _ := model.executeCommand("react 🔥")
-	got := updated.(Model)
+	updated, cmd := model.executeCommand("react 🔥")
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if reactedMessage.ID != "m-1" || reactedEmoji != "🔥" {
 		t.Fatalf("reaction callback = message %+v emoji %q", reactedMessage, reactedEmoji)
 	}
@@ -547,8 +624,8 @@ func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "not yet"
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if persisted {
 		t.Fatal("PersistMessage was called in live read-only mode")
 	}
@@ -614,8 +691,8 @@ func TestLiveAttachmentSendQueuesAndClearsComposerState(t *testing.T) {
 		DownloadState: "local_pending",
 	}}
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if !cleared {
 		t.Fatal("draft was not cleared after attachment send")
 	}
@@ -662,8 +739,8 @@ func TestAudioAttachmentCaptionValidationPreventsSend(t *testing.T) {
 		MIMEType:  "audio/ogg",
 	}}
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if persisted {
 		t.Fatal("PersistMessage was called for invalid audio caption send")
 	}
@@ -695,8 +772,8 @@ func TestMissingAttachmentValidationPreventsSend(t *testing.T) {
 	model.composer = "caption"
 	model.attachments = []Attachment{{LocalPath: filepath.Join(t.TempDir(), "missing.pdf"), FileName: "missing.pdf", MIMEType: "application/pdf"}}
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if persisted {
 		t.Fatal("PersistMessage was called for missing attachment")
 	}
@@ -759,8 +836,8 @@ func TestRetryFocusedFailedMediaQueuesNewMessage(t *testing.T) {
 	model.focus = FocusMessages
 	model.composer = "draft stays"
 
-	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
-	got := updated.(Model)
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("R")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if retried.ID != "failed-1" {
 		t.Fatalf("retry callback received %+v, want failed message", retried)
 	}
@@ -824,8 +901,8 @@ func TestRetryMessageCommandUsesFocusedFailedMedia(t *testing.T) {
 	})
 	model.focus = FocusMessages
 
-	updated, _ := model.executeCommand("retry-message")
-	got := updated.(Model)
+	updated, cmd := model.executeCommand("retry-message")
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if !called {
 		t.Fatal("RetryMessage was not called")
 	}
@@ -887,8 +964,8 @@ func TestRequireOnlineForSendPreservesDraft(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "wait for online"
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if persisted {
 		t.Fatal("PersistMessage was called while WhatsApp was offline")
 	}
@@ -925,8 +1002,8 @@ func TestPersistSendErrorSavesDraft(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "do not drop me"
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if savedChatID != "chat-1" || savedBody != "do not drop me" {
 		t.Fatalf("saved draft = (%q, %q), want failed body", savedChatID, savedBody)
 	}
@@ -1901,8 +1978,8 @@ func TestOpeningChatLoadsMessagesLazily(t *testing.T) {
 	})
 	model.focus = FocusChats
 
-	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	got := updated.(Model)
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if loadedChatID != "chat-2" {
 		t.Fatalf("loadedChatID = %q, want chat-2", loadedChatID)
 	}
@@ -1942,8 +2019,8 @@ func TestHistoryFetchLoadsOlderLocalMessagesBeforeRemoteRequest(t *testing.T) {
 		},
 	})
 
-	updated, _ := model.executeCommand("history fetch")
-	got := updated.(Model)
+	updated, cmd := model.executeCommand("history fetch")
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if requested {
 		t.Fatal("RequestHistory called even though older local messages were available")
 	}
@@ -1982,8 +2059,8 @@ func TestScrollAboveLoadedMessagesRequestsRemoteHistory(t *testing.T) {
 	model.focus = FocusMessages
 	model.messageCursor = 0
 
-	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	got := updated.(Model)
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if requestedChatID != "chat-1" {
 		t.Fatalf("requestedChatID = %q, want chat-1", requestedChatID)
 	}
@@ -2452,11 +2529,11 @@ func TestDraftPreservedAcrossLazyChatSwitch(t *testing.T) {
 	model.mode = ModeInsert
 	model.composer = "draft for alice"
 
-	escaped, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
-	normal := escaped.(Model)
+	escaped, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEsc})
+	normal := runImmediateCmd(t, escaped.(Model), cmd)
 	normal.focus = FocusChats
-	switched, _ := normal.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	got := switched.(Model)
+	switched, cmd := normal.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	got := runImmediateCmd(t, switched.(Model), cmd)
 
 	if saved["chat-1"] != "draft for alice" {
 		t.Fatalf("saved draft = %q, want draft for alice", saved["chat-1"])
@@ -4788,8 +4865,8 @@ func TestNormalLeaderPickStickerSendsWithoutChangingComposer(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("<leader>t command = nil, want sticker picker")
 	}
-	final, _ := model.Update(cmd())
-	got := final.(Model)
+	final, sendCmd := model.Update(cmd())
+	got := runImmediateCmd(t, final.(Model), sendCmd)
 	if sentChatID != "chat-1" || sentSticker.ID != "sticker-1" {
 		t.Fatalf("sent sticker chat=%q sticker=%+v", sentChatID, sentSticker)
 	}
@@ -4957,8 +5034,8 @@ func TestAttachmentOnlySendPersistsMedia(t *testing.T) {
 		DownloadState: "local_pending",
 	}}
 
-	updated, _ := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
-	got := updated.(Model)
+	updated, cmd := model.updateInsert(tea.KeyMsg{Type: tea.KeyEnter})
+	got := runImmediateCmd(t, updated.(Model), cmd)
 	if len(sentAttachments) != 1 || sentAttachments[0].FileName != "report.pdf" {
 		t.Fatalf("sentAttachments = %+v", sentAttachments)
 	}

@@ -126,16 +126,22 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 }
 
 func runTUI(env Environment, stderr io.Writer) int {
-	if err := runPreStartCanonicalRepair(context.Background(), env); err != nil {
+	repairCtx, cancelRepair := storeStartupContext()
+	if err := runPreStartCanonicalRepair(repairCtx, env); err != nil {
 		fmt.Fprintf(stderr, "vimwhat: direct chat repair: %v\n", err)
 	}
-	snapshot, err := env.Store.LoadSnapshot(context.Background(), 200)
+	cancelRepair()
+	snapshotCtx, cancelSnapshot := storeStartupContext()
+	snapshot, err := env.Store.LoadSnapshot(snapshotCtx, 200)
+	cancelSnapshot()
 	if err != nil {
 		fmt.Fprintf(stderr, "vimwhat: load snapshot: %v\n", err)
 		return 1
 	}
 
-	initialConnection, liveEnabled := initialLiveConnectionState(env, context.Background())
+	sessionCtx, cancelSession := storeStartupContext()
+	initialConnection, liveEnabled := initialLiveConnectionState(env, sessionCtx)
+	cancelSession()
 	liveUpdates := make(chan ui.LiveUpdate, 64)
 	historyRequests := make(chan string, 16)
 	textSendRequests := make(chan textSendRequest, textSendQueueSize)
@@ -223,7 +229,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 
 			message := pendingOutgoingMessage(outgoing)
-			if err := env.Store.AddMessageWithMedia(context.Background(), message, message.Media); err != nil {
+			storeCtx, cancelStore := uiStoreWriteContext()
+			defer cancelStore()
+			if err := env.Store.AddMessageWithMedia(storeCtx, message, message.Media); err != nil {
 				return store.Message{}, err
 			}
 
@@ -320,10 +328,14 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 		},
 		LoadMessages: func(chatID string, limit int) ([]store.Message, error) {
-			return env.Store.ListMessages(context.Background(), chatID, limit)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return env.Store.ListMessages(storeCtx, chatID, limit)
 		},
 		LoadOlderMessages: func(chatID string, before store.Message, limit int) ([]store.Message, error) {
-			return env.Store.ListMessagesBefore(context.Background(), chatID, before, limit)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return env.Store.ListMessagesBefore(storeCtx, chatID, before, limit)
 		},
 		RequestHistory: func(chatID string) error {
 			if !liveEnabled {
@@ -341,19 +353,29 @@ func runTUI(env Environment, stderr io.Writer) int {
 			}
 		},
 		ReloadSnapshot: func(activeChatID string, limit int) (store.Snapshot, error) {
-			return loadSnapshotForChat(context.Background(), env.Store, activeChatID, limit)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return loadSnapshotForChat(storeCtx, env.Store, activeChatID, limit)
 		},
 		SaveDraft: func(chatID, body string) error {
-			return env.Store.SaveDraft(context.Background(), chatID, body)
+			storeCtx, cancelStore := uiStoreWriteContext()
+			defer cancelStore()
+			return env.Store.SaveDraft(storeCtx, chatID, body)
 		},
 		SearchChats: func(query string) ([]store.Chat, error) {
-			return env.Store.SearchChats(context.Background(), query, 100)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return env.Store.SearchChats(storeCtx, query, 100)
 		},
 		SearchMessages: func(chatID, query string, limit int) ([]store.Message, error) {
-			return env.Store.SearchMessages(context.Background(), chatID, query, limit)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return env.Store.SearchMessages(storeCtx, chatID, query, limit)
 		},
 		SearchMentionCandidates: func(chatID, query string, limit int) ([]store.MentionCandidate, error) {
-			return env.Store.SearchMentionCandidates(context.Background(), chatID, query, limit)
+			storeCtx, cancelStore := uiStoreReadContext()
+			defer cancelStore()
+			return env.Store.SearchMentionCandidates(storeCtx, chatID, query, limit)
 		},
 		CopyToClipboard: func(text string) error {
 			return copyToClipboard(context.Background(), env.Config.ClipboardCommand, text)
@@ -380,7 +402,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 			return startAudio(env.Config, media)
 		},
 		DeleteMessage: func(messageID string) error {
-			return env.Store.DeleteMessage(context.Background(), messageID)
+			storeCtx, cancelStore := uiStoreWriteContext()
+			defer cancelStore()
+			return env.Store.DeleteMessage(storeCtx, messageID)
 		},
 		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
 			return deleteMessageForEveryoneCmd(liveEnabled, deleteEveryoneRequests, message)
@@ -392,7 +416,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 			return forwardMessagesCmd(liveEnabled, forwardRequests, request)
 		},
 		SaveMedia: func(media store.MediaMetadata) error {
-			return env.Store.UpsertMediaMetadata(context.Background(), media)
+			storeCtx, cancelStore := uiStoreWriteContext()
+			defer cancelStore()
+			return env.Store.UpsertMediaMetadata(storeCtx, media)
 		},
 		DownloadMedia: func(message store.Message, media store.MediaMetadata) (store.MediaMetadata, error) {
 			if !liveEnabled {
@@ -467,41 +493,66 @@ func initialLiveConnectionState(env Environment, ctx context.Context) (ui.Connec
 }
 
 const (
-	historyPageSize            = 50
-	historyRequestTimeout      = 30 * time.Second
-	metadataRefreshTimeout     = 30 * time.Second
-	textSendQueueSize          = 16
-	textSendQueueTimeout       = 5 * time.Second
-	textSendTimeout            = 90 * time.Second
-	mediaSendQueueSize         = 16
-	mediaSendQueueTimeout      = 5 * time.Second
-	mediaSendTimeout           = 10 * time.Minute
-	readReceiptQueueSize       = 16
-	readReceiptQueueTimeout    = 5 * time.Second
-	readReceiptTimeout         = 30 * time.Second
-	reactionQueueSize          = 16
-	reactionQueueTimeout       = 5 * time.Second
-	reactionSendTimeout        = 90 * time.Second
-	deleteEveryoneQueueSize    = 16
-	deleteEveryoneQueueTimeout = 5 * time.Second
-	deleteEveryoneTimeout      = 90 * time.Second
-	editMessageQueueSize       = 16
-	editMessageQueueTimeout    = 5 * time.Second
-	editMessageTimeout         = 90 * time.Second
-	forwardMessageQueueSize    = 16
-	forwardMessageQueueTimeout = 5 * time.Second
-	forwardMessageTimeout      = 90 * time.Second
-	presenceQueueSize          = 32
-	presenceSendTimeout        = 5 * time.Second
-	mediaDownloadWorkers       = 2
-	mediaDownloadQueueSize     = 16
-	mediaDownloadTimeout       = 5 * time.Minute
-	stickerDownloadTimeout     = 15 * time.Second
-	stickerSyncQueueSize       = 4
-	stickerSyncTimeout         = 90 * time.Second
-	avatarRefreshQueueSize     = 32
-	avatarRefreshTimeout       = 30 * time.Second
+	historyPageSize             = 50
+	historyRequestTimeout       = 30 * time.Second
+	metadataRefreshTimeout      = 30 * time.Second
+	startupStoreTimeout         = 15 * time.Second
+	uiStoreReadTimeout          = 5 * time.Second
+	uiStoreWriteTimeout         = 5 * time.Second
+	backgroundStoreWriteTimeout = 5 * time.Second
+	textSendQueueSize           = 16
+	textSendQueueTimeout        = 5 * time.Second
+	textSendTimeout             = 90 * time.Second
+	mediaSendQueueSize          = 16
+	mediaSendQueueTimeout       = 5 * time.Second
+	mediaSendTimeout            = 10 * time.Minute
+	readReceiptQueueSize        = 16
+	readReceiptQueueTimeout     = 5 * time.Second
+	readReceiptTimeout          = 30 * time.Second
+	reactionQueueSize           = 16
+	reactionQueueTimeout        = 5 * time.Second
+	reactionSendTimeout         = 90 * time.Second
+	deleteEveryoneQueueSize     = 16
+	deleteEveryoneQueueTimeout  = 5 * time.Second
+	deleteEveryoneTimeout       = 90 * time.Second
+	editMessageQueueSize        = 16
+	editMessageQueueTimeout     = 5 * time.Second
+	editMessageTimeout          = 90 * time.Second
+	forwardMessageQueueSize     = 16
+	forwardMessageQueueTimeout  = 5 * time.Second
+	forwardMessageTimeout       = 90 * time.Second
+	presenceQueueSize           = 32
+	presenceSendTimeout         = 5 * time.Second
+	mediaDownloadWorkers        = 2
+	mediaDownloadQueueSize      = 16
+	mediaDownloadTimeout        = 5 * time.Minute
+	stickerDownloadTimeout      = 15 * time.Second
+	recentStickerCacheWorkers   = 2
+	recentStickerCacheQueueSize = 16
+	stickerSyncQueueSize        = 4
+	stickerSyncTimeout          = 90 * time.Second
+	avatarRefreshQueueSize      = 32
+	avatarRefreshTimeout        = 30 * time.Second
 )
+
+func storeStartupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), startupStoreTimeout)
+}
+
+func uiStoreReadContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), uiStoreReadTimeout)
+}
+
+func uiStoreWriteContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), uiStoreWriteTimeout)
+}
+
+func backgroundStoreWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, backgroundStoreWriteTimeout)
+}
 
 var (
 	offlineSyncProgressEvery = 150 * time.Millisecond
@@ -817,6 +868,15 @@ type avatarRefreshResult struct {
 	Err     error
 }
 
+type recentStickerCacheRequest struct {
+	Sticker whatsapp.RecentStickerEvent
+}
+
+type recentStickerCacheResult struct {
+	Sticker whatsapp.RecentStickerEvent
+	Err     error
+}
+
 func runLiveWhatsApp(
 	ctx context.Context,
 	env Environment,
@@ -921,6 +981,21 @@ func runLiveWhatsApp(
 	defer func() {
 		close(avatarJobs)
 		avatarWG.Wait()
+	}()
+
+	stickerCacheJobs := make(chan recentStickerCacheRequest, recentStickerCacheQueueSize)
+	stickerCacheResults := make(chan recentStickerCacheResult, recentStickerCacheQueueSize)
+	var stickerCacheWG sync.WaitGroup
+	for i := 0; i < recentStickerCacheWorkers; i++ {
+		stickerCacheWG.Add(1)
+		go func() {
+			defer stickerCacheWG.Done()
+			recentStickerCacheWorker(ctx, env.Store, live, env.Paths, stickerCacheJobs, stickerCacheResults)
+		}()
+	}
+	defer func() {
+		close(stickerCacheJobs)
+		stickerCacheWG.Wait()
 	}()
 
 	ingestor := whatsapp.Ingestor{Store: env.Store}
@@ -1054,6 +1129,27 @@ func runLiveWhatsApp(
 	defer stopStartupSyncTimer()
 	for {
 		select {
+		case result := <-stickerCacheResults:
+			if result.Err != nil {
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: fmt.Sprintf("sticker cache failed: %s", shortStatusError(result.Err)),
+				})
+				continue
+			}
+			if strings.TrimSpace(result.Sticker.LocalPath) == "" {
+				continue
+			}
+			_, err := ingestor.Apply(ctx, whatsapp.Event{Kind: whatsapp.EventRecentSticker, Sticker: result.Sticker})
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: fmt.Sprintf("sticker cache ingest failed: %s", shortStatusError(err)),
+				})
+				continue
+			}
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
 		case event, ok := <-events:
 			if !ok {
 				clearStartupSyncOverlay()
@@ -1132,13 +1228,22 @@ func runLiveWhatsApp(
 				}
 			}
 			if event.Kind == whatsapp.EventRecentSticker {
-				prepared, err := prepareRecentStickerEvent(ctx, env.Store, live, env.Paths, event.Sticker)
+				prepared, needsDownload, err := prepareRecentStickerEventMetadata(ctx, env.Store, env.Paths, event.Sticker)
 				if err != nil {
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 						Status: fmt.Sprintf("sticker cache failed: %s", shortStatusError(err)),
 					})
 				} else {
 					event.Sticker = prepared
+					if needsDownload {
+						select {
+						case stickerCacheJobs <- recentStickerCacheRequest{Sticker: prepared}:
+						default:
+							sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+								Status: "sticker cache queue is full",
+							})
+						}
+					}
 				}
 			}
 			result, err := ingestor.Apply(ctx, event)
@@ -1654,8 +1759,10 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 	}
 	result, err := live.SendText(sendCtx, request)
 	if err != nil {
-		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
-		_ = db.SaveDraft(context.Background(), message.ChatID, body)
+		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.SaveDraft(storeCtx, message.ChatID, body)
+		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("send failed: %s", shortStatusError(err)),
@@ -1667,7 +1774,10 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 	if status == "" {
 		status = "sent"
 	}
-	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err = db.UpdateMessageStatus(storeCtx, message.ID, status)
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
@@ -1868,8 +1978,10 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	}
 	result, err := live.SendMedia(sendCtx, request)
 	if err != nil {
-		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
-		_ = db.SaveDraft(context.Background(), message.ChatID, message.Body)
+		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.SaveDraft(storeCtx, message.ChatID, message.Body)
+		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("send failed: %s", shortStatusError(err)),
@@ -1880,7 +1992,10 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	if status == "" {
 		status = "sent"
 	}
-	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err = db.UpdateMessageStatus(storeCtx, message.ID, status)
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
@@ -1915,7 +2030,9 @@ func completeQueuedStickerSend(ctx context.Context, db *store.Store, live WhatsA
 	}
 	result, err := live.SendSticker(sendCtx, request)
 	if err != nil {
-		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("sticker send failed: %s", shortStatusError(err)),
@@ -1926,14 +2043,17 @@ func completeQueuedStickerSend(ctx context.Context, db *store.Store, live WhatsA
 	if status == "" {
 		status = "sent"
 	}
-	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err = db.UpdateMessageStatus(storeCtx, message.ID, status)
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("send status failed: %s", shortStatusError(err)),
 		})
 		return
 	}
-	refreshRecentStickerAfterSend(context.Background(), db, sticker, time.Now())
+	refreshRecentStickerAfterSend(ctx, db, sticker, time.Now())
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		Refresh: true,
 		Status:  stickerSendStatus(result),
@@ -2224,7 +2344,10 @@ func completeReadReceipt(ctx context.Context, db *store.Store, live WhatsAppLive
 		})
 		return
 	}
-	if err := db.ClearChatUnread(context.Background(), chatID); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err := db.ClearChatUnread(storeCtx, chatID)
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			ReadChatID: chatID,
 			Refresh:    true,
@@ -2344,14 +2467,17 @@ func completeReaction(ctx context.Context, db *store.Store, live WhatsAppLiveSes
 		})
 		return
 	}
-	if err := db.UpsertReaction(context.Background(), store.Reaction{
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err = db.UpsertReaction(storeCtx, store.Reaction{
 		MessageID:  message.ID,
 		SenderJID:  "me",
 		Emoji:      emoji,
 		Timestamp:  time.Now(),
 		IsOutgoing: true,
 		UpdatedAt:  time.Now(),
-	}); err != nil {
+	})
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("reaction store failed: %s", shortStatusError(err)),
@@ -2447,7 +2573,10 @@ func completeDeleteForEveryone(ctx context.Context, db *store.Store, live WhatsA
 	if messageID == "" {
 		messageID = strings.TrimSpace(result.MessageID)
 	}
-	if _, err := db.DeleteMessageForEveryone(context.Background(), messageID); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	_, err = db.DeleteMessageForEveryone(storeCtx, messageID)
+	cancelStore()
+	if err != nil {
 		sendDeleteEveryoneResult(ctx, request, messageID, err)
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
@@ -2555,7 +2684,9 @@ func completeEditMessage(ctx context.Context, db *store.Store, live WhatsAppLive
 	if editedAt.IsZero() {
 		editedAt = time.Now()
 	}
-	updated, err := db.UpdateMessageBody(context.Background(), messageID, body, editedAt)
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	updated, err := db.UpdateMessageBody(storeCtx, messageID, body, editedAt)
+	cancelStore()
 	if err != nil {
 		sendEditMessageResult(ctx, request, messageID, editedAt, err)
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
@@ -2766,7 +2897,9 @@ func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsA
 		MarkForwarded: markForwarded,
 	})
 	if err != nil {
-		_ = db.UpdateMessageStatus(context.Background(), message.ID, "failed")
+		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("forward failed: %s", shortStatusError(err)),
@@ -2777,7 +2910,10 @@ func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsA
 	if status == "" {
 		status = "sent"
 	}
-	if err := db.UpdateMessageStatus(context.Background(), message.ID, status); err != nil {
+	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
+	err = db.UpdateMessageStatus(storeCtx, message.ID, status)
+	cancelStore()
+	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
 			Status:  fmt.Sprintf("forward status failed: %s", shortStatusError(err)),
@@ -3506,40 +3642,60 @@ func prepareIncomingMediaEvent(paths config.Paths, event whatsapp.MediaEvent) (w
 }
 
 func prepareRecentStickerEvent(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, event whatsapp.RecentStickerEvent) (whatsapp.RecentStickerEvent, error) {
+	event, needsDownload, err := prepareRecentStickerEventMetadata(ctx, db, paths, event)
+	if err != nil || !needsDownload || live == nil {
+		return event, err
+	}
+	return downloadRecentStickerFile(ctx, live, paths, event)
+}
+
+func prepareRecentStickerEventMetadata(ctx context.Context, db *store.Store, paths config.Paths, event whatsapp.RecentStickerEvent) (whatsapp.RecentStickerEvent, bool, error) {
 	if strings.TrimSpace(event.ID) == "" {
-		return event, fmt.Errorf("recent sticker id is required")
+		return event, false, fmt.Errorf("recent sticker id is required")
 	}
 	if strings.TrimSpace(event.FileName) == "" {
 		event.FileName = "sticker" + recentStickerExtension(event.MIMEType, event.FileName, event.IsLottie)
 	}
 	if event.IsLottie || strings.EqualFold(filepath.Ext(event.FileName), ".tgs") {
-		return event, nil
+		return event, false, nil
 	}
-	dir := filepath.Join(paths.TransientDir, "stickers", "files")
-	if strings.TrimSpace(paths.TransientDir) == "" {
-		dir = filepath.Join(os.TempDir(), "vimwhat-stickers")
-	}
+	dir := recentStickerCacheDir(paths)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return event, fmt.Errorf("create sticker cache dir: %w", err)
+		return event, false, fmt.Errorf("create sticker cache dir: %w", err)
 	}
 
 	finalPath := recentStickerCachePath(dir, event)
 	if mediaPathAvailable(finalPath) {
 		event.LocalPath = finalPath
-		return event, nil
+		return event, false, nil
 	}
 	if db != nil {
 		if current, ok, err := db.RecentSticker(ctx, event.ID); err != nil {
-			return event, err
+			return event, false, err
 		} else if ok && mediaPathAvailable(current.LocalPath) {
 			event.LocalPath = current.LocalPath
-			return event, nil
+			return event, false, nil
 		}
 	}
-	if live == nil || (strings.TrimSpace(event.DirectPath) == "" && strings.TrimSpace(event.URL) == "") || len(event.MediaKey) == 0 || len(event.FileEncSHA256) == 0 {
+	if (strings.TrimSpace(event.DirectPath) == "" && strings.TrimSpace(event.URL) == "") || len(event.MediaKey) == 0 || len(event.FileEncSHA256) == 0 {
+		return event, false, nil
+	}
+	return event, true, nil
+}
+
+func downloadRecentStickerFile(ctx context.Context, live WhatsAppLiveSession, paths config.Paths, event whatsapp.RecentStickerEvent) (whatsapp.RecentStickerEvent, error) {
+	if live == nil {
 		return event, nil
 	}
-
+	dir := recentStickerCacheDir(paths)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return event, fmt.Errorf("create sticker cache dir: %w", err)
+	}
+	finalPath := recentStickerCachePath(dir, event)
+	if mediaPathAvailable(finalPath) {
+		event.LocalPath = finalPath
+		return event, nil
+	}
 	tmp, err := os.CreateTemp(dir, "sticker-download-*.tmp")
 	if err != nil {
 		return event, fmt.Errorf("create sticker temp file: %w", err)
@@ -3575,6 +3731,25 @@ func prepareRecentStickerEvent(ctx context.Context, db *store.Store, live WhatsA
 	event.LocalPath = finalPath
 	event.FileLength = info.Size()
 	return event, nil
+}
+
+func recentStickerCacheDir(paths config.Paths) string {
+	if strings.TrimSpace(paths.TransientDir) == "" {
+		return filepath.Join(os.TempDir(), "vimwhat-stickers")
+	}
+	return filepath.Join(paths.TransientDir, "stickers", "files")
+}
+
+func recentStickerCacheWorker(ctx context.Context, db *store.Store, live WhatsAppLiveSession, paths config.Paths, jobs <-chan recentStickerCacheRequest, results chan<- recentStickerCacheResult) {
+	for request := range jobs {
+		sticker, err := prepareRecentStickerEvent(ctx, db, live, paths, request.Sticker)
+		result := recentStickerCacheResult{Sticker: sticker, Err: err}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func storeStickerThumbnail(mediaDir string, event whatsapp.MediaEvent) (string, error) {
