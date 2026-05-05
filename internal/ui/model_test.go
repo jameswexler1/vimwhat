@@ -7550,6 +7550,26 @@ func TestPendingMediaOverlayDoesNotRenderLowResolutionFallback(t *testing.T) {
 	}
 }
 
+func TestKeyMsgRunsPreviewSyncForVisibleOverlay(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	model.mode = ModeNormal
+	model.focus = FocusMessages
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("KeyMsg returned nil command, want overlay sync from withPreviewCmd")
+	}
+	if !model.overlaySyncPending || model.overlayPendingSignature == "" {
+		t.Fatalf("overlay pending = %v signature %q, want key-driven preview sync", model.overlaySyncPending, model.overlayPendingSignature)
+	}
+}
+
 func TestSnapshotReloadPausesTerminalOverlays(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {

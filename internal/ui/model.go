@@ -1453,10 +1453,8 @@ func removeMessageFromSlice(messages []store.Message, messageID string) []store.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if token, ok := shiftedEnterTokenFromMsg(msg); ok {
 		updated, cmd := m.handleSpecialKeyToken(token)
-		if next, ok := updated.(Model); ok {
-			return next.withPreviewCmd(cmd)
-		}
-		return updated, cmd
+		next := updated.(Model)
+		return next.withPreviewCmd(cmd)
 	}
 
 	switch msg := msg.(type) {
@@ -1557,16 +1555,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePickedSticker(msg)
 	case mediaPreviewReadyMsg:
 		updated, cmd := m.handleMediaPreviewReady(msg)
-		if next, ok := updated.(Model); ok {
-			return next.withPreviewCmd(cmd)
-		}
-		return updated, cmd
+		next := updated.(Model)
+		return next.withPreviewCmd(cmd)
 	case mediaDownloadedMsg:
 		updated, cmd := m.handleMediaDownloaded(msg)
-		if next, ok := updated.(Model); ok {
-			return next.withPreviewCmd(cmd)
-		}
-		return updated, cmd
+		next := updated.(Model)
+		return next.withPreviewCmd(cmd)
 	case mediaSavedMsg:
 		return m.handleMediaSaved(msg)
 	case audioStartedMsg:
@@ -1681,10 +1675,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, batchCmds(cmd, nextPoll)
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
-		if next, ok := updated.(Model); ok {
-			return next.withPreviewCmd(cmd)
-		}
-		return updated, cmd
+		next := updated.(Model)
+		return next.withPreviewCmd(cmd)
 	}
 
 	return m, nil
