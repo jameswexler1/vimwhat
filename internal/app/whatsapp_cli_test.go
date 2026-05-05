@@ -2312,6 +2312,24 @@ func TestHandleHistoryRequestIgnoresLegacyTrueCursor(t *testing.T) {
 	}
 }
 
+func TestMediaDownloadContextCancelsWithRequest(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	combined, cancelCombined := mediaDownloadContext(parent, requestCtx)
+	defer cancelCombined()
+
+	cancelRequest()
+	select {
+	case <-combined.Done():
+	case <-time.After(time.Second):
+		t.Fatal("combined media download context did not follow request cancellation")
+	}
+	if !errors.Is(combined.Err(), context.Canceled) {
+		t.Fatalf("combined context error = %v, want context canceled", combined.Err())
+	}
+}
+
 func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))

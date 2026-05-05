@@ -15,6 +15,7 @@ import (
 )
 
 const notificationQueueSize = 64
+const notificationQueueWait = 50 * time.Millisecond
 
 type NotificationOpener func(config.Config) notify.Notifier
 
@@ -76,13 +77,24 @@ func startNotificationWorker(ctx context.Context, env Environment, updates chan<
 	}
 }
 
-func queueNotification(jobs chan<- notify.Notification, job notify.Notification) {
+func queueNotification(ctx context.Context, jobs chan<- notify.Notification, job notify.Notification) bool {
 	if jobs == nil {
-		return
+		return false
 	}
 	select {
 	case jobs <- job:
+		return true
 	default:
+	}
+	timer := time.NewTimer(notificationQueueWait)
+	defer timer.Stop()
+	select {
+	case jobs <- job:
+		return true
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -90,6 +102,7 @@ func (g *notificationGate) QueueOrSend(
 	ctx context.Context,
 	db *store.Store,
 	jobs chan<- notify.Notification,
+	updates chan<- ui.LiveUpdate,
 	avatarJobs chan<- avatarRefreshRequest,
 	avatarInflight map[string]bool,
 	view notificationContext,
@@ -99,22 +112,27 @@ func (g *notificationGate) QueueOrSend(
 		if !notificationMaySend(view, result) {
 			return
 		}
-		if len(g.Candidates) >= notificationQueueSize {
-			return
-		}
-		g.Candidates = append(g.Candidates, pendingNotificationCandidate{
+		candidate := pendingNotificationCandidate{
 			View:   view,
 			Result: result,
-		})
+		}
+		if len(g.Candidates) >= notificationQueueSize {
+			copy(g.Candidates, g.Candidates[1:])
+			g.Candidates[len(g.Candidates)-1] = candidate
+			sendLiveUpdateNonblocking(updates, ui.LiveUpdate{Status: "notification backlog full; dropped oldest pending notification"})
+			return
+		}
+		g.Candidates = append(g.Candidates, candidate)
 		return
 	}
-	queueNotificationForResult(ctx, db, jobs, avatarJobs, avatarInflight, view, result)
+	queueNotificationForResult(ctx, db, jobs, updates, avatarJobs, avatarInflight, view, result)
 }
 
 func (g *notificationGate) Flush(
 	ctx context.Context,
 	db *store.Store,
 	jobs chan<- notify.Notification,
+	updates chan<- ui.LiveUpdate,
 	avatarJobs chan<- avatarRefreshRequest,
 	avatarInflight map[string]bool,
 ) {
@@ -125,7 +143,7 @@ func (g *notificationGate) Flush(
 	g.Pending = false
 	g.Candidates = nil
 	for _, candidate := range candidates {
-		queueNotificationForResult(ctx, db, jobs, avatarJobs, avatarInflight, candidate.View, candidate.Result)
+		queueNotificationForResult(ctx, db, jobs, updates, avatarJobs, avatarInflight, candidate.View, candidate.Result)
 	}
 }
 
@@ -133,6 +151,7 @@ func queueNotificationForResult(
 	ctx context.Context,
 	db *store.Store,
 	jobs chan<- notify.Notification,
+	updates chan<- ui.LiveUpdate,
 	avatarJobs chan<- avatarRefreshRequest,
 	avatarInflight map[string]bool,
 	view notificationContext,
@@ -145,7 +164,19 @@ func queueNotificationForResult(
 	if strings.TrimSpace(note.IconPath) == "" {
 		enqueueAvatarRefresh(ctx, avatarJobs, avatarInflight, result.Message.ChatID)
 	}
-	queueNotification(jobs, note)
+	if !queueNotification(ctx, jobs, note) {
+		sendLiveUpdateNonblocking(updates, ui.LiveUpdate{Status: "notification queue is full; skipped desktop notification"})
+	}
+}
+
+func sendLiveUpdateNonblocking(updates chan<- ui.LiveUpdate, update ui.LiveUpdate) {
+	if updates == nil {
+		return
+	}
+	select {
+	case updates <- update:
+	default:
+	}
 }
 
 func notificationMaySend(view notificationContext, result whatsapp.ApplyResult) bool {

@@ -88,3 +88,7 @@ The live WhatsApp session DB path already exists in app wiring as a runtime arti
 ## Updating plan
 
 After completing changes, check if that checks out with some landmark in PLAN.md and update the PLAN.md according to the current state of the project.
+
+## Peer review
+
+Any code written here will be later reviewed by your competitor Claude Code, so do a perfect job.

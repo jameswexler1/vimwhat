@@ -1465,6 +1465,13 @@ func TestVisibleMessageRangeBoundsLargeLoadedChat(t *testing.T) {
 	if got := end - start; got > maxMessageRenderWindow {
 		t.Fatalf("visible range length = %d, want bounded window", got)
 	}
+	blocks := model.visibleMessageBlocks(numberedMessages(5000), 100, 12, nil)
+	if len(blocks) > maxMessageRenderWindow {
+		t.Fatalf("visibleMessageBlocks() length = %d, want bounded window", len(blocks))
+	}
+	if len(blocks) == 0 || blocks[0].messageIndex < start || blocks[len(blocks)-1].messageIndex >= end {
+		t.Fatalf("visibleMessageBlocks() indexes outside visible range [%d,%d): %+v", start, end, blocks)
+	}
 }
 
 func TestMessageViewportClipsTallSelectedBlockFromTop(t *testing.T) {

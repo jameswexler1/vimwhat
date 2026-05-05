@@ -47,7 +47,6 @@ func (m *SixelManager) Invalidate() {
 }
 
 func (m *SixelManager) SyncEpoch(ctx context.Context, epoch int, placements []SixelPlacement) error {
-	_ = ctx
 	next := make(map[string]SixelPlacement, len(placements))
 	for _, placement := range placements {
 		if placement.Identifier == "" {
@@ -65,6 +64,11 @@ func (m *SixelManager) SyncEpoch(ctx context.Context, epoch int, placements []Si
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if epoch != m.epoch {
 		return nil
 	}
@@ -106,6 +110,11 @@ func (m *SixelManager) SyncEpoch(ctx context.Context, epoch int, placements []Si
 
 	if !wrote {
 		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 	_, err := m.out.Write(buf.Bytes())
 	if err != nil {

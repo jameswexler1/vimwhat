@@ -112,7 +112,7 @@ func (m *OverlayManager) sync(ctx context.Context, placements []Placement, epoch
 		if _, ok := next[identifier]; ok {
 			continue
 		}
-		if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
+		if err := m.send(ctx, overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
 			return err
 		}
 		delete(m.active, identifier)
@@ -124,11 +124,11 @@ func (m *OverlayManager) sync(ctx context.Context, placements []Placement, epoch
 			continue
 		}
 		if _, ok := m.active[identifier]; ok {
-			if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
+			if err := m.send(ctx, overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
 				return err
 			}
 		}
-		if err := m.send(overlayCommand{
+		if err := m.send(ctx, overlayCommand{
 			Action:     "add",
 			Identifier: placement.Identifier,
 			X:          placement.X,
@@ -176,7 +176,7 @@ func (m *OverlayManager) Remove(ctx context.Context) error {
 		return err
 	}
 	for _, identifier := range sortedPlacementKeys(m.active) {
-		if err := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
+		if err := m.send(ctx, overlayCommand{Action: "remove", Identifier: identifier}); err != nil {
 			return err
 		}
 		delete(m.active, identifier)
@@ -191,7 +191,7 @@ func (m *OverlayManager) Close() error {
 	var err error
 	if len(m.active) > 0 && m.stdin != nil {
 		for _, identifier := range sortedPlacementKeys(m.active) {
-			if removeErr := m.send(overlayCommand{Action: "remove", Identifier: identifier}); err == nil {
+			if removeErr := m.send(context.Background(), overlayCommand{Action: "remove", Identifier: identifier}); err == nil {
 				err = removeErr
 			}
 			delete(m.active, identifier)
@@ -252,12 +252,17 @@ func (m *OverlayManager) ensureStarted(ctx context.Context) error {
 	return nil
 }
 
-func (m *OverlayManager) send(command overlayCommand) error {
+func (m *OverlayManager) send(ctx context.Context, command overlayCommand) error {
 	data, err := json.Marshal(command)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if _, err := m.stdin.Write(data); err != nil {
 		return fmt.Errorf("write ueberzug++ command: %w", err)
 	}

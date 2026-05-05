@@ -448,6 +448,7 @@ const historyPageSize = 50
 const refreshDebounceDuration = 75 * time.Millisecond
 const syncOverlayCompleteDelay = 600 * time.Millisecond
 const overlayResumeDelay = 80 * time.Millisecond
+const terminalMediaSyncTimeout = 2 * time.Second
 const sixelPaintDelay = 40 * time.Millisecond
 const terminalSizePollInterval = 250 * time.Millisecond
 
@@ -3403,7 +3404,7 @@ func (m Model) messageScrollTopWithCursorVisible() (int, bool) {
 	if len(messages) == 0 {
 		return 0, true
 	}
-	blocks := m.messageBlocks(messages, width, nil)
+	blocks := m.visibleMessageBlocks(messages, width, height, nil)
 	if len(blocks) == 0 {
 		return 0, true
 	}
@@ -3731,9 +3732,11 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
 		return mediaOverlayMsg{
 			Signature: signature,
-			Err:       manager.SyncEpoch(context.Background(), epoch, placements),
+			Err:       manager.SyncEpoch(ctx, epoch, placements),
 		}
 	}
 }
@@ -3754,9 +3757,11 @@ func (m *Model) syncEmptyOverlayCmd() tea.Cmd {
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
 		return mediaOverlayMsg{
 			Signature: signature,
-			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+			Err:       manager.SyncEpoch(ctx, epoch, nil),
 		}
 	}
 }
@@ -3788,9 +3793,11 @@ func (m *Model) clearOverlayCmd() tea.Cmd {
 	manager := m.overlay
 	epoch := manager.Epoch()
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
 		return mediaOverlayMsg{
 			Signature: signature,
-			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+			Err:       manager.SyncEpoch(ctx, epoch, nil),
 		}
 	}
 }
@@ -3822,10 +3829,26 @@ func (m *Model) syncSixelCmd() tea.Cmd {
 	manager := m.sixel
 	epoch := manager.Epoch()
 	return func() tea.Msg {
-		time.Sleep(sixelPaintDelay)
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
+		timer := time.NewTimer(sixelPaintDelay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return sixelOverlayMsg{
+				Signature: signature,
+				Err:       ctx.Err(),
+			}
+		}
 		return sixelOverlayMsg{
 			Signature: signature,
-			Err:       manager.SyncEpoch(context.Background(), epoch, placements),
+			Err:       manager.SyncEpoch(ctx, epoch, placements),
 		}
 	}
 }
@@ -3857,9 +3880,11 @@ func (m *Model) clearSixelCmd() tea.Cmd {
 	manager := m.sixel
 	epoch := manager.Epoch()
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
 		return sixelOverlayMsg{
 			Signature: signature,
-			Err:       manager.SyncEpoch(context.Background(), epoch, nil),
+			Err:       manager.SyncEpoch(ctx, epoch, nil),
 		}
 	}
 }

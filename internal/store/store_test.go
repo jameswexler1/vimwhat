@@ -177,6 +177,13 @@ func TestStoreRoundTrip(t *testing.T) {
 	if len(results) != 1 || results[0].ID != "m-2" {
 		t.Fatalf("SearchMessages() = %+v, want m-2", results)
 	}
+	results, err = store.SearchMessages(ctx, "chat-1", "new", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages(prefix) error = %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "m-2" {
+		t.Fatalf("SearchMessages(prefix) = %+v, want m-2", results)
+	}
 
 	chats, err := store.SearchChats(ctx, "proj", 10)
 	if err != nil {

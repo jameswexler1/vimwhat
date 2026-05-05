@@ -401,20 +401,23 @@ func runTUI(env Environment, stderr io.Writer) int {
 			if strings.TrimSpace(message.ID) == "" {
 				return store.MediaMetadata{}, fmt.Errorf("message id is required")
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), mediaDownloadTimeout)
+			defer cancel()
 			result := make(chan mediaDownloadResult, 1)
 			request := mediaDownloadRequest{
+				Context: ctx,
 				Message: message,
 				Media:   media,
 				Result:  result,
 			}
 			select {
 			case mediaDownloadRequests <- request:
+			case <-ctx.Done():
+				return media, fmt.Errorf("media download timed out")
 			default:
 				return media, fmt.Errorf("media download request queue is full")
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), mediaDownloadTimeout)
-			defer cancel()
 			select {
 			case downloaded := <-result:
 				return downloaded.Media, downloaded.Err
@@ -493,6 +496,7 @@ const (
 	mediaDownloadWorkers       = 2
 	mediaDownloadQueueSize     = 16
 	mediaDownloadTimeout       = 5 * time.Minute
+	stickerDownloadTimeout     = 15 * time.Second
 	stickerSyncQueueSize       = 4
 	stickerSyncTimeout         = 90 * time.Second
 	avatarRefreshQueueSize     = 32
@@ -760,6 +764,7 @@ type presenceSubscribeRequest struct {
 }
 
 type mediaDownloadRequest struct {
+	Context context.Context
 	Message store.Message
 	Media   store.MediaMetadata
 	Result  chan<- mediaDownloadResult
@@ -1176,7 +1181,7 @@ func runLiveWhatsApp(
 			if isHistoricalImportEvent(event) {
 				continue
 			}
-			notifications.QueueOrSend(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight, viewState, result)
+			notifications.QueueOrSend(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight, viewState, result)
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 				Refresh:         true,
 				PreferredChatID: pendingPreferredChatID,
@@ -1261,12 +1266,12 @@ func runLiveWhatsApp(
 			if !ok {
 				startupAppStateUpdates = nil
 				if notifications.Pending {
-					notifications.Flush(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight)
+					notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
 				}
 				continue
 			}
 			if startupUpdate.Done {
-				notifications.Flush(context.Background(), env.Store, notificationJobs, avatarJobs, avatarInflight)
+				notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
 			}
 			update := startupUpdate.Update
 			if offlineSync.active && update.Refresh {
@@ -2828,6 +2833,10 @@ func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest,
 	if request.Result == nil {
 		return
 	}
+	if err := mediaDownloadRequestContextErr(request); err != nil {
+		sendMediaDownloadResult(ctx, request, request.Media, err)
+		return
+	}
 	if !online {
 		sendMediaDownloadResult(ctx, request, request.Media, fmt.Errorf("media download needs WhatsApp online"))
 		return
@@ -2836,6 +2845,8 @@ func enqueueMediaDownload(ctx context.Context, jobs chan<- mediaDownloadRequest,
 	case jobs <- request:
 	case <-ctx.Done():
 		sendMediaDownloadResult(context.Background(), request, request.Media, ctx.Err())
+	case <-mediaDownloadRequestDone(request):
+		sendMediaDownloadResult(context.Background(), request, request.Media, mediaDownloadRequestContextErr(request))
 	default:
 		sendMediaDownloadResult(ctx, request, request.Media, fmt.Errorf("media download queue is full"))
 	}
@@ -2848,11 +2859,58 @@ func mediaDownloadWorker(ctx context.Context, db *store.Store, live WhatsAppLive
 			if !ok {
 				return
 			}
-			media, err := downloadRemoteMedia(ctx, db, live, paths, request)
+			workCtx, cancel := mediaDownloadContext(ctx, request.Context)
+			media, err := downloadRemoteMedia(workCtx, db, live, paths, request)
+			cancel()
 			sendMediaDownloadResult(ctx, request, media, err)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func mediaDownloadContext(parent, request context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if request == nil {
+		return parent, func() {}
+	}
+	ctx, cancel := context.WithCancel(request)
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		select {
+		case <-parent.Done():
+			cancel()
+		case <-ctx.Done():
+		case <-done:
+		}
+	}()
+	return ctx, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
+}
+
+func mediaDownloadRequestDone(request mediaDownloadRequest) <-chan struct{} {
+	if request.Context == nil {
+		return nil
+	}
+	return request.Context.Done()
+}
+
+func mediaDownloadRequestContextErr(request mediaDownloadRequest) error {
+	if request.Context == nil {
+		return nil
+	}
+	select {
+	case <-request.Context.Done():
+		return request.Context.Err()
+	default:
+		return nil
 	}
 }
 
@@ -3499,7 +3557,9 @@ func prepareRecentStickerEvent(ctx context.Context, db *store.Store, live WhatsA
 		FileEncSHA256: cloneBytes(event.FileEncSHA256),
 		FileLength:    event.FileLength,
 	}
-	if err := live.DownloadMedia(ctx, descriptor, tmpPath); err != nil {
+	downloadCtx, cancel := context.WithTimeout(ctx, stickerDownloadTimeout)
+	defer cancel()
+	if err := live.DownloadMedia(downloadCtx, descriptor, tmpPath); err != nil {
 		return event, err
 	}
 	info, err := os.Stat(tmpPath)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"vimwhat/internal/notify"
 	"vimwhat/internal/store"
 	"vimwhat/internal/whatsapp"
 )
@@ -55,6 +56,17 @@ func TestNotificationIconPathOmitsMissingAvatars(t *testing.T) {
 	})
 	if got != "" {
 		t.Fatalf("notificationIconPath() = %q, want empty path", got)
+	}
+}
+
+func TestQueueNotificationReportsFullQueue(t *testing.T) {
+	jobs := make(chan notify.Notification, 1)
+	jobs <- notify.Notification{Title: "one"}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	if queueNotification(ctx, jobs, notify.Notification{Title: "two"}) {
+		t.Fatal("queueNotification() = true, want false for full queue")
 	}
 }
 

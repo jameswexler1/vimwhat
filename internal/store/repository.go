@@ -263,9 +263,9 @@ func (s *Store) MessageByID(ctx context.Context, id string) (Message, bool, erro
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
-			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason, edited_at
+		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
+			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
+			m.deleted_at, m.deleted_reason, m.edited_at
 		FROM messages m
 		WHERE m.id = ?
 			AND m.deleted_at = 0
@@ -442,15 +442,17 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, remote_id, chat_id, chat_jid, sender, sender_jid, body,
-			timestamp_unix, is_outgoing, status, quoted_message_id, quoted_remote_id,
-			deleted_at, deleted_reason, edited_at
-		FROM messages m
-		WHERE m.chat_id = ?
+		SELECT m.id, m.remote_id, m.chat_id, m.chat_jid, m.sender, m.sender_jid, m.body,
+			m.timestamp_unix, m.is_outgoing, m.status, m.quoted_message_id, m.quoted_remote_id,
+			m.deleted_at, m.deleted_reason, m.edited_at
+		FROM message_fts
+		JOIN messages m ON m.id = message_fts.message_id
+		WHERE message_fts.chat_id = ?
+			AND message_fts MATCH ?
 			AND m.deleted_at = 0
 			AND `+renderableMessageWhereSQL+`
 		ORDER BY m.timestamp_unix ASC, m.id ASC
-	`, chatID)
+	`, chatID, quoteFTSQuery(query))
 	if err != nil {
 		return nil, fmt.Errorf("search messages for %s: %w", chatID, err)
 	}
@@ -2810,7 +2812,7 @@ func quoteFTSQuery(value string) string {
 	quoted := make([]string, 0, len(terms))
 	for _, term := range terms {
 		term = strings.ReplaceAll(term, `"`, `""`)
-		quoted = append(quoted, `"`+term+`"`)
+		quoted = append(quoted, `"`+term+`"*`)
 	}
 	return strings.Join(quoted, " AND ")
 }

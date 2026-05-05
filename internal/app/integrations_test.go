@@ -101,6 +101,37 @@ func TestWriteImageToClipboardReplacesPathAndMIMEPlaceholders(t *testing.T) {
 	}
 }
 
+func TestWriteImageToClipboardRejectsOversizedImage(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.png")
+	if err := os.WriteFile(source, []byte("png"), 0o644); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+	if err := os.Truncate(source, clipboardAttachmentMaxBytes+1); err != nil {
+		t.Fatalf("Truncate(source) error = %v", err)
+	}
+
+	err := writeImageToClipboard(context.Background(), `sh -c "cat >/dev/null"`, store.MediaMetadata{
+		LocalPath: source,
+		MIMEType:  "image/png",
+		FileName:  "source.png",
+	})
+	if !errors.Is(err, errClipboardAttachmentTooLarge) {
+		t.Fatalf("writeImageToClipboard() error = %v, want oversized clipboard rejection", err)
+	}
+}
+
+func TestLimitedBufferRejectsOversizedClipboardPayload(t *testing.T) {
+	buf := &limitedBuffer{limit: 3}
+	n, err := buf.Write([]byte("abcd"))
+	if !errors.Is(err, errClipboardAttachmentTooLarge) {
+		t.Fatalf("limitedBuffer.Write() error = %v, want oversized clipboard rejection", err)
+	}
+	if n != 3 || !buf.exceeded || buf.String() != "abc" {
+		t.Fatalf("limitedBuffer state = n:%d exceeded:%v data:%q", n, buf.exceeded, buf.String())
+	}
+}
+
 func TestAudioPlayerCommandUsesConfiguredTemplate(t *testing.T) {
 	cmd, path, err := audioPlayerCommand(config.Config{
 		AudioPlayerCommand: "sh -c true {path}",

@@ -664,6 +664,23 @@ func TestOverlayManagerSyncEpochIgnoresStalePlacements(t *testing.T) {
 	}
 }
 
+func TestOverlayManagerSyncEpochHonorsCanceledContext(t *testing.T) {
+	var buf bytes.Buffer
+	manager := NewOverlayManagerForWriter(&buf)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.SyncEpoch(ctx, manager.Epoch(), []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/one.jpg"},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SyncEpoch() error = %v, want context canceled", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("canceled SyncEpoch wrote overlay commands:\n%s", buf.String())
+	}
+}
+
 func TestSixelManagerDrawsSkipsAndClearsPlacements(t *testing.T) {
 	var buf bytes.Buffer
 	manager := NewSixelManagerForWriter(&buf)
@@ -728,6 +745,28 @@ func TestSixelManagerSyncEpochIgnoresStalePlacements(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("stale SyncEpoch() wrote output: %q", buf.String())
+	}
+}
+
+func TestSixelManagerSyncEpochHonorsCanceledContext(t *testing.T) {
+	var buf bytes.Buffer
+	manager := NewSixelManagerForWriter(&buf)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := manager.SyncEpoch(ctx, manager.Epoch(), []SixelPlacement{{
+		Identifier: "image-1",
+		X:          1,
+		Y:          2,
+		MaxWidth:   3,
+		MaxHeight:  2,
+		Payload:    []string{"\x1bPqfake\x1b\\"},
+	}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SyncEpoch() error = %v, want context canceled", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("canceled SyncEpoch() wrote output: %q", buf.String())
 	}
 }
 

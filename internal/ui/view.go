@@ -1380,7 +1380,7 @@ func (m Model) renderMessages(width, height int) string {
 	footerWidth := max(1, width-2)
 	footerHeight := min(countLines(m.renderMessageFooter(footerWidth)), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
-	blocks := m.messageBlocks(messages, width, m.visibleOverlayIdentifiers())
+	blocks := m.visibleMessageBlocks(messages, width, messageHeight, m.visibleOverlayIdentifiers())
 	spans := m.messageViewportSpansForHeight(blocks, messages, messageHeight)
 	footer := m.renderMessageFooterWithNotice(footerWidth, m.footerNoticeForViewport(blocks, spans))
 	finalFooterHeight := min(countLines(footer), bodyHeight)
@@ -1422,7 +1422,14 @@ func (m Model) messageBlocks(messages []store.Message, width int, visibleOverlay
 	return m.messageBlocksForRange(messages, width, 0, len(messages), visibleOverlays)
 }
 
+func (m Model) visibleMessageBlocks(messages []store.Message, width, height int, visibleOverlays map[string]bool) []messageBlock {
+	start, end := m.visibleMessageRange(len(messages), height)
+	return m.messageBlocksForRange(messages, width, start, end, visibleOverlays)
+}
+
 func (m Model) messageBlocksForRange(messages []store.Message, width, start, end int, visibleOverlays map[string]bool) []messageBlock {
+	start = clamp(start, 0, len(messages))
+	end = clamp(end, start, len(messages))
 	blocks := make([]messageBlock, 0, end-start)
 	var lastDate string
 	if start > 0 && start <= len(messages) {

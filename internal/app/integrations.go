@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -90,6 +91,9 @@ type imageClipboardCommand struct {
 }
 
 const clipboardFileDropPrefix = "VIMWHAT_FILEDROP:"
+const clipboardAttachmentMaxBytes int64 = 64 << 20
+
+var errClipboardAttachmentTooLarge = errors.New("clipboard attachment exceeds 64 MiB limit")
 
 func pasteImageFromClipboard(paths config.Paths, commandTemplate string) tea.Cmd {
 	return pasteAttachmentFromClipboard(paths, commandTemplate)
@@ -167,13 +171,27 @@ func readAttachmentFromClipboardPathMode(ctx context.Context, candidate imageCli
 		_ = os.Remove(target)
 		return ui.Attachment{}, err
 	}
-	return ui.AttachmentFromPath(target)
+	attachment, err := ui.AttachmentFromPath(target)
+	if err != nil {
+		return ui.Attachment{}, err
+	}
+	if err := validateClipboardAttachmentSize(attachment); err != nil {
+		_ = os.Remove(target)
+		return ui.Attachment{}, err
+	}
+	return attachment, nil
 }
 
 func readAttachmentFromClipboardStdout(ctx context.Context, mediaDir string, argv []string) (ui.Attachment, error) {
-	var stdout bytes.Buffer
-	if err := runClipboardCommand(ctx, argv, nil, &stdout); err != nil {
+	stdout := &limitedBuffer{limit: clipboardAttachmentMaxBytes}
+	if err := runClipboardCommand(ctx, argv, nil, stdout); err != nil {
+		if stdout.exceeded {
+			return ui.Attachment{}, errClipboardAttachmentTooLarge
+		}
 		return ui.Attachment{}, err
+	}
+	if stdout.exceeded {
+		return ui.Attachment{}, errClipboardAttachmentTooLarge
 	}
 	data := stdout.Bytes()
 	if attachment, ok, err := attachmentFromClipboardFileDrop(data); ok || err != nil {
@@ -202,7 +220,15 @@ func readAttachmentFromClipboardStdout(ctx context.Context, mediaDir string, arg
 		_ = os.Remove(tmpPath)
 		return ui.Attachment{}, fmt.Errorf("store clipboard image: %w", err)
 	}
-	return ui.AttachmentFromPath(target)
+	attachment, err := ui.AttachmentFromPath(target)
+	if err != nil {
+		return ui.Attachment{}, err
+	}
+	if err := validateClipboardAttachmentSize(attachment); err != nil {
+		_ = os.Remove(target)
+		return ui.Attachment{}, err
+	}
+	return attachment, nil
 }
 
 func attachmentFromClipboardFileDrop(data []byte) (ui.Attachment, bool, error) {
@@ -216,7 +242,13 @@ func attachmentFromClipboardFileDrop(data []byte) (ui.Attachment, bool, error) {
 		return ui.Attachment{}, true, fmt.Errorf("decode clipboard file path: %w", err)
 	}
 	attachment, err := ui.AttachmentFromPath(string(decoded))
-	return attachment, true, err
+	if err != nil {
+		return ui.Attachment{}, true, err
+	}
+	if err := validateClipboardAttachmentSize(attachment); err != nil {
+		return ui.Attachment{}, true, err
+	}
+	return attachment, true, nil
 }
 
 func writeImageToClipboard(ctx context.Context, commandTemplate string, item store.MediaMetadata) error {
@@ -233,6 +265,9 @@ func writeImageToClipboard(ctx context.Context, commandTemplate string, item sto
 	}
 	if info.IsDir() {
 		return fmt.Errorf("image path is a directory")
+	}
+	if info.Size() > clipboardAttachmentMaxBytes {
+		return errClipboardAttachmentTooLarge
 	}
 
 	mimeType := imageClipboardMIME(item, path)
@@ -277,6 +312,37 @@ func writeImageToClipboard(ctx context.Context, commandTemplate string, item sto
 		return lastErr
 	}
 	return fmt.Errorf("no image clipboard copy command found")
+}
+
+type limitedBuffer struct {
+	bytes.Buffer
+	limit    int64
+	exceeded bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		b.exceeded = true
+		return 0, errClipboardAttachmentTooLarge
+	}
+	remaining := b.limit - int64(b.Buffer.Len())
+	if remaining <= 0 {
+		b.exceeded = true
+		return 0, errClipboardAttachmentTooLarge
+	}
+	if int64(len(p)) <= remaining {
+		return b.Buffer.Write(p)
+	}
+	n, _ := b.Buffer.Write(p[:int(remaining)])
+	b.exceeded = true
+	return n, errClipboardAttachmentTooLarge
+}
+
+func validateClipboardAttachmentSize(attachment ui.Attachment) error {
+	if attachment.SizeBytes > clipboardAttachmentMaxBytes {
+		return errClipboardAttachmentTooLarge
+	}
+	return nil
 }
 
 func imagePasteCommands(commandTemplate, mediaDir string) []imageClipboardCommand {
