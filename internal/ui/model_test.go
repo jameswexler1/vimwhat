@@ -7570,6 +7570,249 @@ func TestKeyMsgRunsPreviewSyncForVisibleOverlay(t *testing.T) {
 	}
 }
 
+func TestAsyncResultMessagesRunPreviewSyncForVisibleOverlay(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*Model)
+		msg   func(Model) tea.Msg
+	}{
+		{
+			name: "draft saved",
+			msg: func(Model) tea.Msg {
+				return draftSavedMsg{ChatID: "chat-1", Err: errors.New("save draft")}
+			},
+		},
+		{
+			name: "mark read finished",
+			msg: func(Model) tea.Msg {
+				return markReadFinishedMsg{ChatID: "chat-1"}
+			},
+		},
+		{
+			name: "reaction finished",
+			msg: func(Model) tea.Msg {
+				return reactionFinishedMsg{Emoji: "ok"}
+			},
+		},
+		{
+			name: "retry finished",
+			msg: func(Model) tea.Msg {
+				return retryMessageFinishedMsg{Err: errors.New("retry")}
+			},
+		},
+		{
+			name: "sticker sent",
+			msg: func(Model) tea.Msg {
+				return stickerSentMsg{ChatID: "chat-1", Err: errors.New("sticker")}
+			},
+		},
+		{
+			name: "history requested",
+			msg: func(Model) tea.Msg {
+				return historyRequestedMsg{ChatID: "chat-1"}
+			},
+		},
+		{
+			name: "message filter applied",
+			setup: func(model *Model) {
+				model.filterGeneration = 7
+				model.messageFilter = "photo"
+			},
+			msg: func(model Model) tea.Msg {
+				return messageFilterAppliedMsg{
+					Generation: 7,
+					ChatID:     "chat-1",
+					Query:      "photo",
+					Messages:   model.messagesByChat["chat-1"],
+				}
+			},
+		},
+		{
+			name: "message filter cleared",
+			setup: func(model *Model) {
+				model.filterGeneration = 7
+				model.messageFilter = ""
+			},
+			msg: func(model Model) tea.Msg {
+				return messageFilterClearedMsg{
+					Generation: 7,
+					ChatID:     "chat-1",
+					Messages:   model.messagesByChat["chat-1"],
+				}
+			},
+		},
+		{
+			name: "mention candidates loaded",
+			setup: func(model *Model) {
+				model.mentionActive = true
+				model.mentionSearchGeneration = 7
+				model.mentionQuery = "a"
+			},
+			msg: func(Model) tea.Msg {
+				return mentionCandidatesLoadedMsg{
+					Generation: 7,
+					ChatID:     "chat-1",
+					Query:      "a",
+				}
+			},
+		},
+		{
+			name: "clipboard attachment pasted",
+			msg: func(Model) tea.Msg {
+				return ClipboardAttachmentPastedMsg{Err: errors.New("paste")}
+			},
+		},
+		{
+			name: "clipboard image copied",
+			msg: func(Model) tea.Msg {
+				return ClipboardImageCopiedMsg{Err: errors.New("copy image")}
+			},
+		},
+		{
+			name: "attachment picked",
+			msg: func(Model) tea.Msg {
+				return AttachmentPickedMsg{Cancelled: true}
+			},
+		},
+		{
+			name: "sticker picked",
+			msg: func(Model) tea.Msg {
+				return StickerPickedMsg{Cancelled: true}
+			},
+		},
+		{
+			name: "media saved",
+			msg: func(Model) tea.Msg {
+				return mediaSavedMsg{Err: errors.New("save media")}
+			},
+		},
+		{
+			name: "audio started",
+			msg: func(model Model) tea.Msg {
+				return audioStartedMsg{Session: model.audioSession, Err: errors.New("audio")}
+			},
+		},
+		{
+			name: "audio finished",
+			msg: func(model Model) tea.Msg {
+				return audioFinishedMsg{Session: model.audioSession, MediaKey: model.audioMediaKey}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := mediaTestModel(localPath, media.BackendUeberzugPP)
+			cacheOverlayPreview(t, &model, localPath)
+			if tt.setup != nil {
+				tt.setup(&model)
+			}
+
+			updated, cmd := model.Update(tt.msg(model))
+			model = updated.(Model)
+			if cmd == nil {
+				t.Fatal("Update() returned nil command, want overlay sync from withPreviewCmd")
+			}
+			if !model.overlaySyncPending || model.overlayPendingSignature == "" {
+				t.Fatalf("overlay pending = %v signature %q, want async-result preview sync", model.overlaySyncPending, model.overlayPendingSignature)
+			}
+		})
+	}
+}
+
+func TestMediaPreviewReadyClearsStaleOverlayPendingSignature(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	cacheOverlayPreview(t, &model, localPath)
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	key := media.PreviewKey(request)
+	preview := model.previewCache[key]
+	staleSignature := overlayPlacementsSignature(model.syncableOverlayPlacements())
+	if staleSignature == "" {
+		t.Fatal("overlay signature is empty before cache removal")
+	}
+	delete(model.previewCache, key)
+	model.previewInflight = map[string]bool{key: true}
+	model.overlaySyncPending = true
+	model.overlayPendingSignature = staleSignature
+
+	updated, cmd := model.Update(mediaPreviewReadyMsg{
+		Key:        key,
+		Generation: model.previewGeneration,
+		Request:    request,
+		Preview:    preview,
+	})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("mediaPreviewReadyMsg returned nil command, want fresh overlay sync")
+	}
+	if !model.overlaySyncPending || model.overlayPendingSignature != staleSignature {
+		t.Fatalf("overlay pending = %v signature %q, want fresh sync for %q", model.overlaySyncPending, model.overlayPendingSignature, staleSignature)
+	}
+}
+
+func TestMediaPreviewReadyClearsStaleSixelPendingSignature(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendSixel)
+	model.sixelWriter = &bytes.Buffer{}
+	model.sixel = media.NewSixelManagerForWriter(&bytes.Buffer{})
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	key := media.PreviewKey(request)
+	preview := media.Preview{
+		Key:             key,
+		MessageID:       "m-1",
+		Kind:            media.KindImage,
+		Backend:         media.BackendSixel,
+		RenderedBackend: media.BackendSixel,
+		Display:         media.PreviewDisplaySixel,
+		Width:           request.Width,
+		Height:          request.Height,
+		Lines:           []string{"\x1bPqfake-sixel\x1b\\"},
+	}
+	model.previewCache[key] = preview
+	staleSignature := media.SixelPlacementsSignature(model.syncableSixelPlacements())
+	if staleSignature == "" {
+		t.Fatal("sixel signature is empty before cache removal")
+	}
+	delete(model.previewCache, key)
+	model.previewInflight = map[string]bool{key: true}
+	model.sixelSyncPending = true
+	model.sixelPendingSignature = staleSignature
+
+	updated, cmd := model.Update(mediaPreviewReadyMsg{
+		Key:        key,
+		Generation: model.previewGeneration,
+		Request:    request,
+		Preview:    preview,
+	})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("mediaPreviewReadyMsg returned nil command, want fresh sixel sync")
+	}
+	if !model.sixelSyncPending || model.sixelPendingSignature != staleSignature {
+		t.Fatalf("sixel pending = %v signature %q, want fresh sync for %q", model.sixelSyncPending, model.sixelPendingSignature, staleSignature)
+	}
+}
+
 func TestSnapshotReloadPausesTerminalOverlays(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {

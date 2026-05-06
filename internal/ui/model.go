@@ -1450,11 +1450,15 @@ func removeMessageFromSlice(messages []store.Message, messageID string) []store.
 	return out
 }
 
+func withPreviewResult(updated tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	next := updated.(Model)
+	return next.withPreviewCmd(cmd)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if token, ok := shiftedEnterTokenFromMsg(msg); ok {
 		updated, cmd := m.handleSpecialKeyToken(token)
-		next := updated.(Model)
-		return next.withPreviewCmd(cmd)
+		return withPreviewResult(updated, cmd)
 	}
 
 	switch msg := msg.(type) {
@@ -1472,15 +1476,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.handleOutgoingMessagePersisted(msg)
 		return next.withPreviewCmd(cmd)
 	case draftSavedMsg:
-		return m.handleDraftSaved(msg), nil
+		return m.handleDraftSaved(msg).withPreviewCmd(nil)
 	case markReadFinishedMsg:
-		return m.handleMarkReadFinished(msg), nil
+		return m.handleMarkReadFinished(msg).withPreviewCmd(nil)
 	case reactionFinishedMsg:
-		return m.handleReactionFinished(msg), nil
+		return m.handleReactionFinished(msg).withPreviewCmd(nil)
 	case retryMessageFinishedMsg:
-		return m.handleRetryMessageFinished(msg), nil
+		return m.handleRetryMessageFinished(msg).withPreviewCmd(nil)
 	case stickerSentMsg:
-		return m.handleStickerSent(msg), nil
+		return m.handleStickerSent(msg).withPreviewCmd(nil)
 	case messagesLoadedMsg:
 		next, cmd := m.handleMessagesLoaded(msg)
 		return next.withPreviewCmd(cmd)
@@ -1488,13 +1492,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.handleOlderMessagesLoaded(msg)
 		return next.withPreviewCmd(cmd)
 	case historyRequestedMsg:
-		return m.handleHistoryRequested(msg), nil
+		return m.handleHistoryRequested(msg).withPreviewCmd(nil)
 	case messageFilterAppliedMsg:
-		return m.handleMessageFilterApplied(msg), nil
+		return m.handleMessageFilterApplied(msg).withPreviewCmd(nil)
 	case messageFilterClearedMsg:
-		return m.handleMessageFilterCleared(msg), nil
+		return m.handleMessageFilterCleared(msg).withPreviewCmd(nil)
 	case mentionCandidatesLoadedMsg:
-		return m.handleMentionCandidatesLoaded(msg), nil
+		return m.handleMentionCandidatesLoaded(msg).withPreviewCmd(nil)
 	case refreshDebouncedMsg:
 		next, cmd := m.handleRefreshDebounced()
 		return next.withPreviewCmd(cmd)
@@ -1546,27 +1550,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case ClipboardAttachmentPastedMsg:
-		return m.handleClipboardAttachmentPasted(msg)
+		return withPreviewResult(m.handleClipboardAttachmentPasted(msg))
 	case ClipboardImageCopiedMsg:
-		return m.handleClipboardImageCopied(msg)
+		return withPreviewResult(m.handleClipboardImageCopied(msg))
 	case AttachmentPickedMsg:
-		return m.handlePickedAttachment(msg)
+		return withPreviewResult(m.handlePickedAttachment(msg))
 	case StickerPickedMsg:
-		return m.handlePickedSticker(msg)
+		return withPreviewResult(m.handlePickedSticker(msg))
 	case mediaPreviewReadyMsg:
-		updated, cmd := m.handleMediaPreviewReady(msg)
-		next := updated.(Model)
-		return next.withPreviewCmd(cmd)
+		return withPreviewResult(m.handleMediaPreviewReady(msg))
 	case mediaDownloadedMsg:
-		updated, cmd := m.handleMediaDownloaded(msg)
-		next := updated.(Model)
-		return next.withPreviewCmd(cmd)
+		return withPreviewResult(m.handleMediaDownloaded(msg))
 	case mediaSavedMsg:
-		return m.handleMediaSaved(msg)
+		return withPreviewResult(m.handleMediaSaved(msg))
 	case audioStartedMsg:
-		return m.handleAudioStarted(msg)
+		return withPreviewResult(m.handleAudioStarted(msg))
 	case audioFinishedMsg:
-		return m.handleAudioFinished(msg)
+		return withPreviewResult(m.handleAudioFinished(msg))
 	case MediaOpenFinishedMsg:
 		m.clearMediaDownloadInFlight(msg.MessageID)
 		if msg.MessageID != "" && strings.TrimSpace(msg.Media.LocalPath) != "" {
@@ -1675,8 +1675,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, batchCmds(cmd, nextPoll)
 	case tea.KeyMsg:
 		updated, cmd := m.handleKey(msg)
-		next := updated.(Model)
-		return next.withPreviewCmd(cmd)
+		return withPreviewResult(updated, cmd)
 	}
 
 	return m, nil
@@ -3967,6 +3966,21 @@ func (m *Model) clearOverlayPause() {
 	}
 }
 
+func (m *Model) invalidateTerminalMediaSync() {
+	if m.overlay != nil {
+		m.overlay.Invalidate()
+	}
+	m.overlaySignature = ""
+	m.overlaySyncPending = false
+	m.overlayPendingSignature = ""
+	if m.sixel != nil {
+		m.sixel.Invalidate()
+	}
+	m.sixelSignature = ""
+	m.sixelSyncPending = false
+	m.sixelPendingSignature = ""
+}
+
 func closeOverlayManagerCmd(manager *media.OverlayManager) tea.Cmd {
 	if manager == nil {
 		return nil
@@ -5087,8 +5101,11 @@ func (m Model) handleMediaPreviewReady(msg mediaPreviewReadyMsg) (tea.Model, tea
 		updatedRequest.ThumbnailPath = msg.Preview.ThumbnailPath
 		m.previewCache[media.PreviewKey(updatedRequest)] = msg.Preview
 	}
-	if msg.Preview.Ready() && !isChatAvatarPreviewRequest(msg.Request) {
-		m.status = fmt.Sprintf("preview ready: %s (%s %s %dx%d)", previewRequestName(msg.Request), msg.Preview.RenderedBackend, msg.Preview.SourceKind, msg.Preview.Width, msg.Preview.Height)
+	if msg.Preview.Ready() {
+		m.invalidateTerminalMediaSync()
+		if !isChatAvatarPreviewRequest(msg.Request) {
+			m.status = fmt.Sprintf("preview ready: %s (%s %s %dx%d)", previewRequestName(msg.Request), msg.Preview.RenderedBackend, msg.Preview.SourceKind, msg.Preview.Width, msg.Preview.Height)
+		}
 	}
 	return m, nil
 }
