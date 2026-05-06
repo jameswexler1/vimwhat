@@ -22,6 +22,7 @@ import (
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
 	"vimwhat/internal/notify"
+	"vimwhat/internal/securefs"
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
 	"vimwhat/internal/whatsapp"
@@ -3570,7 +3571,7 @@ func downloadChatAvatar(ctx context.Context, cacheDir, chatID string, avatar wha
 	if strings.TrimSpace(avatar.URL) == "" {
 		return "", fmt.Errorf("avatar url is required")
 	}
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+	if err := securefs.EnsurePrivateDir(cacheDir); err != nil {
 		return "", fmt.Errorf("create avatar cache dir: %w", err)
 	}
 
@@ -3663,7 +3664,7 @@ func prepareRecentStickerEventMetadata(ctx context.Context, db *store.Store, pat
 		return event, false, nil
 	}
 	dir := recentStickerCacheDir(paths)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := securefs.EnsurePrivateDir(dir); err != nil {
 		return event, false, fmt.Errorf("create sticker cache dir: %w", err)
 	}
 
@@ -3691,7 +3692,7 @@ func downloadRecentStickerFile(ctx context.Context, live WhatsAppLiveSession, pa
 		return event, nil
 	}
 	dir := recentStickerCacheDir(paths)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := securefs.EnsurePrivateDir(dir); err != nil {
 		return event, fmt.Errorf("create sticker cache dir: %w", err)
 	}
 	finalPath := recentStickerCachePath(dir, event)
@@ -3762,7 +3763,7 @@ func storeStickerThumbnail(mediaDir string, event whatsapp.MediaEvent) (string, 
 	if len(event.ThumbnailData) == 0 {
 		return "", fmt.Errorf("sticker thumbnail is empty")
 	}
-	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
+	if err := securefs.EnsurePrivateDir(mediaDir); err != nil {
 		return "", fmt.Errorf("create media dir: %w", err)
 	}
 	sum := sha256.Sum256(append([]byte(event.MessageID), event.ThumbnailData...))
@@ -3839,7 +3840,7 @@ func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLive
 		return mediaItem, err
 	}
 
-	if err := os.MkdirAll(paths.MediaDir, 0o700); err != nil {
+	if err := securefs.EnsurePrivateDir(paths.MediaDir); err != nil {
 		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media cache dir: %w", err))
 	}
 	finalPath := mediaCachePath(paths.MediaDir, messageID, mediaItem)
@@ -4591,6 +4592,7 @@ func printDoctor(env Environment, w io.Writer) {
 		fmt.Sprintf("emoji mode: %s -> %s (TERM=%s UTF-8=%s)", emojiMode, resolvedEmojiMode, emptyAsAuto(os.Getenv("TERM")), yesNo(config.LocaleLooksUTF8())),
 		fmt.Sprintf("terminal env: %s", terminalEnvSummary()),
 	}
+	lines = append(lines, runtimePermissionLines(env.Paths)...)
 	lines = append(lines, ui.ProbeTerminalOutput().Lines()...)
 	lines = append(lines,
 		fmt.Sprintf("image viewer command: %s", emptyAsAuto(env.Config.ImageViewerCommand)),
@@ -4620,6 +4622,61 @@ func printDoctor(env Environment, w io.Writer) {
 	lines = append(lines, env.PreviewReport.Lines()...)
 
 	fmt.Fprintln(w, strings.Join(lines, "\n"))
+}
+
+func runtimePermissionLines(paths config.Paths) []string {
+	statuses := []struct {
+		label  string
+		status securefs.Status
+	}{
+		{label: "config dir", status: securefs.PrivateDirStatus(paths.ConfigDir)},
+		{label: "data dir", status: securefs.PrivateDirStatus(paths.DataDir)},
+		{label: "cache dir", status: securefs.PrivateDirStatus(paths.CacheDir)},
+		{label: "transient dir", status: securefs.PrivateDirStatus(paths.TransientDir)},
+		{label: "avatar cache dir", status: securefs.PrivateDirStatus(paths.AvatarCacheDir)},
+		{label: "media cache dir", status: securefs.PrivateDirStatus(paths.MediaDir)},
+		{label: "preview cache dir", status: securefs.PrivateDirStatus(paths.PreviewCacheDir)},
+		{label: "config file", status: securefs.PrivateFileStatus(paths.ConfigFile)},
+		{label: "database file", status: securefs.PrivateFileStatus(paths.DatabaseFile)},
+		{label: "database wal", status: sqliteSidecarStatus(paths.DatabaseFile, "-wal")},
+		{label: "database shm", status: sqliteSidecarStatus(paths.DatabaseFile, "-shm")},
+		{label: "session file", status: securefs.PrivateFileStatus(paths.SessionFile)},
+		{label: "session wal", status: sqliteSidecarStatus(paths.SessionFile, "-wal")},
+		{label: "session shm", status: sqliteSidecarStatus(paths.SessionFile, "-shm")},
+	}
+
+	lines := []string{"runtime permissions:"}
+	for _, item := range statuses {
+		lines = append(lines, fmt.Sprintf("%s permissions: %s", item.label, permissionStatusSummary(item.status)))
+	}
+	return lines
+}
+
+func sqliteSidecarStatus(path, suffix string) securefs.Status {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return securefs.PrivateFileStatus("")
+	}
+	return securefs.PrivateFileStatus(path + suffix)
+}
+
+func permissionStatusSummary(status securefs.Status) string {
+	if strings.TrimSpace(status.Path) == "" {
+		return "missing path"
+	}
+	if !status.Exists {
+		return "missing"
+	}
+	if status.Warning != "" {
+		return "warning: " + status.Warning
+	}
+	if status.NotApplicable {
+		return "ok (per-user ACL; chmod not applicable)"
+	}
+	if status.OK {
+		return fmt.Sprintf("ok (%04o)", status.Mode)
+	}
+	return "warning: status unavailable"
 }
 
 func emptyAsAuto(value string) string {

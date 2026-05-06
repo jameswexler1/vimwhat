@@ -85,6 +85,8 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   logs,
   non-exported media cache,
   preview cache.
+- App-owned runtime directories and sensitive files are private by default: Unix startup repairs owned dirs to `0700` and config/state/session files to `0600`; Windows keeps the same per-user AppData paths and inherited ACL model.
+- `vimwhat doctor` reports runtime permission diagnostics for config/data/cache/transient paths plus SQLite state/session files and sidecars.
 - Core panes:
   left chat list,
   main message viewport,

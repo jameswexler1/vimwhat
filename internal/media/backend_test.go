@@ -804,6 +804,11 @@ func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	if !strings.HasPrefix(preview.ThumbnailPath, filepath.Join(cacheDir, "thumbs")) {
 		t.Fatalf("thumbnail path = %q, want under cache thumbs", preview.ThumbnailPath)
 	}
+	if info, err := os.Stat(filepath.Dir(preview.ThumbnailPath)); err != nil {
+		t.Fatalf("Stat(thumbnail dir) error = %v", err)
+	} else if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("thumbnail dir mode = %04o, want 0700", got)
+	}
 	if len(preview.Lines) != 1 || preview.Lines[0] != "thumbnail" {
 		t.Fatalf("preview lines = %+v", preview.Lines)
 	}

@@ -5,21 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"vimwhat/internal/securefs"
 )
 
 func EnsureDefaultFile(paths Paths) error {
 	if strings.TrimSpace(paths.ConfigFile) == "" {
 		return nil
 	}
-	if dir := configDirForFile(paths.ConfigFile); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+	if dir := configDirForFile(paths.ConfigFile); dir != "" && dir != "." {
+		if err := securefs.EnsurePrivateDir(dir); err != nil {
 			return fmt.Errorf("create config dir: %w", err)
 		}
 	}
-	file, err := os.OpenFile(paths.ConfigFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	file, err := os.OpenFile(paths.ConfigFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, securefs.PrivateFileMode)
 	if err != nil {
 		if os.IsExist(err) {
-			return nil
+			return securefs.RepairPrivateFile(paths.ConfigFile)
 		}
 		return fmt.Errorf("create default config: %w", err)
 	}

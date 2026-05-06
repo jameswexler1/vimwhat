@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -255,6 +256,13 @@ func TestOpenSessionCreatesUnpairedStore(t *testing.T) {
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil {
+			t.Fatalf("Stat(session) error = %v", err)
+		} else if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("session mode = %04o, want 0600", got)
+		}
 	}
 
 	status, err := CheckSessionStatus(context.Background(), path)

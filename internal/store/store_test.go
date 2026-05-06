@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -16,6 +17,13 @@ func TestStoreRoundTrip(t *testing.T) {
 	store, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(dbPath); err != nil {
+			t.Fatalf("Stat(db) error = %v", err)
+		} else if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("db mode = %04o, want 0600", got)
+		}
 	}
 	t.Cleanup(func() {
 		_ = store.Close()
@@ -202,6 +210,31 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if messages[1].Status != "server_ack" {
 		t.Fatalf("updated message status = %q, want server_ack", messages[1].Status)
+	}
+}
+
+func TestOpenMemoryDatabaseDoesNotCreateFilesystemFile(t *testing.T) {
+	cwd := t.TempDir()
+	oldCWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldCWD)
+	})
+
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:) error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ":memory:")); !os.IsNotExist(err) {
+		t.Fatalf("memory file stat error = %v, want missing", err)
 	}
 }
 

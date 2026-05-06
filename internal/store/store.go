@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
+
+	"vimwhat/internal/securefs"
 
 	_ "modernc.org/sqlite"
 )
@@ -257,6 +260,12 @@ var migrations = []migration{
 }
 
 func Open(path string) (*Store, error) {
+	securePath := storePathShouldUseFilesystemPermissions(path)
+	if securePath {
+		if err := securefs.EnsurePrivateFile(path); err != nil {
+			return nil, err
+		}
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
@@ -275,8 +284,19 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if securePath {
+		if err := securefs.RepairSQLiteArtifacts(path); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 
 	return store, nil
+}
+
+func storePathShouldUseFilesystemPermissions(path string) bool {
+	path = strings.TrimSpace(path)
+	return path != "" && path != ":memory:" && !strings.HasPrefix(path, "file:")
 }
 
 func (s *Store) Close() error {

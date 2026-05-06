@@ -71,6 +71,9 @@ func TestPathsEnsureCreatesTransientDirectories(t *testing.T) {
 		if !info.IsDir() {
 			t.Fatalf("%q is not a directory", dir)
 		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("%q mode = %04o, want 0700", dir, got)
+		}
 	}
 }
 

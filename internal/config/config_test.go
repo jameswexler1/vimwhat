@@ -386,9 +386,21 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 	if _, err := Load(paths); err != nil {
 		t.Fatalf("Load(default config) error = %v", err)
 	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil {
+			t.Fatalf("Stat(default config) error = %v", err)
+		} else if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("default config mode = %04o, want 0600", got)
+		}
+	}
 
 	if err := os.WriteFile(path, []byte(`editor = "ed"`), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatalf("Chmod() error = %v", err)
+		}
 	}
 	if err := EnsureDefaultFile(paths); err != nil {
 		t.Fatalf("EnsureDefaultFile(existing) error = %v", err)
@@ -399,6 +411,13 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 	}
 	if string(unchanged) != `editor = "ed"` {
 		t.Fatalf("existing config was overwritten: %q", string(unchanged))
+	}
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(path); err != nil {
+			t.Fatalf("Stat(existing config) error = %v", err)
+		} else if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("existing config mode = %04o, want repaired 0600", got)
+		}
 	}
 }
 

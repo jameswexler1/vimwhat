@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"vimwhat/internal/securefs"
+
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
@@ -204,9 +206,16 @@ func openContainer(ctx context.Context, sessionPath string, createParent bool) (
 		return nil, fmt.Errorf("session path is required")
 	}
 	if createParent {
-		if err := os.MkdirAll(filepath.Dir(sessionPath), 0o755); err != nil {
-			return nil, fmt.Errorf("create session directory: %w", err)
+		if dir := filepath.Dir(sessionPath); dir != "" && dir != "." {
+			if err := securefs.EnsurePrivateDir(dir); err != nil {
+				return nil, fmt.Errorf("create session directory: %w", err)
+			}
 		}
+		if err := securefs.EnsurePrivateFile(sessionPath); err != nil {
+			return nil, fmt.Errorf("create session database: %w", err)
+		}
+	} else if err := securefs.RepairPrivateFile(sessionPath); err != nil {
+		return nil, err
 	}
 
 	db, err := sql.Open("sqlite", SessionURI(sessionPath))
@@ -221,6 +230,10 @@ func openContainer(ctx context.Context, sessionPath string, createParent bool) (
 	if err := container.Upgrade(ctx); err != nil {
 		_ = container.Close()
 		return nil, fmt.Errorf("initialize whatsapp session database: %w", err)
+	}
+	if err := securefs.RepairSQLiteArtifacts(sessionPath); err != nil {
+		_ = container.Close()
+		return nil, err
 	}
 
 	return container, nil
@@ -1157,12 +1170,19 @@ func (c *Client) DownloadMedia(ctx context.Context, descriptor MediaDownloadDesc
 	if strings.TrimSpace(descriptor.DirectPath) == "" && strings.TrimSpace(descriptor.URL) == "" {
 		return fmt.Errorf("media download source is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return fmt.Errorf("create media download directory: %w", err)
+	if dir := filepath.Dir(targetPath); dir != "" && dir != "." {
+		if err := securefs.EnsurePrivateDir(dir); err != nil {
+			return fmt.Errorf("create media download directory: %w", err)
+		}
 	}
-	file, err := os.Create(targetPath)
+	file, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, securefs.PrivateFileMode)
 	if err != nil {
 		return fmt.Errorf("create media download target: %w", err)
+	}
+	if err := securefs.RepairPrivateFile(targetPath); err != nil {
+		_ = file.Close()
+		_ = os.Remove(targetPath)
+		return err
 	}
 	ok := false
 	defer func() {

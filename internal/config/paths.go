@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"vimwhat/internal/securefs"
 )
 
 const appName = "vimwhat"
@@ -63,25 +65,22 @@ func ResolvePaths() (Paths, error) {
 }
 
 func (p Paths) Ensure() error {
-	dirs := []struct {
-		path string
-		perm os.FileMode
-	}{
-		{path: p.ConfigDir, perm: 0o755},
-		{path: p.DataDir, perm: 0o755},
-		{path: p.CacheDir, perm: 0o755},
-		{path: p.AvatarCacheDir, perm: 0o700},
-		{path: p.TransientDir, perm: 0o700},
-		{path: p.MediaDir, perm: 0o700},
-		{path: p.PreviewCacheDir, perm: 0o700},
+	dirs := []string{
+		p.ConfigDir,
+		p.DataDir,
+		p.CacheDir,
+		p.AvatarCacheDir,
+		p.TransientDir,
+		p.MediaDir,
+		p.PreviewCacheDir,
 	}
 
 	for _, dir := range dirs {
-		if strings.TrimSpace(dir.path) == "" {
+		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		if err := os.MkdirAll(dir.path, dir.perm); err != nil {
-			return fmt.Errorf("create %s: %w", dir.path, err)
+		if err := securefs.EnsurePrivateDir(dir); err != nil {
+			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
 
