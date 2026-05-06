@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDetectExplicitAvailableBackend(t *testing.T) {
@@ -670,6 +671,61 @@ func TestOverlayManagerSyncEpochHonorsCanceledContext(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("canceled SyncEpoch wrote overlay commands:\n%s", buf.String())
+	}
+}
+
+func TestOverlayManagerProcessSurvivesSyncContextCancel(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "ueberzugpp")
+	logPath := filepath.Join(dir, "overlay.log")
+	script := `#!/bin/sh
+log=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "--output" ]; then
+		shift
+		log="$1"
+	fi
+	shift
+done
+if [ -z "$log" ]; then
+	exit 2
+fi
+while IFS= read -r line; do
+	printf '%s\n' "$line" >> "$log"
+done
+printf '%s\n' "__EOF__" >> "$log"
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake ueberzugpp) error = %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager := NewOverlayManager(logPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := manager.SyncEpoch(ctx, manager.Epoch(), []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/one.jpg"},
+	}); err != nil {
+		t.Fatalf("SyncEpoch(first) error = %v", err)
+	}
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := manager.SyncEpoch(context.Background(), manager.Epoch(), []Placement{
+		{Identifier: "media-1", X: 1, Y: 2, MaxWidth: 20, MaxHeight: 8, Path: "/tmp/two.jpg"},
+	}); err != nil {
+		t.Fatalf("SyncEpoch(second after cancel) error = %v", err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(log) error = %v", err)
+	}
+	log := string(data)
+	if !strings.Contains(log, "/tmp/one.jpg") || !strings.Contains(log, "/tmp/two.jpg") {
+		t.Fatalf("fake ueberzugpp log = %q, want both sync commands", log)
 	}
 }
 

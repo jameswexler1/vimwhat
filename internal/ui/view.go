@@ -655,6 +655,15 @@ func messageBlockSpansContain(spans []messageBlockSpan, index int) bool {
 	return false
 }
 
+func messageBlockSpanStartsAtTop(spans []messageBlockSpan, index int) bool {
+	for _, span := range spans {
+		if span.index == index && span.start == 0 && span.start < span.end {
+			return true
+		}
+	}
+	return false
+}
+
 func messageBlockIndexForCursor(blocks []messageBlock, messageIndex int) int {
 	for i, block := range blocks {
 		if block.kind == messageBlockMessage && block.messageIndex == messageIndex {

@@ -236,8 +236,14 @@ func (m *OverlayManager) ensureStarted(ctx context.Context) error {
 		return fmt.Errorf("ueberzug++ output adapter is unavailable")
 	}
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	args := []string{"layer", "--silent", "--parser", "json", "--output", output}
-	cmd := exec.CommandContext(ctx, "ueberzugpp", args...)
+	cmd := exec.Command("ueberzugpp", args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()

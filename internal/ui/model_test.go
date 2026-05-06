@@ -1936,6 +1936,38 @@ func TestMessageNavigationScrollsOnlyAtViewportBoundary(t *testing.T) {
 	}
 }
 
+func TestMessageNavigationIgnoresTerminalOverlayStateWithinViewport(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": numberedMessages(60)},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 18
+	model.focus = FocusMessages
+	model.showCurrentChatLatest()
+	model.overlaySignature = "active-overlay"
+	model.overlaySyncPending = true
+	model.overlayPendingSignature = "pending-overlay"
+	initialScrollTop := model.messageScrollTop
+
+	for i := 0; i < 3; i++ {
+		updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+		model = updated.(Model)
+		if model.messageScrollTop != initialScrollTop {
+			t.Fatalf("messageScrollTop changed after %d in-viewport upward move(s) with overlay state: got %d want %d", i+1, model.messageScrollTop, initialScrollTop)
+		}
+		view := stripANSI(model.renderMessages(model.messagePaneContentWidth(), model.messagePaneContentHeight()))
+		marker := fmt.Sprintf("message %02d", model.messageCursor)
+		if !strings.Contains(view, marker) {
+			t.Fatalf("selected message %q is not visible with overlay state\n%s", marker, view)
+		}
+	}
+}
+
 func TestSearchHighlightsWithoutFilteringMessages(t *testing.T) {
 	searchCalled := false
 	model := NewModel(Options{
@@ -7575,6 +7607,68 @@ func TestPendingMediaOverlayKeepsLowResolutionFallback(t *testing.T) {
 	view := stripANSI(model.View())
 	if !strings.Contains(view, "fallback-overlay-line") {
 		t.Fatalf("View() blanked low-resolution fallback while overlay was pending\n%s", view)
+	}
+}
+
+func TestStalePendingOverlayCommandCannotApplyAfterNewSignature(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.jpg")
+	secondPath := filepath.Join(dir, "second.jpg")
+	if err := os.WriteFile(firstPath, []byte("first"), 0o644); err != nil {
+		t.Fatalf("WriteFile(first) error = %v", err)
+	}
+	if err := os.WriteFile(secondPath, []byte("second"), 0o644); err != nil {
+		t.Fatalf("WriteFile(second) error = %v", err)
+	}
+	var overlay bytes.Buffer
+	model := mediaTestModel(firstPath, media.BackendUeberzugPP)
+	model.overlay = media.NewOverlayManagerForWriter(&overlay)
+	cacheOverlayPreview(t, &model, firstPath)
+
+	firstCmd := model.syncOverlayCmd()
+	if firstCmd == nil {
+		t.Fatal("first syncOverlayCmd() = nil")
+	}
+	firstSignature := model.overlayPendingSignature
+	if firstSignature == "" {
+		t.Fatal("first overlay pending signature is empty")
+	}
+
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	key := media.PreviewKey(request)
+	preview := model.previewCache[key]
+	preview.SourcePath = secondPath
+	model.previewCache[key] = preview
+
+	secondCmd := model.syncOverlayCmd()
+	if secondCmd == nil {
+		t.Fatal("second syncOverlayCmd() = nil")
+	}
+	if model.overlayPendingSignature == firstSignature {
+		t.Fatal("second overlay pending signature did not change")
+	}
+
+	staleMsg, ok := firstCmd().(mediaOverlayMsg)
+	if !ok {
+		t.Fatalf("first command message = %T, want mediaOverlayMsg", staleMsg)
+	}
+	updated, _ := model.Update(staleMsg)
+	model = updated.(Model)
+	if model.overlaySignature == firstSignature {
+		t.Fatal("stale overlay result became active")
+	}
+
+	model = applyOverlayCmd(t, model, secondCmd)
+	log := overlay.String()
+	if strings.Contains(log, firstPath) {
+		t.Fatalf("stale overlay command wrote first placement:\n%s", log)
+	}
+	if !strings.Contains(log, secondPath) {
+		t.Fatalf("fresh overlay command did not write second placement:\n%s", log)
 	}
 }
 

@@ -3842,12 +3842,17 @@ func (m *Model) keepMessageCursorNearViewport() {
 		m.clearNewMessagesBelow(m.currentChat().ID)
 		return
 	}
-	if m.messageCursor+1 < m.messageScrollTop && m.terminalMediaSyncActive() {
-		m.messageScrollTop = m.messageCursor
-		return
-	}
 	if scrollTop, ok := m.messageScrollTopWithCursorVisible(); ok {
 		m.messageScrollTop = scrollTop
+		if m.messageCursor+1 < m.messageScrollTop &&
+			m.terminalMessageMediaSyncActive() &&
+			!m.messageCursorBlockStartsAtTopVisible() {
+			m.messageScrollTop = m.messageCursor
+		}
+		return
+	}
+	if m.messageCursor < m.messageScrollTop {
+		m.messageScrollTop = m.messageCursor
 		return
 	}
 	if m.messageCursor > m.messageScrollTop+2 {
@@ -3879,6 +3884,27 @@ func (m Model) messageScrollTopWithCursorVisible() (int, bool) {
 	target := adjustedMessageScrollTop(blocks, localScrollTop, localCursor, height)
 	target = dividerViewportScrollTop(blocks, target, localCursor, height)
 	return clamp(blocks[target].messageIndex, 0, len(messages)-1), true
+}
+
+func (m Model) messageCursorBlockStartsAtTopVisible() bool {
+	width := m.messagePaneContentWidth()
+	height := m.messageViewportHeight()
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	messages := m.currentMessages()
+	if len(messages) == 0 {
+		return true
+	}
+	blocks := m.visibleMessageBlocks(messages, width, height, nil)
+	if len(blocks) == 0 {
+		return true
+	}
+	localCursor := messageBlockIndexForCursor(blocks, clamp(m.messageCursor, 0, len(messages)-1))
+	localScrollTop := messageBlockIndexForScrollTop(blocks, clamp(m.messageScrollTop, 0, len(messages)-1))
+	localScrollTop = dividerViewportScrollTop(blocks, localScrollTop, localCursor, height)
+	spans := messageViewportSpans(blocks, localScrollTop, localCursor, height)
+	return messageBlockSpanStartsAtTop(spans, localCursor)
 }
 
 func (m *Model) showCurrentChatLatest() {
@@ -3994,6 +4020,25 @@ func (m Model) terminalMediaSyncActive() bool {
 		m.sixelSyncPending ||
 		strings.TrimSpace(m.overlaySignature) != "" ||
 		strings.TrimSpace(m.sixelSignature) != ""
+}
+
+func (m Model) terminalMessageMediaSyncActive() bool {
+	return m.terminalMediaSyncActive() &&
+		(len(m.visibleMediaPlacements()) > 0 || len(m.visibleSixelMediaPlacements()) > 0)
+}
+
+func (m *Model) invalidateStaleOverlaySync(nextSignature string) {
+	if !m.overlaySyncPending || nextSignature == m.overlayPendingSignature || m.overlay == nil {
+		return
+	}
+	m.overlay.Invalidate()
+}
+
+func (m *Model) invalidateStaleSixelSync(nextSignature string) {
+	if !m.sixelSyncPending || nextSignature == m.sixelPendingSignature || m.sixel == nil {
+		return
+	}
+	m.sixel.Invalidate()
 }
 
 func batchCmds(cmds ...tea.Cmd) tea.Cmd {
@@ -4207,6 +4252,7 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.overlay == nil {
 		m.overlay = media.NewOverlayManager(m.previewReport.UeberzugPPOutput)
 	}
+	m.invalidateStaleOverlaySync(signature)
 	m.overlaySyncPending = true
 	m.overlayPendingSignature = signature
 	manager := m.overlay
@@ -4232,6 +4278,7 @@ func (m *Model) syncEmptyOverlayCmd() tea.Cmd {
 		m.overlayPendingSignature = ""
 		return nil
 	}
+	m.invalidateStaleOverlaySync(signature)
 	m.overlaySyncPending = true
 	m.overlayPendingSignature = signature
 	manager := m.overlay
@@ -4268,6 +4315,7 @@ func (m *Model) clearOverlayCmd() tea.Cmd {
 	if signature == m.overlaySignature || (m.overlaySyncPending && signature == m.overlayPendingSignature) {
 		return nil
 	}
+	m.invalidateStaleOverlaySync(signature)
 	m.overlaySyncPending = true
 	m.overlayPendingSignature = signature
 	manager := m.overlay
@@ -4304,6 +4352,7 @@ func (m *Model) syncSixelCmd() tea.Cmd {
 		m.sixelPendingSignature = ""
 		return nil
 	}
+	m.invalidateStaleSixelSync(signature)
 	m.sixelSyncPending = true
 	m.sixelPendingSignature = signature
 	manager := m.sixel
@@ -4355,6 +4404,7 @@ func (m *Model) clearSixelCmd() tea.Cmd {
 	if signature == m.sixelSignature || (m.sixelSyncPending && signature == m.sixelPendingSignature) {
 		return nil
 	}
+	m.invalidateStaleSixelSync(signature)
 	m.sixelSyncPending = true
 	m.sixelPendingSignature = signature
 	manager := m.sixel
