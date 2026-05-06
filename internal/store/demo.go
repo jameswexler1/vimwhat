@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"vimwhat/internal/securefs"
 )
 
 func (s *Store) SeedDemoData(ctx context.Context) error {
@@ -232,18 +230,14 @@ func (s *Store) ClearDemoData(ctx context.Context) error {
 
 func (s *Store) ensureDemoImage() (string, int64, error) {
 	dir := s.demoMediaDir()
-	if err := securefs.EnsurePrivateDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", 0, fmt.Errorf("create demo media dir: %w", err)
 	}
 
 	path := filepath.Join(dir, "vimwhat-demo.png")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, securefs.PrivateFileMode)
+	file, err := os.Create(path)
 	if err != nil {
 		return "", 0, fmt.Errorf("create demo image: %w", err)
-	}
-	if err := securefs.RepairPrivateFile(path); err != nil {
-		_ = file.Close()
-		return "", 0, err
 	}
 	defer file.Close()
 

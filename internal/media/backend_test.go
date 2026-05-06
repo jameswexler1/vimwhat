@@ -806,8 +806,8 @@ func TestPreviewerGeneratesVideoThumbnail(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Dir(preview.ThumbnailPath)); err != nil {
 		t.Fatalf("Stat(thumbnail dir) error = %v", err)
-	} else if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("thumbnail dir mode = %04o, want 0700", got)
+	} else if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("thumbnail dir mode = %04o, want 0755", got)
 	}
 	if len(preview.Lines) != 1 || preview.Lines[0] != "thumbnail" {
 		t.Fatalf("preview lines = %+v", preview.Lines)

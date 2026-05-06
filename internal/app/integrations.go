@@ -20,7 +20,6 @@ import (
 	"vimwhat/internal/commandline"
 	"vimwhat/internal/config"
 	"vimwhat/internal/media"
-	"vimwhat/internal/securefs"
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
 )
@@ -122,7 +121,7 @@ func readAttachmentFromClipboard(ctx context.Context, paths config.Paths, comman
 	if strings.TrimSpace(paths.MediaDir) == "" {
 		return ui.Attachment{}, fmt.Errorf("media cache dir is required")
 	}
-	if err := securefs.EnsurePrivateDir(paths.MediaDir); err != nil {
+	if err := os.MkdirAll(paths.MediaDir, 0o700); err != nil {
 		return ui.Attachment{}, fmt.Errorf("create media cache dir: %w", err)
 	}
 
@@ -641,7 +640,7 @@ func prepareStickerPickerFiles(paths config.Paths, stickers []store.RecentSticke
 		root = os.TempDir()
 	}
 	parent := filepath.Join(root, "stickers")
-	if err := securefs.EnsurePrivateDir(parent); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", nil, nil, fmt.Errorf("create sticker picker root: %w", err)
 	}
 	dir, err := os.MkdirTemp(parent, "picker-*")
@@ -668,7 +667,7 @@ func createStickerChooserFile(paths config.Paths) (string, error) {
 	root := strings.TrimSpace(paths.TransientDir)
 	if root == "" {
 		root = os.TempDir()
-	} else if err := securefs.EnsurePrivateDir(root); err != nil {
+	} else if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("create sticker chooser dir: %w", err)
 	}
 	chooser, err := os.CreateTemp(root, "vimwhat-sticker-chooser-*")
@@ -731,7 +730,7 @@ func prepareNsxivStickerEnterHook(paths config.Paths) (string, error) {
 		root = os.TempDir()
 	}
 	parent := filepath.Join(root, "stickers")
-	if err := securefs.EnsurePrivateDir(parent); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", fmt.Errorf("create nsxiv sticker hook root: %w", err)
 	}
 	configRoot, err := os.MkdirTemp(parent, "nsxiv-config-*")
@@ -739,7 +738,7 @@ func prepareNsxivStickerEnterHook(paths config.Paths) (string, error) {
 		return "", fmt.Errorf("create nsxiv sticker hook config: %w", err)
 	}
 	execDir := filepath.Join(configRoot, "nsxiv", "exec")
-	if err := securefs.EnsurePrivateDir(execDir); err != nil {
+	if err := os.MkdirAll(execDir, 0o700); err != nil {
 		_ = os.RemoveAll(configRoot)
 		return "", fmt.Errorf("create nsxiv sticker hook dir: %w", err)
 	}

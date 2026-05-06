@@ -3571,7 +3571,7 @@ func downloadChatAvatar(ctx context.Context, cacheDir, chatID string, avatar wha
 	if strings.TrimSpace(avatar.URL) == "" {
 		return "", fmt.Errorf("avatar url is required")
 	}
-	if err := securefs.EnsurePrivateDir(cacheDir); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", fmt.Errorf("create avatar cache dir: %w", err)
 	}
 
@@ -3664,7 +3664,7 @@ func prepareRecentStickerEventMetadata(ctx context.Context, db *store.Store, pat
 		return event, false, nil
 	}
 	dir := recentStickerCacheDir(paths)
-	if err := securefs.EnsurePrivateDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return event, false, fmt.Errorf("create sticker cache dir: %w", err)
 	}
 
@@ -3692,7 +3692,7 @@ func downloadRecentStickerFile(ctx context.Context, live WhatsAppLiveSession, pa
 		return event, nil
 	}
 	dir := recentStickerCacheDir(paths)
-	if err := securefs.EnsurePrivateDir(dir); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return event, fmt.Errorf("create sticker cache dir: %w", err)
 	}
 	finalPath := recentStickerCachePath(dir, event)
@@ -3763,7 +3763,7 @@ func storeStickerThumbnail(mediaDir string, event whatsapp.MediaEvent) (string, 
 	if len(event.ThumbnailData) == 0 {
 		return "", fmt.Errorf("sticker thumbnail is empty")
 	}
-	if err := securefs.EnsurePrivateDir(mediaDir); err != nil {
+	if err := os.MkdirAll(mediaDir, 0o700); err != nil {
 		return "", fmt.Errorf("create media dir: %w", err)
 	}
 	sum := sha256.Sum256(append([]byte(event.MessageID), event.ThumbnailData...))
@@ -3840,7 +3840,7 @@ func downloadRemoteMedia(ctx context.Context, db *store.Store, live WhatsAppLive
 		return mediaItem, err
 	}
 
-	if err := securefs.EnsurePrivateDir(paths.MediaDir); err != nil {
+	if err := os.MkdirAll(paths.MediaDir, 0o700); err != nil {
 		return failMediaDownload(ctx, db, mediaItem, fmt.Errorf("create media cache dir: %w", err))
 	}
 	finalPath := mediaCachePath(paths.MediaDir, messageID, mediaItem)
@@ -4631,11 +4631,6 @@ func runtimePermissionLines(paths config.Paths) []string {
 	}{
 		{label: "config dir", status: securefs.PrivateDirStatus(paths.ConfigDir)},
 		{label: "data dir", status: securefs.PrivateDirStatus(paths.DataDir)},
-		{label: "cache dir", status: securefs.PrivateDirStatus(paths.CacheDir)},
-		{label: "transient dir", status: securefs.PrivateDirStatus(paths.TransientDir)},
-		{label: "avatar cache dir", status: securefs.PrivateDirStatus(paths.AvatarCacheDir)},
-		{label: "media cache dir", status: securefs.PrivateDirStatus(paths.MediaDir)},
-		{label: "preview cache dir", status: securefs.PrivateDirStatus(paths.PreviewCacheDir)},
 		{label: "config file", status: securefs.PrivateFileStatus(paths.ConfigFile)},
 		{label: "database file", status: securefs.PrivateFileStatus(paths.DatabaseFile)},
 		{label: "database wal", status: sqliteSidecarStatus(paths.DatabaseFile, "-wal")},
@@ -4649,6 +4644,7 @@ func runtimePermissionLines(paths config.Paths) []string {
 	for _, item := range statuses {
 		lines = append(lines, fmt.Sprintf("%s permissions: %s", item.label, permissionStatusSummary(item.status)))
 	}
+	lines = append(lines, "transient media permissions: compatibility-managed for external preview, opener, picker, and download helpers")
 	return lines
 }
 

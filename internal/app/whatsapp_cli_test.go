@@ -3836,6 +3836,9 @@ func TestPrintDoctorUsesWhatsAppSessionStatus(t *testing.T) {
 	if !strings.Contains(out.String(), "runtime permissions:") || !strings.Contains(out.String(), "database file permissions:") {
 		t.Fatalf("doctor output = %q, want runtime permission diagnostics", out.String())
 	}
+	if !strings.Contains(out.String(), "transient media permissions: compatibility-managed") {
+		t.Fatalf("doctor output = %q, want transient media compatibility note", out.String())
+	}
 	if !strings.Contains(out.String(), "requested notification backend:") || !strings.Contains(out.String(), "notification delivery path:") {
 		t.Fatalf("doctor output = %q, want notification diagnostics", out.String())
 	}

@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"vimwhat/internal/securefs"
 )
 
 type Kind string
@@ -224,7 +222,7 @@ func (p Previewer) previewSource(ctx context.Context, req PreviewRequest, kind K
 	if !hasCommand("ffmpeg") {
 		return "", "", false, fmt.Errorf("ffmpeg not found")
 	}
-	if err := securefs.EnsurePrivateDir(filepath.Dir(thumbnailPath)); err != nil {
+	if err := os.MkdirAll(filepath.Dir(thumbnailPath), 0o755); err != nil {
 		return "", "", false, fmt.Errorf("create preview cache: %w", err)
 	}
 

@@ -63,16 +63,27 @@ func TestPathsEnsureCreatesTransientDirectories(t *testing.T) {
 		t.Fatalf("Ensure() error = %v", err)
 	}
 
-	for _, dir := range []string{paths.ConfigDir, paths.DataDir, paths.CacheDir, paths.AvatarCacheDir, paths.TransientDir, paths.MediaDir, paths.PreviewCacheDir} {
-		info, err := os.Stat(dir)
+	for _, dir := range []struct {
+		path string
+		perm os.FileMode
+	}{
+		{path: paths.ConfigDir, perm: 0o700},
+		{path: paths.DataDir, perm: 0o700},
+		{path: paths.CacheDir, perm: 0o755},
+		{path: paths.AvatarCacheDir, perm: 0o700},
+		{path: paths.TransientDir, perm: 0o700},
+		{path: paths.MediaDir, perm: 0o700},
+		{path: paths.PreviewCacheDir, perm: 0o700},
+	} {
+		info, err := os.Stat(dir.path)
 		if err != nil {
-			t.Fatalf("Stat(%q) error = %v", dir, err)
+			t.Fatalf("Stat(%q) error = %v", dir.path, err)
 		}
 		if !info.IsDir() {
-			t.Fatalf("%q is not a directory", dir)
+			t.Fatalf("%q is not a directory", dir.path)
 		}
-		if got := info.Mode().Perm(); got != 0o700 {
-			t.Fatalf("%q mode = %04o, want 0700", dir, got)
+		if got := info.Mode().Perm(); got != dir.perm {
+			t.Fatalf("%q mode = %04o, want %04o", dir.path, got, dir.perm)
 		}
 	}
 }

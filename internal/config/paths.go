@@ -65,22 +65,35 @@ func ResolvePaths() (Paths, error) {
 }
 
 func (p Paths) Ensure() error {
-	dirs := []string{
+	privateDirs := []string{
 		p.ConfigDir,
 		p.DataDir,
-		p.CacheDir,
-		p.AvatarCacheDir,
-		p.TransientDir,
-		p.MediaDir,
-		p.PreviewCacheDir,
 	}
-
-	for _, dir := range dirs {
+	for _, dir := range privateDirs {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
 		if err := securefs.EnsurePrivateDir(dir); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
+		}
+	}
+
+	compatDirs := []struct {
+		path string
+		perm os.FileMode
+	}{
+		{path: p.CacheDir, perm: 0o755},
+		{path: p.AvatarCacheDir, perm: 0o700},
+		{path: p.TransientDir, perm: 0o700},
+		{path: p.MediaDir, perm: 0o700},
+		{path: p.PreviewCacheDir, perm: 0o700},
+	}
+	for _, dir := range compatDirs {
+		if strings.TrimSpace(dir.path) == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir.path, dir.perm); err != nil {
+			return fmt.Errorf("create %s: %w", dir.path, err)
 		}
 	}
 

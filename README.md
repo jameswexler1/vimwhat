@@ -128,7 +128,7 @@ Unblock-File (Join-Path $dir "vimwhat.exe") -ErrorAction SilentlyContinue
 
 ## Runtime state
 
-Runtime state is kept out of the repository. App-owned config, data, cache, session, media-cache, and preview-cache paths are private by default. On Unix-like systems, vimwhat creates and repairs app-owned directories as `0700` and sensitive app-owned files such as `config.toml`, `state.sqlite3`, and `whatsapp-session.sqlite3` as `0600`. On Windows, vimwhat stores state under the normal per-user AppData locations and relies on inherited per-user ACLs. Run `vimwhat doctor` to see runtime permission diagnostics.
+Runtime state is kept out of the repository. Durable local state is private by default. On Unix-like systems, vimwhat creates and repairs the config/data directories as `0700` and sensitive files such as `config.toml`, `state.sqlite3`, and `whatsapp-session.sqlite3` as `0600`. Transient media, sticker, and preview caches are compatibility-managed because they are passed to external preview, opener, picker, and download helpers. On Windows, vimwhat stores state under the normal per-user AppData locations and relies on inherited per-user ACLs. Run `vimwhat doctor` to see durable-state permission diagnostics.
 
 Linux:
 
@@ -148,7 +148,7 @@ Windows:
 - Non-exported chat media cache: `%TEMP%\vimwhat-*\media`
 - Generated preview cache: `%TEMP%\vimwhat-*\preview`
 
-Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Existing Unix installs are repaired in place on startup where vimwhat owns the path. Files saved explicitly with the configured save-media key go to the configured downloads directory and are not part of the transient cache.
+Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Existing Unix durable-state files are repaired in place on startup where vimwhat owns the path. Files saved explicitly with the configured save-media key go to the configured downloads directory and are not part of the transient cache.
 
 On first run, `vimwhat` creates the native config file with the full default configuration so it can be edited in place. Linux defaults keep the existing Unix tools; Windows defaults use native PowerShell, clipboard, and shell opener commands. A Linux-oriented baseline is checked in as `config.example.toml`.
 
