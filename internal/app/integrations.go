@@ -852,6 +852,33 @@ func openMedia(cfg config.Config, item store.MediaMetadata) tea.Cmd {
 	})
 }
 
+func openMediaDetached(cfg config.Config, item store.MediaMetadata) tea.Cmd {
+	cmd, path, err := mediaOpenCommand(cfg, item)
+	if err != nil {
+		return func() tea.Msg {
+			return ui.MediaOpenFinishedMsg{Path: path, Err: err}
+		}
+	}
+	return func() tea.Msg {
+		err := startDetachedProcess(cmd)
+		return ui.MediaOpenFinishedMsg{Path: path, Err: err}
+	}
+}
+
+func startDetachedProcess(cmd *exec.Cmd) error {
+	platformPrepareDetachedCommand(cmd)
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start media opener: %w", err)
+	}
+	if err := cmd.Process.Release(); err != nil {
+		return fmt.Errorf("release media opener: %w", err)
+	}
+	return nil
+}
+
 type startedAudioProcess struct {
 	cmd *exec.Cmd
 }

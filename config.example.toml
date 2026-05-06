@@ -5,7 +5,7 @@
 # - Windows: %APPDATA%\vimwhat\config.toml
 # Leave command fields empty to use built-in platform auto defaults.
 # Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.
-# Composer Shift+Enter only works when the terminal reports it distinctly; ctrl+j is the reliable newline fallback.
+# Shift+Enter bindings only work when the terminal reports it distinctly; ctrl+j is the reliable composer newline fallback.
 
 editor = "nvim"
 preview_backend = "auto"
@@ -60,6 +60,7 @@ key_normal_go_top = "g"
 key_normal_go_bottom = "G"
 key_normal_open = "enter"
 key_normal_open_media = "o"
+key_normal_open_media_detached = "shift+enter"
 key_normal_yank_message = "y"
 key_normal_edit_message = "leader e"
 key_normal_pick_sticker = "leader t"

@@ -5,6 +5,7 @@ package app
 import (
 	"os"
 	"os/exec"
+	"syscall"
 
 	"vimwhat/internal/media"
 	"vimwhat/internal/store"
@@ -71,4 +72,8 @@ func platformAutoOpenCommands(item store.MediaMetadata, path string) [][]string 
 	default:
 		return [][]string{{"xdg-open", path}, {"nsxiv", path}, {"mpv", path}}
 	}
+}
+
+func platformPrepareDetachedCommand(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

@@ -398,6 +398,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		OpenMedia: func(media store.MediaMetadata) tea.Cmd {
 			return openMedia(env.Config, media)
 		},
+		OpenMediaDetached: func(media store.MediaMetadata) tea.Cmd {
+			return openMediaDetached(env.Config, media)
+		},
 		StartAudio: func(media store.MediaMetadata) (ui.AudioProcess, error) {
 			return startAudio(env.Config, media)
 		},

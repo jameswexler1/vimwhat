@@ -151,6 +151,67 @@ func TestAudioPlayerCommandUsesConfiguredTemplate(t *testing.T) {
 	}
 }
 
+func TestOpenMediaDetachedStartsConfiguredCommand(t *testing.T) {
+	dir := t.TempDir()
+	viewer := filepath.Join(dir, "viewer")
+	logPath := filepath.Join(dir, "opened.txt")
+	mediaPath := filepath.Join(dir, "photo.jpg")
+	if err := os.WriteFile(mediaPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile(media) error = %v", err)
+	}
+	script := "#!/bin/sh\nprintf '%s' \"$1\" > \"$2\"\n"
+	if err := os.WriteFile(viewer, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(viewer) error = %v", err)
+	}
+
+	msg := openMediaDetached(config.Config{
+		ImageViewerCommand: viewer + " {path} " + logPath,
+	}, store.MediaMetadata{
+		LocalPath: mediaPath,
+		MIMEType:  "image/jpeg",
+		FileName:  "photo.jpg",
+	})()
+	finished, ok := msg.(ui.MediaOpenFinishedMsg)
+	if !ok {
+		t.Fatalf("openMediaDetached() message = %T, want MediaOpenFinishedMsg", msg)
+	}
+	if finished.Err != nil {
+		t.Fatalf("openMediaDetached() error = %v", finished.Err)
+	}
+	if finished.Path != mediaPath {
+		t.Fatalf("finished path = %q, want %q", finished.Path, mediaPath)
+	}
+
+	var data []byte
+	var err error
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		data, err = os.ReadFile(logPath)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("ReadFile(log) error = %v", err)
+	}
+	if string(data) != mediaPath {
+		t.Fatalf("detached viewer log = %q, want %q", string(data), mediaPath)
+	}
+}
+
+func TestOpenMediaDetachedReportsMissingLocalPath(t *testing.T) {
+	msg := openMediaDetached(config.Config{}, store.MediaMetadata{
+		MIMEType: "image/jpeg",
+		FileName: "photo.jpg",
+	})()
+	finished, ok := msg.(ui.MediaOpenFinishedMsg)
+	if !ok {
+		t.Fatalf("openMediaDetached() message = %T, want MediaOpenFinishedMsg", msg)
+	}
+	if finished.Err == nil || !strings.Contains(finished.Err.Error(), "not downloaded") {
+		t.Fatalf("openMediaDetached() error = %v, want not downloaded", finished.Err)
+	}
+}
+
 func TestStickerPickerCandidatesUseCachedRenderableStickers(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))

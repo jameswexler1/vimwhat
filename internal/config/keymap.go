@@ -43,6 +43,7 @@ type Keymap struct {
 	NormalGoBottom           string
 	NormalOpen               string
 	NormalOpenMedia          string
+	NormalOpenMediaDetached  string
 	NormalYankMessage        string
 	NormalEditMessage        string
 	NormalPickSticker        string
@@ -131,6 +132,7 @@ func DefaultKeymap() Keymap {
 		NormalGoBottom:           "G",
 		NormalOpen:               "enter",
 		NormalOpenMedia:          "o",
+		NormalOpenMediaDetached:  "shift+enter",
 		NormalYankMessage:        "y",
 		NormalEditMessage:        "leader e",
 		NormalPickSticker:        "leader t",
@@ -256,6 +258,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalOpenMedia == "" {
 		input.NormalOpenMedia = defaults.NormalOpenMedia
+	}
+	if input.NormalOpenMediaDetached == "" {
+		input.NormalOpenMediaDetached = defaults.NormalOpenMediaDetached
 	}
 	if input.NormalYankMessage == "" {
 		input.NormalYankMessage = defaults.NormalYankMessage
@@ -429,6 +434,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_go_bottom", Mode: KeyModeNormal, Value: k.NormalGoBottom},
 		{Name: "key_normal_open", Mode: KeyModeNormal, Value: k.NormalOpen},
 		{Name: "key_normal_open_media", Mode: KeyModeNormal, Value: k.NormalOpenMedia},
+		{Name: "key_normal_open_media_detached", Mode: KeyModeNormal, Value: k.NormalOpenMediaDetached},
 		{Name: "key_normal_yank_message", Mode: KeyModeNormal, Value: k.NormalYankMessage},
 		{Name: "key_normal_edit_message", Mode: KeyModeNormal, Value: k.NormalEditMessage},
 		{Name: "key_normal_pick_sticker", Mode: KeyModeNormal, Value: k.NormalPickSticker},
@@ -531,6 +537,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalOpen = normalized
 	case "key_normal_open_media":
 		k.NormalOpenMedia = normalized
+	case "key_normal_open_media_detached":
+		k.NormalOpenMediaDetached = normalized
 	case "key_normal_yank_message":
 		k.NormalYankMessage = normalized
 	case "key_normal_edit_message":

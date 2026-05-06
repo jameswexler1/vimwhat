@@ -2774,6 +2774,7 @@ func (m Model) renderHelp(width int) string {
 		Rows: []helpRow{
 			{Key: key(keys.NormalOpen), Action: "preview or open selected row"},
 			{Key: key(keys.NormalOpenMedia), Action: "open selected media"},
+			{Key: key(keys.NormalOpenMediaDetached), Action: "open media in detached window"},
 			{Key: key(keys.NormalYankMessage), Action: "yank selected message"},
 			{Key: key(keys.NormalEditMessage), Action: "edit outgoing text"},
 			{Key: key(keys.NormalPickSticker), Action: "pick recent sticker"},

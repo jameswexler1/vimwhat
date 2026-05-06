@@ -368,6 +368,7 @@ type Options struct {
 	PickAttachment               func() tea.Cmd
 	PickSticker                  func() tea.Cmd
 	OpenMedia                    func(media store.MediaMetadata) tea.Cmd
+	OpenMediaDetached            func(media store.MediaMetadata) tea.Cmd
 	StartAudio                   func(media store.MediaMetadata) (AudioProcess, error)
 	DeleteMessage                func(messageID string) error
 	DeleteMessageForEveryone     func(message store.Message) tea.Cmd
@@ -506,6 +507,7 @@ type Model struct {
 	pickAttachment               func() tea.Cmd
 	pickSticker                  func() tea.Cmd
 	openMedia                    func(media store.MediaMetadata) tea.Cmd
+	openMediaDetached            func(media store.MediaMetadata) tea.Cmd
 	startAudio                   func(media store.MediaMetadata) (AudioProcess, error)
 	deleteMessage                func(messageID string) error
 	deleteMessageForEveryone     func(message store.Message) tea.Cmd
@@ -642,6 +644,7 @@ func NewModel(opts Options) Model {
 		pickAttachment:               opts.PickAttachment,
 		pickSticker:                  opts.PickSticker,
 		openMedia:                    opts.OpenMedia,
+		openMediaDetached:            opts.OpenMediaDetached,
 		startAudio:                   opts.StartAudio,
 		deleteMessage:                opts.DeleteMessage,
 		deleteMessageForEveryone:     opts.DeleteMessageForEveryone,
@@ -1724,6 +1727,12 @@ func (m Model) handleSpecialKeyToken(token string) (tea.Model, tea.Cmd) {
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
 	}
+	if m.mode == ModeNormal && !m.helpVisible && !m.inlineFallbackPrompt && !m.syncOverlay.Visible && !m.leaderPending {
+		action := m.normalActionForToken(token)
+		if action != "" {
+			return m.runNormalAction(action, m.consumeCount())
+		}
+	}
 	return m, nil
 }
 
@@ -1787,6 +1796,7 @@ const (
 	normalActionGoBottom          = "go_bottom"
 	normalActionOpen              = "open"
 	normalActionOpenMedia         = "open_media"
+	normalActionOpenMediaDetached = "open_media_detached"
 	normalActionYankMessage       = "yank_message"
 	normalActionEditMessage       = "edit_message"
 	normalActionPickSticker       = "pick_sticker"
@@ -1801,66 +1811,19 @@ const (
 )
 
 func (m Model) normalActionForKey(msg tea.KeyMsg) string {
-	keys := m.config.Keymap
-	switch {
-	case m.keyMatches(msg, keys.NormalQuit):
-		return normalActionQuit
-	case m.keyMatches(msg, keys.NormalHelp):
-		return normalActionHelp
-	case m.keyMatches(msg, keys.NormalInsert):
-		return normalActionInsert
-	case m.keyMatches(msg, keys.NormalReply):
-		return normalActionReply
-	case m.keyMatches(msg, keys.NormalRetryFailedMedia):
-		return normalActionRetryFailedMedia
-	case m.keyMatches(msg, keys.NormalVisual):
-		return normalActionVisual
-	case m.keyMatches(msg, keys.NormalCommand):
-		return normalActionCommand
-	case m.keyMatches(msg, keys.NormalSearch):
-		return normalActionSearch
-	case m.keyMatches(msg, keys.NormalFocusNext):
-		return normalActionFocusNext
-	case m.keyMatches(msg, keys.NormalFocusPrevious):
-		return normalActionFocusPrevious
-	case m.keyMatches(msg, keys.NormalFocusLeft):
-		return normalActionFocusLeft
-	case m.keyMatches(msg, keys.NormalFocusRightOrReply):
-		return normalActionFocusRightReply
-	case m.keyMatches(msg, keys.NormalMoveDown):
-		return normalActionMoveDown
-	case m.keyMatches(msg, keys.NormalMoveUp):
-		return normalActionMoveUp
-	case m.keyMatches(msg, keys.NormalGoTop):
-		return normalActionGoTop
-	case m.keyMatches(msg, keys.NormalGoBottom):
-		return normalActionGoBottom
-	case m.keyMatches(msg, keys.NormalOpen):
-		return normalActionOpen
-	case m.keyMatches(msg, keys.NormalOpenMedia):
-		return normalActionOpenMedia
-	case m.keyMatches(msg, keys.NormalYankMessage):
-		return normalActionYankMessage
-	case m.keyMatches(msg, keys.NormalEditMessage):
-		return normalActionEditMessage
-	case m.keyMatches(msg, keys.NormalPickSticker):
-		return normalActionPickSticker
-	case m.keyMatches(msg, keys.NormalSearchNext):
-		return normalActionSearchNext
-	case m.keyMatches(msg, keys.NormalSearchPrevious):
-		return normalActionSearchPrevious
-	case m.keyMatches(msg, keys.NormalToggleUnread):
-		return normalActionToggleUnread
-	case m.keyMatches(msg, keys.NormalTogglePinned):
-		return normalActionTogglePinned
-	case m.keyMatches(msg, keys.NormalCopyImage):
-		return normalActionCopyImage
-	case m.keyMatches(msg, keys.NormalSaveMedia):
-		return normalActionSaveMedia
-	case m.keyMatches(msg, keys.NormalUnloadPreviews):
-		return normalActionUnloadPreviews
-	case m.keyMatches(msg, keys.NormalDeleteForEverybody):
-		return normalActionDeleteForEveryone
+	for _, binding := range m.normalActionBindings() {
+		if m.keyMatches(msg, binding.binding) {
+			return binding.action
+		}
+	}
+	return ""
+}
+
+func (m Model) normalActionForToken(token string) string {
+	for _, binding := range m.normalActionBindings() {
+		if m.keyTokenMatches(token, binding.binding) {
+			return binding.action
+		}
 	}
 	return ""
 }
@@ -1904,6 +1867,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalGoBottom, action: normalActionGoBottom},
 		{binding: keys.NormalOpen, action: normalActionOpen},
 		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
+		{binding: keys.NormalOpenMediaDetached, action: normalActionOpenMediaDetached},
 		{binding: keys.NormalYankMessage, action: normalActionYankMessage},
 		{binding: keys.NormalEditMessage, action: normalActionEditMessage},
 		{binding: keys.NormalPickSticker, action: normalActionPickSticker},
@@ -2027,6 +1991,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		}
 	case normalActionOpenMedia:
 		return m.openFocusedMedia()
+	case normalActionOpenMediaDetached:
+		return m.openFocusedMediaDetached()
 	case normalActionYankMessage:
 		return m.yankFocusedMessage()
 	case normalActionEditMessage:
@@ -4700,6 +4666,14 @@ func (m Model) activateFocusedMediaPreview() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
+	return m.openFocusedMediaWith(m.openMedia, "media opener unavailable", "opening media")
+}
+
+func (m Model) openFocusedMediaDetached() (tea.Model, tea.Cmd) {
+	return m.openFocusedMediaWith(m.openMediaDetached, "detached media opener unavailable", "opening media externally")
+}
+
+func (m Model) openFocusedMediaWith(open func(store.MediaMetadata) tea.Cmd, unavailableStatus, statusPrefix string) (tea.Model, tea.Cmd) {
 	message, item, ok := m.focusedMedia()
 	if !ok {
 		m.status = "no media on focused message"
@@ -4717,14 +4691,17 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 			}
 			return m, func() tea.Msg {
 				downloaded, err := m.downloadMedia(message, item)
-				if err == nil && strings.TrimSpace(downloaded.LocalPath) != "" && m.openMedia != nil {
-					if openMsg := m.openMedia(downloaded)(); openMsg != nil {
+				if err == nil && strings.TrimSpace(downloaded.LocalPath) != "" && open != nil {
+					if openCmd := open(downloaded); openCmd != nil {
+						openMsg := openCmd()
 						if finished, ok := openMsg.(MediaOpenFinishedMsg); ok {
 							finished.MessageID = message.ID
 							finished.Media = downloaded
 							return finished
 						}
-						return openMsg
+						if openMsg != nil {
+							return openMsg
+						}
 					}
 				}
 				return mediaDownloadedMsg{MessageID: message.ID, Media: downloaded, Err: err}
@@ -4733,13 +4710,13 @@ func (m Model) openFocusedMedia() (tea.Model, tea.Cmd) {
 		m.status = mediaDownloadUnavailableStatus(item)
 		return m, nil
 	}
-	if m.openMedia == nil {
-		m.status = "media opener unavailable"
+	if open == nil {
+		m.status = unavailableStatus
 		return m, nil
 	}
-	m.status = fmt.Sprintf("opening media: %s", m.mediaDisplayName(item))
+	m.status = fmt.Sprintf("%s: %s", statusPrefix, m.mediaDisplayName(item))
 	m.pauseOverlays(true, false)
-	return m, m.openMedia(item)
+	return m, open(item)
 }
 
 func (m Model) saveFocusedMedia() (tea.Model, tea.Cmd) {

@@ -5418,6 +5418,176 @@ func TestDecliningChafaFallbackPreservesExternalOpen(t *testing.T) {
 	}
 }
 
+func TestShiftEnterOpensFocusedMediaDetached(t *testing.T) {
+	var opened store.MediaMetadata
+	var foregroundOpened store.MediaMetadata
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		OpenMedia: func(item store.MediaMetadata) tea.Cmd {
+			foregroundOpened = item
+			return func() tea.Msg {
+				return MediaOpenFinishedMsg{Path: item.LocalPath}
+			}
+		},
+		OpenMediaDetached: func(item store.MediaMetadata) tea.Cmd {
+			opened = item
+			return func() tea.Msg {
+				return MediaOpenFinishedMsg{Path: item.LocalPath}
+			}
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						LocalPath:     "/tmp/photo.jpg",
+						DownloadState: "downloaded",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	updated, cmd := model.Update(rawStringMsg("\x1b[13;2u"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Shift+Enter command = nil, want detached open command")
+	}
+	if opened.LocalPath != "/tmp/photo.jpg" {
+		t.Fatalf("detached opened media = %+v, want focused photo", opened)
+	}
+	if foregroundOpened.LocalPath != "" {
+		t.Fatalf("foreground opened media = %+v, want unchanged", foregroundOpened)
+	}
+	if !strings.Contains(model.status, "opening media externally") {
+		t.Fatalf("status = %q, want detached opening status", model.status)
+	}
+}
+
+func TestNormalOpenMediaShortcutStillUsesForegroundOpen(t *testing.T) {
+	var opened store.MediaMetadata
+	var detachedOpened store.MediaMetadata
+	model := mediaTestModel("/tmp/photo.jpg", media.BackendChafa)
+	model.openMedia = func(item store.MediaMetadata) tea.Cmd {
+		opened = item
+		return func() tea.Msg {
+			return MediaOpenFinishedMsg{Path: item.LocalPath}
+		}
+	}
+	model.openMediaDetached = func(item store.MediaMetadata) tea.Cmd {
+		detachedOpened = item
+		return func() tea.Msg {
+			return MediaOpenFinishedMsg{Path: item.LocalPath}
+		}
+	}
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("open media command = nil, want foreground open command")
+	}
+	if opened.LocalPath != "/tmp/photo.jpg" {
+		t.Fatalf("opened media = %+v, want focused photo", opened)
+	}
+	if detachedOpened.LocalPath != "" {
+		t.Fatalf("detached opened media = %+v, want unchanged", detachedOpened)
+	}
+}
+
+func TestShiftEnterRemoteMediaDownloadsThenOpensDetached(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	var openedPath string
+	var saved store.MediaMetadata
+	model := NewModel(Options{
+		Config: configWithPreview(24, 6),
+		Paths:  testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendChafa,
+		},
+		SaveMedia: func(item store.MediaMetadata) error {
+			saved = item
+			return nil
+		},
+		DownloadMedia: func(message store.Message, item store.MediaMetadata) (store.MediaMetadata, error) {
+			item.MessageID = message.ID
+			item.LocalPath = localPath
+			item.DownloadState = "downloaded"
+			return item, nil
+		},
+		OpenMediaDetached: func(item store.MediaMetadata) tea.Cmd {
+			return func() tea.Msg {
+				openedPath = item.LocalPath
+				return MediaOpenFinishedMsg{Path: item.LocalPath}
+			}
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:     "m-1",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Media: []store.MediaMetadata{{
+						MessageID:     "m-1",
+						FileName:      "photo.jpg",
+						MIMEType:      "image/jpeg",
+						DownloadState: "remote",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 100
+	model.height = 20
+	model.focus = FocusMessages
+
+	updated, cmd := model.Update(rawStringMsg("\x1b[13;2u"))
+	model = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Shift+Enter command = nil, want download/open command")
+	}
+	raw := cmd()
+	msg, ok := raw.(MediaOpenFinishedMsg)
+	if !ok {
+		t.Fatalf("cmd() = %T, want MediaOpenFinishedMsg", raw)
+	}
+	updated, _ = model.Update(msg)
+	model = updated.(Model)
+
+	if openedPath != localPath {
+		t.Fatalf("openedPath = %q, want %q", openedPath, localPath)
+	}
+	if got := model.messagesByChat["chat-1"][0].Media[0].LocalPath; got != localPath {
+		t.Fatalf("loaded media local path = %q, want %q", got, localPath)
+	}
+	if saved.LocalPath != localPath {
+		t.Fatalf("saved media = %+v, want local path", saved)
+	}
+	if model.mediaDownloadInflight["m-1"] {
+		t.Fatalf("mediaDownloadInflight = %+v, want cleared", model.mediaDownloadInflight)
+	}
+}
+
 func TestEnterOnRemoteMediaShowsDownloadNotImplemented(t *testing.T) {
 	model := NewModel(Options{
 		Config: configWithPreview(24, 6),
