@@ -20,6 +20,14 @@ func platformExternalOpenerUnavailableReason() string {
 	return "rundll32.exe/explorer.exe not found in PATH"
 }
 
+func platformSupportsSixel() bool {
+	return terminalSupportsSixel()
+}
+
+func platformSixelUnavailableReason() string {
+	return "terminal sixel support not detected"
+}
+
 func platformBackendOrder() []Backend {
 	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
 		return []Backend{BackendSixel, BackendChafa, BackendExternal, BackendUeberzugPP}

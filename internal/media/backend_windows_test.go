@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -224,6 +225,13 @@ func TestDetectWindowsNoBackend(t *testing.T) {
 	}
 }
 
+func TestAvatarPreviewBackendAllowsSelectedSixelOnWindows(t *testing.T) {
+	backend, ok := AvatarPreviewBackend(Report{Selected: BackendSixel})
+	if !ok || backend != BackendSixel {
+		t.Fatalf("AvatarPreviewBackend() = %q, %v; want %q, true", backend, ok, BackendSixel)
+	}
+}
+
 func TestPreviewerReturnsSixelDisplayOnWindows(t *testing.T) {
 	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
@@ -262,5 +270,62 @@ func TestPreviewerReturnsSixelDisplayOnWindows(t *testing.T) {
 	}
 	if preview.Display != PreviewDisplaySixel || !preview.Ready() {
 		t.Fatalf("preview = %+v, want ready sixel display", preview)
+	}
+}
+
+func TestPreviewerUsesDetectedCellPixelsForImg2SixelOnWindows(t *testing.T) {
+	imagePath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(imagePath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	prevLookPath := lookPath
+	lookPath = func(name string) (string, error) {
+		if name == "img2sixel" {
+			return `C:\Program Files\libsixel\img2sixel.exe`, nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() {
+		lookPath = prevLookPath
+	})
+
+	prevDetectCell := detectTerminalCellPixels
+	detectTerminalCellPixels = func() (terminalCellPixels, bool) {
+		return terminalCellPixels{Width: 9, Height: 17}, true
+	}
+	t.Cleanup(func() {
+		detectTerminalCellPixels = prevDetectCell
+	})
+
+	var calledName string
+	var calledArgs []string
+	prevRun := runPreviewCommand
+	runPreviewCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calledName = name
+		calledArgs = slices.Clone(args)
+		return []byte("\x1bPqfake\x1b\\\n"), nil
+	}
+	t.Cleanup(func() {
+		runPreviewCommand = prevRun
+	})
+
+	previewer := NewPreviewer(Report{Selected: BackendSixel}, t.TempDir(), 20, 8)
+	preview := previewer.Render(context.Background(), PreviewRequest{
+		MessageID: "m-1",
+		MIMEType:  "image/jpeg",
+		LocalPath: imagePath,
+		Width:     10,
+		Height:    4,
+	})
+
+	if preview.Err != nil {
+		t.Fatalf("Render() error = %v", preview.Err)
+	}
+	if calledName != "img2sixel" {
+		t.Fatalf("called command = %q, want img2sixel", calledName)
+	}
+	if !slices.Contains(calledArgs, "-w") || !slices.Contains(calledArgs, "90") || !slices.Contains(calledArgs, "-h") || !slices.Contains(calledArgs, "68") {
+		t.Fatalf("called args = %v, want -w 90 -h 68", calledArgs)
 	}
 }

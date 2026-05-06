@@ -49,6 +49,16 @@ func Detect(requested string) Report {
 		}
 		report.Reasons[backend] = unavailableReason(backend)
 	}
+	for _, backend := range []Backend{BackendSixel, BackendUeberzugPP, BackendChafa, BackendExternal} {
+		if _, ok := report.Reasons[backend]; ok {
+			continue
+		}
+		if available[backend] {
+			report.Reasons[backend] = "available"
+			continue
+		}
+		report.Reasons[backend] = unavailableReason(backend)
+	}
 
 	if normalized != BackendAuto && available[normalized] {
 		report.Selected = normalized
@@ -69,8 +79,8 @@ func Detect(requested string) Report {
 func unavailableReason(backend Backend) string {
 	switch backend {
 	case BackendSixel:
-		if !supportsSixel() {
-			return "terminal sixel support not detected"
+		if !platformSupportsSixel() {
+			return platformSixelUnavailableReason()
 		}
 		return "sixel renderer command not found"
 	case BackendUeberzugPP:
@@ -95,7 +105,7 @@ func unavailableReason(backend Backend) string {
 
 func detectAvailable() map[Backend]bool {
 	return map[Backend]bool{
-		BackendSixel:      supportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
+		BackendSixel:      platformSupportsSixel() && (hasCommand("chafa") || hasCommand("img2sixel")),
 		BackendUeberzugPP: platformSupportsUeberzugPP() && hasCommand("ueberzugpp") && DetectUeberzugPPOutput() != "",
 		BackendChafa:      hasCommand("chafa"),
 		BackendExternal:   platformExternalOpenerAvailable(),
@@ -106,7 +116,7 @@ func DetectUeberzugPPOutput() string {
 	return platformUeberzugPPOutput()
 }
 
-func supportsSixel() bool {
+func terminalSupportsSixel() bool {
 	if os.Getenv("VIMWHAT_FORCE_SIXEL") == "1" {
 		return true
 	}

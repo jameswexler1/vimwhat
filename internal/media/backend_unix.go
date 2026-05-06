@@ -26,6 +26,14 @@ func platformExternalOpenerUnavailableReason() string {
 	return "xdg-open not found in PATH"
 }
 
+func platformSupportsSixel() bool {
+	return false
+}
+
+func platformSixelUnavailableReason() string {
+	return "sixel unsupported on this platform"
+}
+
 func platformBackendOrder() []Backend {
-	return []Backend{BackendUeberzugPP, BackendSixel, BackendChafa, BackendExternal}
+	return []Backend{BackendUeberzugPP, BackendChafa, BackendExternal}
 }

@@ -50,20 +50,13 @@ func (m Model) activeMediaPlacement() (media.Placement, bool) {
 }
 
 func (m Model) visibleOverlayIdentifiers() map[string]bool {
-	if strings.TrimSpace(m.overlaySignature) == "" && strings.TrimSpace(m.overlayPendingSignature) == "" && !m.mediaOverlayPaused && !m.avatarOverlayPaused {
+	if strings.TrimSpace(m.overlaySignature) == "" && !m.mediaOverlayPaused && !m.avatarOverlayPaused {
 		return map[string]bool{}
 	}
 	visible := map[string]bool{}
 	if strings.TrimSpace(m.overlaySignature) != "" {
 		for _, placement := range m.visibleOverlayPlacements() {
 			if overlaySignatureContainsIdentifier(m.overlaySignature, placement.Identifier) {
-				visible[placement.Identifier] = true
-			}
-		}
-	}
-	if m.overlaySyncPending && strings.TrimSpace(m.overlayPendingSignature) != "" {
-		for _, placement := range m.visibleOverlayPlacements() {
-			if overlaySignatureContainsIdentifier(m.overlayPendingSignature, placement.Identifier) {
 				visible[placement.Identifier] = true
 			}
 		}
@@ -352,11 +345,15 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 	footer := m.renderMessageFooter(max(1, width-2))
 	footerHeight := min(countLines(footer), bodyHeight)
 	messageHeight := max(1, bodyHeight-footerHeight)
-	blocks := make([]messageLayoutBlock, 0, len(messages)+1)
+	start, end := m.visibleMessageRange(len(messages), messageHeight)
+	blocks := make([]messageLayoutBlock, 0, end-start+1)
 	candidates := map[string]mediaPlacementCandidate{}
 	var lastDate string
+	if start > 0 && start <= len(messages) {
+		lastDate = messageDate(messages[start-1])
+	}
 	newState, firstNewIndex, hasNewDivider := m.newMessagesState(m.currentChat().ID)
-	for i := 0; i < len(messages); i++ {
+	for i := start; i < end && i < len(messages); i++ {
 		if hasNewDivider && i == firstNewIndex {
 			line := renderNewMessagesDivider(width, newState.NewCount)
 			blocks = append(blocks, messageLayoutBlock{
