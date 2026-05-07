@@ -1479,11 +1479,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.handleOutgoingMessagePersisted(msg)
 		return next.withPreviewCmd(cmd)
 	case draftSavedMsg:
-		return m.handleDraftSaved(msg), nil
+		return m.handleDraftSaved(msg).withPreviewCmd(nil)
 	case markReadFinishedMsg:
-		return m.handleMarkReadFinished(msg), nil
+		return m.handleMarkReadFinished(msg).withPreviewCmd(nil)
 	case reactionFinishedMsg:
-		return m.handleReactionFinished(msg), nil
+		return m.handleReactionFinished(msg).withPreviewCmd(nil)
 	case retryMessageFinishedMsg:
 		return m.handleRetryMessageFinished(msg).withPreviewCmd(nil)
 	case stickerSentMsg:
@@ -1495,13 +1495,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		next, cmd := m.handleOlderMessagesLoaded(msg)
 		return next.withPreviewCmd(cmd)
 	case historyRequestedMsg:
-		return m.handleHistoryRequested(msg), nil
+		return m.handleHistoryRequested(msg).withPreviewCmd(nil)
 	case messageFilterAppliedMsg:
 		return m.handleMessageFilterApplied(msg).withPreviewCmd(nil)
 	case messageFilterClearedMsg:
 		return m.handleMessageFilterCleared(msg).withPreviewCmd(nil)
 	case mentionCandidatesLoadedMsg:
-		return m.handleMentionCandidatesLoaded(msg), nil
+		return m.handleMentionCandidatesLoaded(msg).withPreviewCmd(nil)
 	case refreshDebouncedMsg:
 		next, cmd := m.handleRefreshDebounced()
 		return next.withPreviewCmd(cmd)

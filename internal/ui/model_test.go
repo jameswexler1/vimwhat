@@ -7862,7 +7862,7 @@ func TestKeyMsgRunsPreviewSyncForVisibleOverlay(t *testing.T) {
 	}
 }
 
-func TestVisibleMutatingAsyncMessagesRunPreviewSyncForVisibleOverlay(t *testing.T) {
+func TestVisibleAsyncMessagesRunPreviewSyncForVisibleOverlay(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -7873,6 +7873,27 @@ func TestVisibleMutatingAsyncMessagesRunPreviewSyncForVisibleOverlay(t *testing.
 		setup func(*Model)
 		msg   func(Model) tea.Msg
 	}{
+		{
+			name: "draft saved",
+			msg: func(Model) tea.Msg {
+				return draftSavedMsg{ChatID: "chat-1", Body: "draft"}
+			},
+		},
+		{
+			name: "mark read finished",
+			setup: func(model *Model) {
+				model.readReceiptInflight["chat-1"] = true
+			},
+			msg: func(Model) tea.Msg {
+				return markReadFinishedMsg{ChatID: "chat-1"}
+			},
+		},
+		{
+			name: "reaction finished",
+			msg: func(Model) tea.Msg {
+				return reactionFinishedMsg{Emoji: "ok"}
+			},
+		},
 		{
 			name: "retry finished",
 			msg: func(Model) tea.Msg {
@@ -7950,6 +7971,31 @@ func TestVisibleMutatingAsyncMessagesRunPreviewSyncForVisibleOverlay(t *testing.
 				}
 			},
 		},
+		{
+			name: "history requested",
+			setup: func(model *Model) {
+				model.historyRequestInflight["chat-1"] = true
+			},
+			msg: func(Model) tea.Msg {
+				return historyRequestedMsg{ChatID: "chat-1", Context: "history"}
+			},
+		},
+		{
+			name: "mention candidates loaded",
+			setup: func(model *Model) {
+				model.mentionActive = true
+				model.mentionSearchGeneration = 7
+				model.mentionQuery = "al"
+			},
+			msg: func(Model) tea.Msg {
+				return mentionCandidatesLoadedMsg{
+					Generation: 7,
+					ChatID:     "chat-1",
+					Query:      "al",
+					Candidates: []store.MentionCandidate{{JID: "111@s.whatsapp.net", DisplayName: "Alice"}},
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -7967,6 +8013,87 @@ func TestVisibleMutatingAsyncMessagesRunPreviewSyncForVisibleOverlay(t *testing.
 			}
 			if !model.overlaySyncPending || model.overlayPendingSignature == "" {
 				t.Fatalf("overlay pending = %v signature %q, want async-result preview sync", model.overlaySyncPending, model.overlayPendingSignature)
+			}
+		})
+	}
+}
+
+func TestVisibleAsyncMessagesRunPreviewSyncForVisibleSixel(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*Model)
+		msg   func(Model) tea.Msg
+	}{
+		{
+			name: "draft saved",
+			msg: func(Model) tea.Msg {
+				return draftSavedMsg{ChatID: "chat-1", Body: "draft"}
+			},
+		},
+		{
+			name: "mark read finished",
+			setup: func(model *Model) {
+				model.readReceiptInflight["chat-1"] = true
+			},
+			msg: func(Model) tea.Msg {
+				return markReadFinishedMsg{ChatID: "chat-1"}
+			},
+		},
+		{
+			name: "reaction finished",
+			msg: func(Model) tea.Msg {
+				return reactionFinishedMsg{Emoji: "ok"}
+			},
+		},
+		{
+			name: "history requested",
+			setup: func(model *Model) {
+				model.historyRequestInflight["chat-1"] = true
+			},
+			msg: func(Model) tea.Msg {
+				return historyRequestedMsg{ChatID: "chat-1", Context: "history"}
+			},
+		},
+		{
+			name: "mention candidates loaded",
+			setup: func(model *Model) {
+				model.mentionActive = true
+				model.mentionSearchGeneration = 7
+				model.mentionQuery = "al"
+			},
+			msg: func(Model) tea.Msg {
+				return mentionCandidatesLoadedMsg{
+					Generation: 7,
+					ChatID:     "chat-1",
+					Query:      "al",
+					Candidates: []store.MentionCandidate{{JID: "111@s.whatsapp.net", DisplayName: "Alice"}},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			model := mediaTestModel(localPath, media.BackendSixel)
+			model.sixelWriter = &output
+			cacheSixelPreview(t, &model, "sixel-payload")
+			if tt.setup != nil {
+				tt.setup(&model)
+			}
+
+			updated, cmd := model.Update(tt.msg(model))
+			model = updated.(Model)
+			if cmd == nil {
+				t.Fatal("Update() returned nil command, want Sixel sync from withPreviewCmd")
+			}
+			if !model.sixelSyncPending || model.sixelPendingSignature == "" {
+				t.Fatalf("sixel pending = %v signature %q, want async-result preview sync", model.sixelSyncPending, model.sixelPendingSignature)
 			}
 		})
 	}
@@ -9383,6 +9510,28 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 		SourcePath:      sourcePath,
 		Width:           request.Width,
 		Height:          request.Height,
+	}
+}
+
+func cacheSixelPreview(t *testing.T, model *Model, payload string) {
+	t.Helper()
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	model.previewCache[media.PreviewKey(request)] = media.Preview{
+		Key:             media.PreviewKey(request),
+		MessageID:       "m-1",
+		Kind:            media.KindImage,
+		Backend:         media.BackendSixel,
+		RenderedBackend: media.BackendSixel,
+		Display:         media.PreviewDisplaySixel,
+		SourceKind:      media.SourceLocal,
+		SourcePath:      request.LocalPath,
+		Width:           request.Width,
+		Height:          request.Height,
+		Lines:           []string{payload},
 	}
 }
 
