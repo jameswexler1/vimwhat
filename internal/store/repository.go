@@ -1561,6 +1561,7 @@ func (s *Store) SearchMentionCandidates(ctx context.Context, chatID, query strin
 	}
 	defer rows.Close()
 
+	query = strings.TrimSpace(query)
 	var candidates []MentionCandidate
 	for rows.Next() {
 		var (
@@ -1612,7 +1613,7 @@ func (s *Store) SearchMentionCandidates(ctx context.Context, chatID, query strin
 		if candidate.JID == "" {
 			continue
 		}
-		if strings.TrimSpace(query) != "" && !textmatch.Contains(candidate.SearchText, query) {
+		if query != "" && !mentionCandidateMatches(candidate, query) {
 			continue
 		}
 		candidates = append(candidates, candidate)
@@ -1703,7 +1704,22 @@ func mentionCandidateForParticipant(participant GroupParticipant, contacts []Con
 		SearchText:   strings.Join(searchParts, " "),
 		IsAdmin:      participant.IsAdmin,
 		IsSuperAdmin: participant.IsSuperAdmin,
+		searchParts:  compactSearchParts(searchParts),
 	}
+}
+
+func compactSearchParts(values []string) []string {
+	parts := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		parts = append(parts, value)
+	}
+	return parts
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -1729,8 +1745,8 @@ func mentionJIDUser(jid string) string {
 func sortMentionCandidates(candidates []MentionCandidate, query string) {
 	query = strings.TrimSpace(query)
 	slices.SortStableFunc(candidates, func(left, right MentionCandidate) int {
-		leftRank := mentionCandidateRank(left, query)
-		rightRank := mentionCandidateRank(right, query)
+		leftRank, _ := mentionCandidateRank(left, query)
+		rightRank, _ := mentionCandidateRank(right, query)
 		if leftRank != rightRank {
 			return leftRank - rightRank
 		}
@@ -1746,19 +1762,38 @@ func sortMentionCandidates(candidates []MentionCandidate, query string) {
 	})
 }
 
-func mentionCandidateRank(candidate MentionCandidate, query string) int {
+func mentionCandidateMatches(candidate MentionCandidate, query string) bool {
+	_, ok := mentionCandidateRank(candidate, query)
+	return ok
+}
+
+func mentionCandidateRank(candidate MentionCandidate, query string) (int, bool) {
 	if query == "" {
-		return 0
+		return 0, true
 	}
-	foldedName := textmatch.Fold(candidate.DisplayName)
-	foldedQuery := textmatch.Fold(query)
-	if strings.HasPrefix(foldedName, foldedQuery) {
-		return 0
+	if score, ok := textmatch.FuzzyScore(candidate.DisplayName, query); ok {
+		return score, true
 	}
-	if textmatch.Contains(candidate.DisplayName, query) {
-		return 1
+	best := -1
+	for _, part := range mentionCandidateSearchParts(candidate) {
+		if score, ok := textmatch.FuzzyScore(part, query); ok && (best < 0 || score < best) {
+			best = score
+		}
 	}
-	return 2
+	if best >= 0 {
+		return 10000 + best, true
+	}
+	return 0, false
+}
+
+func mentionCandidateSearchParts(candidate MentionCandidate) []string {
+	if len(candidate.searchParts) > 0 {
+		return candidate.searchParts
+	}
+	if strings.TrimSpace(candidate.SearchText) == "" {
+		return nil
+	}
+	return []string{candidate.SearchText}
 }
 
 func replaceMessageMentions(ctx context.Context, execer groupParticipantExecer, messageID string, mentions []MessageMention) error {

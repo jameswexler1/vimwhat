@@ -482,6 +482,34 @@ func TestGroupMentionCandidatesAndMessageMentions(t *testing.T) {
 	if len(candidates) != 1 || candidates[0].JID != "333333@lid" || candidates[0].DisplayName != "J Otávio" {
 		t.Fatalf("SearchMentionCandidates(Otavio) = %+v, want phone contact display name", candidates)
 	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "js", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(js) error = %v", err)
+	}
+	if len(candidates) == 0 || candidates[0].JID != "111@s.whatsapp.net" {
+		t.Fatalf("SearchMentionCandidates(js) = %+v, want fuzzy José first", candidates)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "otv", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(otv) error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].JID != "333333@lid" {
+		t.Fatalf("SearchMentionCandidates(otv) = %+v, want fuzzy Otávio", candidates)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "Jsoe", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(Jsoe) error = %v", err)
+	}
+	if len(candidates) == 0 || candidates[0].JID != "111@s.whatsapp.net" {
+		t.Fatalf("SearchMentionCandidates(Jsoe) = %+v, want typo-tolerant José first", candidates)
+	}
+	candidates, err = db.SearchMentionCandidates(ctx, "group@g.us", "zz", 10)
+	if err != nil {
+		t.Fatalf("SearchMentionCandidates(zz) error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("SearchMentionCandidates(zz) = %+v, want no candidates", candidates)
+	}
 	if err := db.ReplaceGroupParticipants(ctx, "group@g.us", []GroupParticipant{
 		{ChatID: "group@g.us", JID: "222@s.whatsapp.net", DisplayName: "Ana"},
 	}); err != nil {

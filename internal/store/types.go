@@ -85,6 +85,7 @@ type MentionCandidate struct {
 	SearchText   string
 	IsAdmin      bool
 	IsSuperAdmin bool
+	searchParts  []string
 }
 
 type MessageMention struct {
