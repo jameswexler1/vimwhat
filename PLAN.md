@@ -106,7 +106,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   marks,
   jumps,
   open thread/chat,
-  reply/react/open media/download/archive commands,
+  reply/react/forward/open media/download/archive commands,
   pane toggles and filters.
 - `insert` mode:
   inline composition only;
@@ -115,7 +115,7 @@ The app should feel closer to `vim` plus `yazi` than to WhatsApp Web: fast keybo
   message-wise selection only in v1, not character-wise text editing inside a message;
   selection supports yank, copy to register, forwarding, export, and batch download of attachments.
 - `forward` mode:
-  recipient picker for selected visual-mode messages, with configurable Vim-style movement, slash search, toggle, send, and cancel bindings.
+  recipient picker for focused normal-mode messages or selected visual-mode messages, with configurable Vim-style movement, slash search, toggle, send, and cancel bindings.
 - `command` mode:
   `:` command line for app actions such as open chat, filter unread, sync, doctor, switch backend, compose in editor, export, clear preview cache, quit.
 - `search` mode:
@@ -276,7 +276,7 @@ The composer, forwarding, and presence polish milestone now has an implemented f
 
 - `Shift+Enter` is the generated default alternate newline binding for insert mode, with `ctrl+j` retained as the portable fallback and all bindings kept editable through config.
 - The insert composer soft-wraps long input by display width inside the footer, preserves explicit newlines in the draft/body, and keeps the cursor visible without relying on terminal edge wrapping.
-- Visual mode can forward the selected message range through a dedicated recipient picker, defaulting to `key_visual_forward = "f"`; the picker uses Vim-style `j`/`k` movement and `/` contact search before typing filter text.
+- Normal mode can forward the focused message with `key_normal_forward = "f"`, while visual mode can forward the selected message range through the same recipient picker with `key_visual_forward = "f"`; the picker uses Vim-style `j`/`k` movement and `/` contact search before typing filter text.
 - Forwarding preserves WhatsApp forwarded metadata for received source messages, while self-authored outgoing source messages are resent without the forwarded tag.
 - WhatsApp message protobuf payloads are persisted for ingested messages so forwarding can resend the original supported message shape instead of reconstructing from rendered text/media metadata.
 - Forwarded messages are persisted locally as outgoing `sending` rows before protocol send, then transition to sent/failed through the same live-update path as other sends.

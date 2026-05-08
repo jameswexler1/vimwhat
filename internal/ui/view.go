@@ -2849,6 +2849,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalOpenMediaDetached), Action: "open media in detached window"},
 			{Key: key(keys.NormalYankMessage), Action: "yank selected message"},
 			{Key: key(keys.NormalEditMessage), Action: "edit outgoing text"},
+			{Key: key(keys.NormalForward), Action: "forward focused message"},
 			{Key: key(keys.NormalPickSticker), Action: "pick recent sticker"},
 			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},

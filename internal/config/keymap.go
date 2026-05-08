@@ -31,6 +31,7 @@ type Keymap struct {
 	NormalInsert              string
 	NormalReply               string
 	NormalReact               string
+	NormalForward             string
 	NormalRetryFailedMedia    string
 	NormalVisual              string
 	NormalCommand             string
@@ -135,6 +136,7 @@ func DefaultKeymap() Keymap {
 		NormalInsert:              "i",
 		NormalReply:               "r",
 		NormalReact:               "leader r",
+		NormalForward:             "f",
 		NormalRetryFailedMedia:    "R",
 		NormalVisual:              "v",
 		NormalCommand:             ":",
@@ -250,6 +252,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalReact == "" {
 		input.NormalReact = defaults.NormalReact
+	}
+	if input.NormalForward == "" {
+		input.NormalForward = defaults.NormalForward
 	}
 	if input.NormalRetryFailedMedia == "" {
 		input.NormalRetryFailedMedia = defaults.NormalRetryFailedMedia
@@ -494,6 +499,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_insert", Mode: KeyModeNormal, Value: k.NormalInsert},
 		{Name: "key_normal_reply", Mode: KeyModeNormal, Value: k.NormalReply},
 		{Name: "key_normal_react", Mode: KeyModeNormal, Value: k.NormalReact},
+		{Name: "key_normal_forward", Mode: KeyModeNormal, Value: k.NormalForward},
 		{Name: "key_normal_retry_failed_media", Mode: KeyModeNormal, Value: k.NormalRetryFailedMedia},
 		{Name: "key_normal_visual", Mode: KeyModeNormal, Value: k.NormalVisual},
 		{Name: "key_normal_command", Mode: KeyModeNormal, Value: k.NormalCommand},
@@ -598,6 +604,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalReply = normalized
 	case "key_normal_react":
 		k.NormalReact = normalized
+	case "key_normal_forward":
+		k.NormalForward = normalized
 	case "key_normal_retry_failed_media":
 		k.NormalRetryFailedMedia = normalized
 	case "key_normal_visual":

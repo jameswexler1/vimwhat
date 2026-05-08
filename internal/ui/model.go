@@ -1833,6 +1833,7 @@ const (
 	normalActionInsert              = "insert"
 	normalActionReply               = "reply"
 	normalActionReact               = "react"
+	normalActionForward             = "forward"
 	normalActionRetryFailedMedia    = "retry_failed_media"
 	normalActionVisual              = "visual"
 	normalActionCommand             = "command"
@@ -1906,6 +1907,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalInsert, action: normalActionInsert},
 		{binding: keys.NormalReply, action: normalActionReply},
 		{binding: keys.NormalReact, action: normalActionReact},
+		{binding: keys.NormalForward, action: normalActionForward},
 		{binding: keys.NormalRetryFailedMedia, action: normalActionRetryFailedMedia},
 		{binding: keys.NormalVisual, action: normalActionVisual},
 		{binding: keys.NormalCommand, action: normalActionCommand},
@@ -1954,6 +1956,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.beginReplyToFocusedMessage()
 	case normalActionReact:
 		return m.startReactionPicker()
+	case normalActionForward:
+		return m.startForwardPickerForFocusedMessage()
 	case normalActionRetryFailedMedia:
 		return m, m.retryFocusedMediaMessage()
 	case normalActionVisual:
@@ -6345,6 +6349,19 @@ func (m Model) selectedMessages() []store.Message {
 	start := min(m.visualAnchor, m.messageCursor)
 	end := max(m.visualAnchor, m.messageCursor)
 	return slices.Clone(messages[start : end+1])
+}
+
+func (m Model) startForwardPickerForFocusedMessage() (tea.Model, tea.Cmd) {
+	if m.focus != FocusMessages && m.focus != FocusPreview {
+		m.status = "no message selected"
+		return m, nil
+	}
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	return m.startForwardPicker([]store.Message{message})
 }
 
 func (m Model) startForwardPicker(messages []store.Message) (tea.Model, tea.Cmd) {

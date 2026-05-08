@@ -56,8 +56,8 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalOpenMediaDetached != "shift+enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader n" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.InsertMentionSelectAlt != "tab" || cfg.Keymap.InsertMentionMoveDown != "down" || cfg.Keymap.InsertMentionMoveUp != "up" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ForwardSearch != "/" || cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q detached-open %q yank %q sticker %q notifications %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q mention-select %q mention-down %q mention-up %q visual-forward %q forward-send %q forward-search %q forward-down %q forward-up %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ForwardSearch, cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalOpenMediaDetached != "shift+enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalForward != "f" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader n" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.InsertMentionSelectAlt != "tab" || cfg.Keymap.InsertMentionMoveDown != "down" || cfg.Keymap.InsertMentionMoveUp != "up" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ForwardSearch != "/" || cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q detached-open %q yank %q normal-forward %q sticker %q notifications %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q mention-select %q mention-down %q mention-up %q visual-forward %q forward-send %q forward-search %q forward-down %q forward-up %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalForward, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ForwardSearch, cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp, cfg.Keymap.ConfirmRun)
 	}
 	if cfg.Keymap.NormalReact != "leader r" || cfg.Keymap.ReactionCustom != "enter" || cfg.Keymap.ReactionClear != "0" || cfg.Keymap.ReactionSelect1 != "1" || cfg.Keymap.ReactionSelect9 != "9" {
 		t.Fatalf("reaction keymap defaults = normal %q custom %q clear %q select1 %q select9 %q", cfg.Keymap.NormalReact, cfg.Keymap.ReactionCustom, cfg.Keymap.ReactionClear, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionSelect9)
@@ -100,6 +100,7 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_normal_yank_message = "Y"`,
 		`key_normal_edit_message = "leader e"`,
 		`key_normal_react = "leader x"`,
+		`key_normal_forward = "leader f"`,
 		`key_normal_pick_sticker = "leader t"`,
 		`key_normal_toggle_notifications = "leader m"`,
 		`key_normal_copy_image = "leader c"`,
@@ -179,8 +180,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalOpenMediaDetached != "alt+enter" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalReact != "leader x" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader m" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertMentionSelectAlt != "alt+enter" || cfg.Keymap.InsertMentionMoveDown != "j" || cfg.Keymap.InsertMentionMoveUp != "k" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.ForwardSearch != "s" || cfg.Keymap.ReactionSelect1 != "a" || cfg.Keymap.ReactionClear != "c" {
-		t.Fatalf("keymap = quit %q detached-open %q yank %q edit %q react %q sticker %q notifications %q copy-image %q save %q paste-image %q mention-select %q mention-down %q mention-up %q send %q visual-forward %q forward-search %q reaction1 %q reaction-clear %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalReact, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSearch, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalOpenMediaDetached != "alt+enter" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalReact != "leader x" || cfg.Keymap.NormalForward != "leader f" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader m" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertMentionSelectAlt != "alt+enter" || cfg.Keymap.InsertMentionMoveDown != "j" || cfg.Keymap.InsertMentionMoveUp != "k" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.ForwardSearch != "s" || cfg.Keymap.ReactionSelect1 != "a" || cfg.Keymap.ReactionClear != "c" {
+		t.Fatalf("keymap = quit %q detached-open %q yank %q edit %q react %q normal-forward %q sticker %q notifications %q copy-image %q save %q paste-image %q mention-select %q mention-down %q mention-up %q send %q visual-forward %q forward-search %q reaction1 %q reaction-clear %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalReact, cfg.Keymap.NormalForward, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSearch, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -451,6 +452,7 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`key_normal_open_media_detached = "shift+enter"`,
 		`key_normal_edit_message = "leader e"`,
 		`key_normal_react = "leader r"`,
+		`key_normal_forward = "f"`,
 		`key_normal_toggle_notifications = "leader n"`,
 		`key_normal_copy_image = "leader y"`,
 		`key_normal_unload_previews = "leader h f"`,
@@ -533,6 +535,9 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.NormalReact != "leader r" || cfg.Keymap.ReactionSelect1 != "1" || cfg.Keymap.ReactionClear != "0" {
 		t.Fatalf("reaction keys = normal %q select1 %q clear %q", cfg.Keymap.NormalReact, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
+	}
+	if cfg.Keymap.NormalForward != "f" {
+		t.Fatalf("NormalForward = %q, want f", cfg.Keymap.NormalForward)
 	}
 	if cfg.Keymap.NormalToggleNotifications != "leader n" {
 		t.Fatalf("NormalToggleNotifications = %q, want leader n", cfg.Keymap.NormalToggleNotifications)

@@ -2524,6 +2524,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"r/l",
 		"pick recent sticker",
 		"quick reaction",
+		"forward focused message",
 		"forward selected messages",
 		"retry failed media",
 		"retry-message|retry",
@@ -2541,6 +2542,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	keymap.HelpClose = "ctrl+g"
 	keymap.NormalReply = "leader r"
 	keymap.NormalReact = "leader a"
+	keymap.NormalForward = "leader f"
 	keymap.NormalOpenMedia = "m"
 	keymap.NormalSaveMedia = "leader m"
 	keymap.NormalPickSticker = "leader t"
@@ -2562,7 +2564,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	got := helped.(Model)
 	view := stripANSI(got.View())
-	for _, want := range []string{",r", ",a", "m", ",m", ",t", "ctrl+g/?"} {
+	for _, want := range []string{",r", ",a", ",f", "m", ",m", ",t", "ctrl+g/?"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing configured binding %q\n%s", want, view)
 		}
@@ -7903,6 +7905,96 @@ func TestVisualForwardPickerSelectsRecipientsAndSends(t *testing.T) {
 	model = handled.(Model)
 	if !strings.Contains(model.status, "forwarded 2 message") {
 		t.Fatalf("forward finished status = %q", model.status)
+	}
+}
+
+func TestNormalForwardPickerUsesFocusedMessage(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+				{ID: "m-2", ChatID: "chat-1", Body: "two"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+	model.messageCursor = 1
+
+	forwarding, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = forwarding.(Model)
+	if cmd != nil || model.mode != ModeForward || len(model.forwardSourceMessages) != 1 || model.forwardSourceMessages[0].ID != "m-2" {
+		t.Fatalf("normal forward state = mode %s sources %+v cmd %T, want focused m-2", model.mode, model.forwardSourceMessages, cmd)
+	}
+}
+
+func TestCustomNormalForwardKeyStartsPicker(t *testing.T) {
+	keymap := config.DefaultKeymap()
+	keymap.NormalForward = "leader f"
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: keymap},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+
+	unchanged, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = unchanged.(Model)
+	if model.mode != ModeNormal {
+		t.Fatalf("default normal forward key started picker with custom binding: mode %s", model.mode)
+	}
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	forwarding, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = forwarding.(Model)
+	if cmd != nil || model.mode != ModeForward || len(model.forwardSourceMessages) != 1 {
+		t.Fatalf("custom normal forward state = mode %s sources %d cmd %T", model.mode, len(model.forwardSourceMessages), cmd)
+	}
+}
+
+func TestNormalForwardWithoutMessageReportsStatus(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice"},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Body: "one"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ForwardMessages: func(request ForwardMessagesRequest) tea.Cmd {
+			return nil
+		},
+	})
+	model.focus = FocusChats
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	model = updated.(Model)
+	if cmd != nil || model.mode != ModeNormal || model.status != "no message selected" {
+		t.Fatalf("normal forward without focused message = mode %s status %q cmd %T", model.mode, model.status, cmd)
 	}
 }
 
