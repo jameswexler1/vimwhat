@@ -7,15 +7,16 @@ import (
 )
 
 const (
-	KeyModeGlobal  = "global"
-	KeyModeHelp    = "help"
-	KeyModeNormal  = "normal"
-	KeyModeInsert  = "insert"
-	KeyModeVisual  = "visual"
-	KeyModeForward = "forward"
-	KeyModeCommand = "command"
-	KeyModeSearch  = "search"
-	KeyModeConfirm = "confirm"
+	KeyModeGlobal   = "global"
+	KeyModeHelp     = "help"
+	KeyModeNormal   = "normal"
+	KeyModeInsert   = "insert"
+	KeyModeVisual   = "visual"
+	KeyModeForward  = "forward"
+	KeyModeReaction = "reaction"
+	KeyModeCommand  = "command"
+	KeyModeSearch   = "search"
+	KeyModeConfirm  = "confirm"
 )
 
 type Keymap struct {
@@ -24,37 +25,39 @@ type Keymap struct {
 	HelpClose    string
 	HelpCloseAlt string
 
-	NormalCancel             string
-	NormalQuit               string
-	NormalHelp               string
-	NormalInsert             string
-	NormalReply              string
-	NormalRetryFailedMedia   string
-	NormalVisual             string
-	NormalCommand            string
-	NormalSearch             string
-	NormalFocusNext          string
-	NormalFocusPrevious      string
-	NormalFocusLeft          string
-	NormalFocusRightOrReply  string
-	NormalMoveDown           string
-	NormalMoveUp             string
-	NormalGoTop              string
-	NormalGoBottom           string
-	NormalOpen               string
-	NormalOpenMedia          string
-	NormalOpenMediaDetached  string
-	NormalYankMessage        string
-	NormalEditMessage        string
-	NormalPickSticker        string
-	NormalSearchNext         string
-	NormalSearchPrevious     string
-	NormalToggleUnread       string
-	NormalTogglePinned       string
-	NormalCopyImage          string
-	NormalSaveMedia          string
-	NormalUnloadPreviews     string
-	NormalDeleteForEverybody string
+	NormalCancel              string
+	NormalQuit                string
+	NormalHelp                string
+	NormalInsert              string
+	NormalReply               string
+	NormalReact               string
+	NormalRetryFailedMedia    string
+	NormalVisual              string
+	NormalCommand             string
+	NormalSearch              string
+	NormalFocusNext           string
+	NormalFocusPrevious       string
+	NormalFocusLeft           string
+	NormalFocusRightOrReply   string
+	NormalMoveDown            string
+	NormalMoveUp              string
+	NormalGoTop               string
+	NormalGoBottom            string
+	NormalOpen                string
+	NormalOpenMedia           string
+	NormalOpenMediaDetached   string
+	NormalYankMessage         string
+	NormalEditMessage         string
+	NormalPickSticker         string
+	NormalSearchNext          string
+	NormalSearchPrevious      string
+	NormalToggleUnread        string
+	NormalTogglePinned        string
+	NormalToggleNotifications string
+	NormalCopyImage           string
+	NormalSaveMedia           string
+	NormalUnloadPreviews      string
+	NormalDeleteForEverybody  string
 
 	InsertAttach           string
 	InsertPasteImage       string
@@ -83,6 +86,19 @@ type Keymap struct {
 	ForwardMoveUp       string
 	ForwardBackspace    string
 	ForwardBackspaceAlt string
+
+	ReactionCancel  string
+	ReactionCustom  string
+	ReactionClear   string
+	ReactionSelect1 string
+	ReactionSelect2 string
+	ReactionSelect3 string
+	ReactionSelect4 string
+	ReactionSelect5 string
+	ReactionSelect6 string
+	ReactionSelect7 string
+	ReactionSelect8 string
+	ReactionSelect9 string
 
 	CommandCancel       string
 	CommandRun          string
@@ -113,37 +129,39 @@ func DefaultKeymap() Keymap {
 		HelpClose:    "esc",
 		HelpCloseAlt: "?",
 
-		NormalCancel:             "esc",
-		NormalQuit:               "q",
-		NormalHelp:               "?",
-		NormalInsert:             "i",
-		NormalReply:              "r",
-		NormalRetryFailedMedia:   "R",
-		NormalVisual:             "v",
-		NormalCommand:            ":",
-		NormalSearch:             "/",
-		NormalFocusNext:          "tab",
-		NormalFocusPrevious:      "shift+tab",
-		NormalFocusLeft:          "h",
-		NormalFocusRightOrReply:  "l",
-		NormalMoveDown:           "j",
-		NormalMoveUp:             "k",
-		NormalGoTop:              "g",
-		NormalGoBottom:           "G",
-		NormalOpen:               "enter",
-		NormalOpenMedia:          "o",
-		NormalOpenMediaDetached:  "shift+enter",
-		NormalYankMessage:        "y",
-		NormalEditMessage:        "leader e",
-		NormalPickSticker:        "leader t",
-		NormalSearchNext:         "n",
-		NormalSearchPrevious:     "N",
-		NormalToggleUnread:       "u",
-		NormalTogglePinned:       "p",
-		NormalCopyImage:          "leader y",
-		NormalSaveMedia:          "leader s",
-		NormalUnloadPreviews:     "leader h f",
-		NormalDeleteForEverybody: "leader d e",
+		NormalCancel:              "esc",
+		NormalQuit:                "q",
+		NormalHelp:                "?",
+		NormalInsert:              "i",
+		NormalReply:               "r",
+		NormalReact:               "leader r",
+		NormalRetryFailedMedia:    "R",
+		NormalVisual:              "v",
+		NormalCommand:             ":",
+		NormalSearch:              "/",
+		NormalFocusNext:           "tab",
+		NormalFocusPrevious:       "shift+tab",
+		NormalFocusLeft:           "h",
+		NormalFocusRightOrReply:   "l",
+		NormalMoveDown:            "j",
+		NormalMoveUp:              "k",
+		NormalGoTop:               "g",
+		NormalGoBottom:            "G",
+		NormalOpen:                "enter",
+		NormalOpenMedia:           "o",
+		NormalOpenMediaDetached:   "shift+enter",
+		NormalYankMessage:         "y",
+		NormalEditMessage:         "leader e",
+		NormalPickSticker:         "leader t",
+		NormalSearchNext:          "n",
+		NormalSearchPrevious:      "N",
+		NormalToggleUnread:        "u",
+		NormalTogglePinned:        "p",
+		NormalToggleNotifications: "leader n",
+		NormalCopyImage:           "leader y",
+		NormalSaveMedia:           "leader s",
+		NormalUnloadPreviews:      "leader h f",
+		NormalDeleteForEverybody:  "leader d e",
 
 		InsertAttach:           "ctrl+f",
 		InsertPasteImage:       "ctrl+v",
@@ -172,6 +190,19 @@ func DefaultKeymap() Keymap {
 		ForwardMoveUp:       "k",
 		ForwardBackspace:    "backspace",
 		ForwardBackspaceAlt: "ctrl+h",
+
+		ReactionCancel:  "esc",
+		ReactionCustom:  "enter",
+		ReactionClear:   "0",
+		ReactionSelect1: "1",
+		ReactionSelect2: "2",
+		ReactionSelect3: "3",
+		ReactionSelect4: "4",
+		ReactionSelect5: "5",
+		ReactionSelect6: "6",
+		ReactionSelect7: "7",
+		ReactionSelect8: "8",
+		ReactionSelect9: "9",
 
 		CommandCancel:       "esc",
 		CommandRun:          "enter",
@@ -216,6 +247,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalReply == "" {
 		input.NormalReply = defaults.NormalReply
+	}
+	if input.NormalReact == "" {
+		input.NormalReact = defaults.NormalReact
 	}
 	if input.NormalRetryFailedMedia == "" {
 		input.NormalRetryFailedMedia = defaults.NormalRetryFailedMedia
@@ -282,6 +316,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalTogglePinned == "" {
 		input.NormalTogglePinned = defaults.NormalTogglePinned
+	}
+	if input.NormalToggleNotifications == "" {
+		input.NormalToggleNotifications = defaults.NormalToggleNotifications
 	}
 	if input.NormalCopyImage == "" {
 		input.NormalCopyImage = defaults.NormalCopyImage
@@ -370,6 +407,42 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.ForwardBackspaceAlt == "" {
 		input.ForwardBackspaceAlt = defaults.ForwardBackspaceAlt
 	}
+	if input.ReactionCancel == "" {
+		input.ReactionCancel = defaults.ReactionCancel
+	}
+	if input.ReactionCustom == "" {
+		input.ReactionCustom = defaults.ReactionCustom
+	}
+	if input.ReactionClear == "" {
+		input.ReactionClear = defaults.ReactionClear
+	}
+	if input.ReactionSelect1 == "" {
+		input.ReactionSelect1 = defaults.ReactionSelect1
+	}
+	if input.ReactionSelect2 == "" {
+		input.ReactionSelect2 = defaults.ReactionSelect2
+	}
+	if input.ReactionSelect3 == "" {
+		input.ReactionSelect3 = defaults.ReactionSelect3
+	}
+	if input.ReactionSelect4 == "" {
+		input.ReactionSelect4 = defaults.ReactionSelect4
+	}
+	if input.ReactionSelect5 == "" {
+		input.ReactionSelect5 = defaults.ReactionSelect5
+	}
+	if input.ReactionSelect6 == "" {
+		input.ReactionSelect6 = defaults.ReactionSelect6
+	}
+	if input.ReactionSelect7 == "" {
+		input.ReactionSelect7 = defaults.ReactionSelect7
+	}
+	if input.ReactionSelect8 == "" {
+		input.ReactionSelect8 = defaults.ReactionSelect8
+	}
+	if input.ReactionSelect9 == "" {
+		input.ReactionSelect9 = defaults.ReactionSelect9
+	}
 	if input.CommandCancel == "" {
 		input.CommandCancel = defaults.CommandCancel
 	}
@@ -420,6 +493,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_help", Mode: KeyModeNormal, Value: k.NormalHelp},
 		{Name: "key_normal_insert", Mode: KeyModeNormal, Value: k.NormalInsert},
 		{Name: "key_normal_reply", Mode: KeyModeNormal, Value: k.NormalReply},
+		{Name: "key_normal_react", Mode: KeyModeNormal, Value: k.NormalReact},
 		{Name: "key_normal_retry_failed_media", Mode: KeyModeNormal, Value: k.NormalRetryFailedMedia},
 		{Name: "key_normal_visual", Mode: KeyModeNormal, Value: k.NormalVisual},
 		{Name: "key_normal_command", Mode: KeyModeNormal, Value: k.NormalCommand},
@@ -442,6 +516,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_search_previous", Mode: KeyModeNormal, Value: k.NormalSearchPrevious},
 		{Name: "key_normal_toggle_unread", Mode: KeyModeNormal, Value: k.NormalToggleUnread},
 		{Name: "key_normal_toggle_pinned", Mode: KeyModeNormal, Value: k.NormalTogglePinned},
+		{Name: "key_normal_toggle_notifications", Mode: KeyModeNormal, Value: k.NormalToggleNotifications},
 		{Name: "key_normal_copy_image", Mode: KeyModeNormal, Value: k.NormalCopyImage},
 		{Name: "key_normal_save_media", Mode: KeyModeNormal, Value: k.NormalSaveMedia},
 		{Name: "key_normal_unload_previews", Mode: KeyModeNormal, Value: k.NormalUnloadPreviews},
@@ -471,6 +546,18 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_forward_move_up", Mode: KeyModeForward, Value: k.ForwardMoveUp},
 		{Name: "key_forward_backspace", Mode: KeyModeForward, Value: k.ForwardBackspace},
 		{Name: "key_forward_backspace_alt", Mode: KeyModeForward, Value: k.ForwardBackspaceAlt},
+		{Name: "key_reaction_cancel", Mode: KeyModeReaction, Value: k.ReactionCancel},
+		{Name: "key_reaction_custom", Mode: KeyModeReaction, Value: k.ReactionCustom},
+		{Name: "key_reaction_clear", Mode: KeyModeReaction, Value: k.ReactionClear},
+		{Name: "key_reaction_select_1", Mode: KeyModeReaction, Value: k.ReactionSelect1},
+		{Name: "key_reaction_select_2", Mode: KeyModeReaction, Value: k.ReactionSelect2},
+		{Name: "key_reaction_select_3", Mode: KeyModeReaction, Value: k.ReactionSelect3},
+		{Name: "key_reaction_select_4", Mode: KeyModeReaction, Value: k.ReactionSelect4},
+		{Name: "key_reaction_select_5", Mode: KeyModeReaction, Value: k.ReactionSelect5},
+		{Name: "key_reaction_select_6", Mode: KeyModeReaction, Value: k.ReactionSelect6},
+		{Name: "key_reaction_select_7", Mode: KeyModeReaction, Value: k.ReactionSelect7},
+		{Name: "key_reaction_select_8", Mode: KeyModeReaction, Value: k.ReactionSelect8},
+		{Name: "key_reaction_select_9", Mode: KeyModeReaction, Value: k.ReactionSelect9},
 		{Name: "key_command_cancel", Mode: KeyModeCommand, Value: k.CommandCancel},
 		{Name: "key_command_run", Mode: KeyModeCommand, Value: k.CommandRun},
 		{Name: "key_command_backspace", Mode: KeyModeCommand, Value: k.CommandBackspace},
@@ -509,6 +596,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalInsert = normalized
 	case "key_normal_reply":
 		k.NormalReply = normalized
+	case "key_normal_react":
+		k.NormalReact = normalized
 	case "key_normal_retry_failed_media":
 		k.NormalRetryFailedMedia = normalized
 	case "key_normal_visual":
@@ -553,6 +642,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalToggleUnread = normalized
 	case "key_normal_toggle_pinned":
 		k.NormalTogglePinned = normalized
+	case "key_normal_toggle_notifications":
+		k.NormalToggleNotifications = normalized
 	case "key_normal_copy_image":
 		k.NormalCopyImage = normalized
 	case "key_normal_save_media":
@@ -611,6 +702,30 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.ForwardBackspace = normalized
 	case "key_forward_backspace_alt":
 		k.ForwardBackspaceAlt = normalized
+	case "key_reaction_cancel":
+		k.ReactionCancel = normalized
+	case "key_reaction_custom":
+		k.ReactionCustom = normalized
+	case "key_reaction_clear":
+		k.ReactionClear = normalized
+	case "key_reaction_select_1":
+		k.ReactionSelect1 = normalized
+	case "key_reaction_select_2":
+		k.ReactionSelect2 = normalized
+	case "key_reaction_select_3":
+		k.ReactionSelect3 = normalized
+	case "key_reaction_select_4":
+		k.ReactionSelect4 = normalized
+	case "key_reaction_select_5":
+		k.ReactionSelect5 = normalized
+	case "key_reaction_select_6":
+		k.ReactionSelect6 = normalized
+	case "key_reaction_select_7":
+		k.ReactionSelect7 = normalized
+	case "key_reaction_select_8":
+		k.ReactionSelect8 = normalized
+	case "key_reaction_select_9":
+		k.ReactionSelect9 = normalized
 	case "key_command_cancel":
 		k.CommandCancel = normalized
 	case "key_command_run":
@@ -747,7 +862,7 @@ func ValidateKeymap(cfg Config) error {
 			}
 		}
 		if binding.Mode == KeyModeGlobal {
-			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeForward, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
+			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeForward, KeyModeReaction, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
 				modeBindings[mode] = append(modeBindings[mode], binding)
 			}
 			continue

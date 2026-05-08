@@ -23,13 +23,14 @@ import (
 type Mode string
 
 const (
-	ModeNormal  Mode = "normal"
-	ModeInsert  Mode = "insert"
-	ModeVisual  Mode = "visual"
-	ModeForward Mode = "forward"
-	ModeCommand Mode = "command"
-	ModeSearch  Mode = "search"
-	ModeConfirm Mode = "confirm"
+	ModeNormal   Mode = "normal"
+	ModeInsert   Mode = "insert"
+	ModeVisual   Mode = "visual"
+	ModeForward  Mode = "forward"
+	ModeReaction Mode = "reaction"
+	ModeCommand  Mode = "command"
+	ModeSearch   Mode = "search"
+	ModeConfirm  Mode = "confirm"
 )
 
 type Focus string
@@ -175,6 +176,11 @@ type markReadFinishedMsg struct {
 
 type reactionFinishedMsg struct {
 	Emoji string
+	Err   error
+}
+
+type notificationsMutedFinishedMsg struct {
+	Muted bool
 	Err   error
 }
 
@@ -350,6 +356,7 @@ type Options struct {
 	RetryMessage                 func(message store.Message) (store.Message, error)
 	MarkRead                     func(chat store.Chat, messages []store.Message) error
 	SendReaction                 func(message store.Message, emoji string) error
+	ToggleNotificationsMuted     func() (bool, error)
 	SendPresence                 func(chatID string, composing bool) error
 	SubscribePresence            func(chatID string) error
 	LoadMessages                 func(chatID string, limit int) ([]store.Message, error)
@@ -429,6 +436,7 @@ type Model struct {
 	config                       config.Config
 	status                       string
 	connectionState              ConnectionState
+	notificationsMuted           bool
 	commandLine                  string
 	searchLine                   string
 	forwardQuery                 string
@@ -438,6 +446,7 @@ type Model struct {
 	forwardCursor                int
 	forwardSelected              map[string]bool
 	forwardSelectedOrder         []string
+	reactionTarget               *store.Message
 	confirmLine                  string
 	composer                     string
 	composerMentions             []store.MessageMention
@@ -490,6 +499,7 @@ type Model struct {
 	retryMessage                 func(message store.Message) (store.Message, error)
 	markRead                     func(chat store.Chat, messages []store.Message) error
 	sendReaction                 func(message store.Message, emoji string) error
+	toggleNotificationsMuted     func() (bool, error)
 	sendPresence                 func(chatID string, composing bool) error
 	subscribePresence            func(chatID string) error
 	loadMessages                 func(chatID string, limit int) ([]store.Message, error)
@@ -625,6 +635,7 @@ func NewModel(opts Options) Model {
 		config:                       normalizeConfig(opts.Config),
 		status:                       "ready",
 		connectionState:              opts.ConnectionState,
+		notificationsMuted:           opts.Snapshot.NotificationsMuted,
 		pinnedFirst:                  true,
 		persistMessage:               opts.PersistMessage,
 		sendSticker:                  opts.SendSticker,
@@ -656,6 +667,7 @@ func NewModel(opts Options) Model {
 		visibleChatsChanged:          opts.VisibleChatsChanged,
 		markRead:                     opts.MarkRead,
 		sendReaction:                 opts.SendReaction,
+		toggleNotificationsMuted:     opts.ToggleNotificationsMuted,
 		sendPresence:                 opts.SendPresence,
 		subscribePresence:            opts.SubscribePresence,
 		liveUpdates:                  opts.LiveUpdates,
@@ -697,6 +709,7 @@ func normalizeConfig(cfg config.Config) config.Config {
 	default:
 		cfg.EmojiMode = config.EmojiModeAuto
 	}
+	cfg.QuickReactions = config.NormalizeQuickReactions(cfg.QuickReactions)
 	if strings.TrimSpace(cfg.IndicatorNormal) == "" {
 		cfg.IndicatorNormal = config.IndicatorPywal
 	}
@@ -711,6 +724,9 @@ func normalizeConfig(cfg config.Config) config.Config {
 	}
 	if strings.TrimSpace(cfg.IndicatorSearch) == "" {
 		cfg.IndicatorSearch = config.IndicatorPywal
+	}
+	if strings.TrimSpace(cfg.IndicatorNotificationsMuted) == "" {
+		cfg.IndicatorNotificationsMuted = config.IndicatorNotificationsMutedDefault
 	}
 	if strings.TrimSpace(cfg.NotificationBackend) == "" {
 		cfg.NotificationBackend = "auto"
@@ -995,6 +1011,11 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		m.status = fmt.Sprintf("refresh failed: %v", msg.Err)
 		return m, m.nextQueuedRefreshCmd()
 	}
+	previousAvatarSignature := ""
+	trackAvatarSignature := m.terminalOverlayBackendActive()
+	if trackAvatarSignature {
+		previousAvatarSignature = m.visibleChatAvatarSignature()
+	}
 	preferredChatID := m.currentChat().ID
 	if preferredChatID == "" {
 		preferredChatID = msg.ActiveChatID
@@ -1004,7 +1025,7 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		return m, m.nextQueuedRefreshCmd()
 	}
 	if m.terminalOverlayBackendActive() {
-		m.pauseOverlays(true, true)
+		m.pauseOverlays(true, previousAvatarSignature != m.visibleChatAvatarSignature())
 	}
 	m.refreshPreferredChatID = ""
 	var activateCmd tea.Cmd
@@ -1071,6 +1092,17 @@ func (m Model) sendReactionCmd(message store.Message, emoji string) tea.Cmd {
 	}
 	return func() tea.Msg {
 		return reactionFinishedMsg{Emoji: emoji, Err: sendReaction(message, emoji)}
+	}
+}
+
+func (m Model) toggleNotificationsMutedCmd() tea.Cmd {
+	toggle := m.toggleNotificationsMuted
+	if toggle == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		muted, err := toggle()
+		return notificationsMutedFinishedMsg{Muted: muted, Err: err}
 	}
 }
 
@@ -1231,6 +1263,20 @@ func (m Model) handleReactionFinished(msg reactionFinishedMsg) Model {
 		m.status = "reaction clear queued"
 	} else {
 		m.status = "reaction queued"
+	}
+	return m
+}
+
+func (m Model) handleNotificationsMutedFinished(msg notificationsMutedFinishedMsg) Model {
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("notification mute failed: %v", msg.Err)
+		return m
+	}
+	m.notificationsMuted = msg.Muted
+	if msg.Muted {
+		m.status = "notifications muted locally"
+	} else {
+		m.status = "notifications unmuted locally"
 	}
 	return m
 }
@@ -1484,6 +1530,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMarkReadFinished(msg).withPreviewCmd(nil)
 	case reactionFinishedMsg:
 		return m.handleReactionFinished(msg).withPreviewCmd(nil)
+	case notificationsMutedFinishedMsg:
+		return m.handleNotificationsMutedFinished(msg).withPreviewCmd(nil)
 	case retryMessageFinishedMsg:
 		return m.handleRetryMessageFinished(msg).withPreviewCmd(nil)
 	case stickerSentMsg:
@@ -1710,6 +1758,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateConfirm(msg)
 	case ModeForward:
 		return m.updateForward(msg)
+	case ModeReaction:
+		return m.updateReaction(msg)
 	case ModeVisual:
 		return m.updateVisual(msg)
 	default:
@@ -1778,36 +1828,38 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 const (
-	normalActionQuit              = "quit"
-	normalActionHelp              = "help"
-	normalActionInsert            = "insert"
-	normalActionReply             = "reply"
-	normalActionRetryFailedMedia  = "retry_failed_media"
-	normalActionVisual            = "visual"
-	normalActionCommand           = "command"
-	normalActionSearch            = "search"
-	normalActionFocusNext         = "focus_next"
-	normalActionFocusPrevious     = "focus_previous"
-	normalActionFocusLeft         = "focus_left"
-	normalActionFocusRightReply   = "focus_right_or_reply"
-	normalActionMoveDown          = "move_down"
-	normalActionMoveUp            = "move_up"
-	normalActionGoTop             = "go_top"
-	normalActionGoBottom          = "go_bottom"
-	normalActionOpen              = "open"
-	normalActionOpenMedia         = "open_media"
-	normalActionOpenMediaDetached = "open_media_detached"
-	normalActionYankMessage       = "yank_message"
-	normalActionEditMessage       = "edit_message"
-	normalActionPickSticker       = "pick_sticker"
-	normalActionSearchNext        = "search_next"
-	normalActionSearchPrevious    = "search_previous"
-	normalActionToggleUnread      = "toggle_unread"
-	normalActionTogglePinned      = "toggle_pinned"
-	normalActionCopyImage         = "copy_image"
-	normalActionSaveMedia         = "save_media"
-	normalActionUnloadPreviews    = "unload_previews"
-	normalActionDeleteForEveryone = "delete_for_everyone"
+	normalActionQuit                = "quit"
+	normalActionHelp                = "help"
+	normalActionInsert              = "insert"
+	normalActionReply               = "reply"
+	normalActionReact               = "react"
+	normalActionRetryFailedMedia    = "retry_failed_media"
+	normalActionVisual              = "visual"
+	normalActionCommand             = "command"
+	normalActionSearch              = "search"
+	normalActionFocusNext           = "focus_next"
+	normalActionFocusPrevious       = "focus_previous"
+	normalActionFocusLeft           = "focus_left"
+	normalActionFocusRightReply     = "focus_right_or_reply"
+	normalActionMoveDown            = "move_down"
+	normalActionMoveUp              = "move_up"
+	normalActionGoTop               = "go_top"
+	normalActionGoBottom            = "go_bottom"
+	normalActionOpen                = "open"
+	normalActionOpenMedia           = "open_media"
+	normalActionOpenMediaDetached   = "open_media_detached"
+	normalActionYankMessage         = "yank_message"
+	normalActionEditMessage         = "edit_message"
+	normalActionPickSticker         = "pick_sticker"
+	normalActionSearchNext          = "search_next"
+	normalActionSearchPrevious      = "search_previous"
+	normalActionToggleUnread        = "toggle_unread"
+	normalActionTogglePinned        = "toggle_pinned"
+	normalActionToggleNotifications = "toggle_notifications"
+	normalActionCopyImage           = "copy_image"
+	normalActionSaveMedia           = "save_media"
+	normalActionUnloadPreviews      = "unload_previews"
+	normalActionDeleteForEveryone   = "delete_for_everyone"
 )
 
 func (m Model) normalActionForKey(msg tea.KeyMsg) string {
@@ -1853,6 +1905,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalHelp, action: normalActionHelp},
 		{binding: keys.NormalInsert, action: normalActionInsert},
 		{binding: keys.NormalReply, action: normalActionReply},
+		{binding: keys.NormalReact, action: normalActionReact},
 		{binding: keys.NormalRetryFailedMedia, action: normalActionRetryFailedMedia},
 		{binding: keys.NormalVisual, action: normalActionVisual},
 		{binding: keys.NormalCommand, action: normalActionCommand},
@@ -1875,6 +1928,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalSearchPrevious, action: normalActionSearchPrevious},
 		{binding: keys.NormalToggleUnread, action: normalActionToggleUnread},
 		{binding: keys.NormalTogglePinned, action: normalActionTogglePinned},
+		{binding: keys.NormalToggleNotifications, action: normalActionToggleNotifications},
 		{binding: keys.NormalCopyImage, action: normalActionCopyImage},
 		{binding: keys.NormalSaveMedia, action: normalActionSaveMedia},
 		{binding: keys.NormalUnloadPreviews, action: normalActionUnloadPreviews},
@@ -1898,6 +1952,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.beginInsert(nil)
 	case normalActionReply:
 		return m.beginReplyToFocusedMessage()
+	case normalActionReact:
+		return m.startReactionPicker()
 	case normalActionRetryFailedMedia:
 		return m, m.retryFocusedMediaMessage()
 	case normalActionVisual:
@@ -2013,6 +2069,12 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("sort failed: %v", err)
 			return m, nil
 		}
+	case normalActionToggleNotifications:
+		if m.toggleNotificationsMuted == nil {
+			m.status = "notification mute unavailable"
+			return m, nil
+		}
+		return m, m.toggleNotificationsMutedCmd()
 	case normalActionCopyImage:
 		return m.copyFocusedImage()
 	case normalActionSaveMedia:
@@ -2774,6 +2836,68 @@ func (m Model) updateForward(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateReaction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	keys := m.config.Keymap
+	switch {
+	case m.keyMatches(msg, keys.ReactionCancel):
+		m.clearReactionPicker()
+		m.mode = ModeNormal
+		m.status = "reaction cancelled"
+	case m.keyMatches(msg, keys.ReactionCustom):
+		m.clearReactionPicker()
+		m.mode = ModeCommand
+		m.commandLine = "react "
+		m.status = "custom reaction"
+	case m.keyMatches(msg, keys.ReactionClear):
+		return m.sendReactionFromPicker("")
+	default:
+		if index := m.reactionSelectionIndex(msg); index >= 0 {
+			reactions := m.quickReactions()
+			if index >= len(reactions) {
+				m.status = "reaction slot empty"
+				return m, nil
+			}
+			return m.sendReactionFromPicker(reactions[index])
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) reactionSelectionIndex(msg tea.KeyMsg) int {
+	keys := m.config.Keymap
+	bindings := []string{
+		keys.ReactionSelect1,
+		keys.ReactionSelect2,
+		keys.ReactionSelect3,
+		keys.ReactionSelect4,
+		keys.ReactionSelect5,
+		keys.ReactionSelect6,
+		keys.ReactionSelect7,
+		keys.ReactionSelect8,
+		keys.ReactionSelect9,
+	}
+	for i, binding := range bindings {
+		if m.keyMatches(msg, binding) {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m Model) sendReactionFromPicker(emoji string) (tea.Model, tea.Cmd) {
+	if m.reactionTarget == nil {
+		m.clearReactionPicker()
+		m.mode = ModeNormal
+		m.status = "reaction target unavailable"
+		return m, nil
+	}
+	message := *m.reactionTarget
+	m.clearReactionPicker()
+	m.mode = ModeNormal
+	return m, m.reactToMessage(message, emoji)
+}
+
 func (m Model) handleInlineFallbackPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	keys := m.config.Keymap
 	switch {
@@ -3356,6 +3480,10 @@ func (m *Model) reactToFocusedMessage(emoji string) tea.Cmd {
 		m.status = "no message selected"
 		return nil
 	}
+	return m.reactToMessage(message, emoji)
+}
+
+func (m *Model) reactToMessage(message store.Message, emoji string) tea.Cmd {
 	if strings.TrimSpace(message.RemoteID) == "" {
 		m.status = "focused message has no WhatsApp id"
 		return nil
@@ -3374,6 +3502,39 @@ func (m *Model) reactToFocusedMessage(emoji string) tea.Cmd {
 		m.status = "reaction queued"
 	}
 	return m.sendReactionCmd(message, emoji)
+}
+
+func (m Model) startReactionPicker() (tea.Model, tea.Cmd) {
+	message, ok := m.focusedMessage()
+	if !ok {
+		m.status = "no message selected"
+		return m, nil
+	}
+	if strings.TrimSpace(message.RemoteID) == "" {
+		m.status = "focused message has no WhatsApp id"
+		return m, nil
+	}
+	if m.connectionState != ConnectionOnline {
+		m.status = "reactions need WhatsApp online"
+		return m, nil
+	}
+	if m.sendReaction == nil {
+		m.status = "reactions unavailable"
+		return m, nil
+	}
+	m.reactionTarget = &message
+	m.mode = ModeReaction
+	m.focus = FocusMessages
+	m.status = "choose reaction"
+	return m, nil
+}
+
+func (m *Model) clearReactionPicker() {
+	m.reactionTarget = nil
+}
+
+func (m Model) quickReactions() []string {
+	return config.NormalizeQuickReactions(m.config.QuickReactions)
 }
 
 func (m *Model) retryFocusedMediaMessage() tea.Cmd {
@@ -3440,6 +3601,7 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 
 	m.allChats = slices.Clone(snapshot.Chats)
 	m.draftsByChat = cloneDrafts(snapshot.DraftsByChat)
+	m.notificationsMuted = snapshot.NotificationsMuted
 	if m.messagesByChat == nil {
 		m.messagesByChat = map[string][]store.Message{}
 	}
@@ -4480,6 +4642,37 @@ func (m Model) requestedAvatarPreviewRequests() []media.PreviewRequest {
 		requests = append(requests, request)
 	}
 	return requests
+}
+
+func (m Model) visibleChatAvatarSignature() string {
+	backend, ok := m.avatarPreviewBackend()
+	if !ok {
+		return "backend=none"
+	}
+	geometry, ok := m.chatPaneGeometry()
+	if !ok {
+		return fmt.Sprintf("backend=%s hidden", backend)
+	}
+	visible := visibleChatCellCount(geometry.height)
+	if visible <= 0 || len(m.chats) == 0 {
+		return fmt.Sprintf("backend=%s geometry=%d,%d,%d,%d empty", backend, geometry.x, geometry.y, geometry.width, geometry.height)
+	}
+	start := adjustedChatScrollTop(m.chatScrollTop, m.activeChat, len(m.chats), visible)
+	end := min(len(m.chats), start+visible)
+
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "backend=%s geometry=%d,%d,%d,%d", backend, geometry.x, geometry.y, geometry.width, geometry.height)
+	for i := start; i < end; i++ {
+		chat := m.chats[i]
+		request, ok := m.chatAvatarPreviewRequestWithBackend(chat, backend)
+		localPath, thumbPath := "", ""
+		if ok {
+			localPath = request.LocalPath
+			thumbPath = request.ThumbnailPath
+		}
+		fmt.Fprintf(&builder, "\n%d\x00%s\x00%s\x00%s", i-start, strings.TrimSpace(chat.ID), localPath, thumbPath)
+	}
+	return builder.String()
 }
 
 func (m Model) previewRequestForMedia(message store.Message, item store.MediaMetadata, width, height int) (media.PreviewRequest, bool) {

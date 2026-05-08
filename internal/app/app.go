@@ -306,6 +306,11 @@ func runTUI(env Environment, stderr io.Writer) int {
 				return fmt.Errorf("reaction queue timed out")
 			}
 		},
+		ToggleNotificationsMuted: func() (bool, error) {
+			storeCtx, cancelStore := uiStoreWriteContext()
+			defer cancelStore()
+			return env.Store.ToggleGlobalNotificationsMuted(storeCtx)
+		},
 		SendPresence: func(chatID string, composing bool) error {
 			if !liveEnabled {
 				return nil
@@ -3589,14 +3594,14 @@ func downloadChatAvatar(ctx context.Context, cacheDir, chatID string, avatar wha
 	}
 
 	ext := avatarFileExtension(response.Header.Get("Content-Type"), avatar.URL)
-	finalPath := avatarCachePath(cacheDir, chatID, avatar.AvatarID, ext)
 	tmp, err := os.CreateTemp(cacheDir, "avatar-*.tmp")
 	if err != nil {
 		return "", fmt.Errorf("create avatar temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
-	written, err := io.Copy(tmp, response.Body)
+	hasher := sha256.New()
+	written, err := io.Copy(tmp, io.TeeReader(response.Body, hasher))
 	closeErr := tmp.Close()
 	if err == nil {
 		err = closeErr
@@ -3607,14 +3612,19 @@ func downloadChatAvatar(ctx context.Context, cacheDir, chatID string, avatar wha
 	if written <= 0 {
 		return "", fmt.Errorf("avatar download was empty")
 	}
+	contentHash := hex.EncodeToString(hasher.Sum(nil))
+	finalPath := avatarCachePath(cacheDir, chatID, avatar.AvatarID, contentHash, ext)
+	if info, err := os.Stat(finalPath); err == nil && !info.IsDir() {
+		return finalPath, nil
+	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return "", fmt.Errorf("store avatar file: %w", err)
 	}
 	return finalPath, nil
 }
 
-func avatarCachePath(cacheDir, chatID, avatarID, ext string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{chatID, avatarID}, "\x00")))
+func avatarCachePath(cacheDir, chatID, avatarID, contentHash, ext string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{chatID, avatarID, contentHash}, "\x00")))
 	return filepath.Join(cacheDir, "avatar-"+hex.EncodeToString(sum[:])[:20]+ext)
 }
 
@@ -4380,6 +4390,11 @@ func loadSnapshotForChat(ctx context.Context, db *store.Store, activeChatID stri
 		MessagesByChat: map[string][]store.Message{},
 		DraftsByChat:   drafts,
 	}
+	notificationsMuted, err := db.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
+	snapshot.NotificationsMuted = notificationsMuted
 	if len(chats) == 0 {
 		return snapshot, nil
 	}

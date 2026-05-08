@@ -132,6 +132,9 @@ func TestStoreRoundTrip(t *testing.T) {
 	if snapshot.DraftsByChat["chat-2"] != "ship the sqlite layer" {
 		t.Fatalf("DraftsByChat[chat-2] = %q", snapshot.DraftsByChat["chat-2"])
 	}
+	if snapshot.NotificationsMuted {
+		t.Fatal("NotificationsMuted = true, want false by default")
+	}
 
 	draft, err := store.Draft(ctx, "chat-2")
 	if err != nil {
@@ -210,6 +213,59 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if messages[1].Status != "server_ack" {
 		t.Fatalf("updated message status = %q, want server_ack", messages[1].Status)
+	}
+}
+
+func TestGlobalNotificationsMutedRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	muted, err := db.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		t.Fatalf("GlobalNotificationsMuted() error = %v", err)
+	}
+	if muted {
+		t.Fatal("GlobalNotificationsMuted() = true, want false by default")
+	}
+
+	if err := db.SetGlobalNotificationsMuted(ctx, true); err != nil {
+		t.Fatalf("SetGlobalNotificationsMuted(true) error = %v", err)
+	}
+	muted, err = db.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		t.Fatalf("GlobalNotificationsMuted() after set error = %v", err)
+	}
+	if !muted {
+		t.Fatal("GlobalNotificationsMuted() = false, want true after set")
+	}
+
+	snapshot, err := db.LoadSnapshot(ctx, 50)
+	if err != nil {
+		t.Fatalf("LoadSnapshot() error = %v", err)
+	}
+	if !snapshot.NotificationsMuted {
+		t.Fatal("LoadSnapshot().NotificationsMuted = false, want true")
+	}
+
+	muted, err = db.ToggleGlobalNotificationsMuted(ctx)
+	if err != nil {
+		t.Fatalf("ToggleGlobalNotificationsMuted() error = %v", err)
+	}
+	if muted {
+		t.Fatal("ToggleGlobalNotificationsMuted() = true, want false")
+	}
+	muted, err = db.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		t.Fatalf("GlobalNotificationsMuted() after toggle error = %v", err)
+	}
+	if muted {
+		t.Fatal("GlobalNotificationsMuted() = true, want false after toggle")
 	}
 }
 

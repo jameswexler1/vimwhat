@@ -19,6 +19,9 @@ const (
 					WHERE visible_mm.message_id = m.id
 				))`
 	chatLastPreviewSQL = `c.last_preview AS last_preview`
+
+	uiSnapshotKindNotifications = "notifications"
+	uiSnapshotNameGlobalMute    = "global_mute"
 )
 
 func chatPreviewSQL(chatIDExpr string) string {
@@ -63,9 +66,10 @@ func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, e
 	}
 
 	snapshot := Snapshot{
-		Chats:          chats,
-		MessagesByChat: make(map[string][]Message),
-		DraftsByChat:   make(map[string]string),
+		Chats:              chats,
+		MessagesByChat:     make(map[string][]Message),
+		DraftsByChat:       make(map[string]string),
+		NotificationsMuted: false,
 	}
 
 	drafts, err := s.ListDrafts(ctx)
@@ -73,6 +77,12 @@ func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, e
 		return Snapshot{}, err
 	}
 	snapshot.DraftsByChat = drafts
+
+	notificationsMuted, err := s.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.NotificationsMuted = notificationsMuted
 
 	if len(chats) == 0 {
 		return snapshot, nil
@@ -2345,6 +2355,44 @@ func (s *Store) SaveUISnapshot(ctx context.Context, snapshot UISnapshot) error {
 	}
 
 	return nil
+}
+
+func (s *Store) GlobalNotificationsMuted(ctx context.Context) (bool, error) {
+	snapshot, err := s.UISnapshot(ctx, uiSnapshotKindNotifications, uiSnapshotNameGlobalMute, "")
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(snapshot.Value)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (s *Store) SetGlobalNotificationsMuted(ctx context.Context, muted bool) error {
+	value := "0"
+	if muted {
+		value = "1"
+	}
+	return s.SaveUISnapshot(ctx, UISnapshot{
+		Kind:   uiSnapshotKindNotifications,
+		Name:   uiSnapshotNameGlobalMute,
+		ChatID: "",
+		Value:  value,
+	})
+}
+
+func (s *Store) ToggleGlobalNotificationsMuted(ctx context.Context) (bool, error) {
+	muted, err := s.GlobalNotificationsMuted(ctx)
+	if err != nil {
+		return false, err
+	}
+	muted = !muted
+	if err := s.SetGlobalNotificationsMuted(ctx, muted); err != nil {
+		return false, err
+	}
+	return muted, nil
 }
 
 func (s *Store) UISnapshot(ctx context.Context, kind, name, chatID string) (UISnapshot, error) {

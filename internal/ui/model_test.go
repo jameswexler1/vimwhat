@@ -600,6 +600,181 @@ func TestReactCommandUsesFocusedMessage(t *testing.T) {
 	}
 }
 
+func TestQuickReactionPickerLeaderBindingPreservesReplyKey(t *testing.T) {
+	model := reactionPickerTestModel([]string{"🔥", "🎉"}, func(store.Message, string) error { return nil })
+
+	reply, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got := reply.(Model)
+	if got.mode != ModeInsert || got.replyTo == nil || got.replyTo.ID != "m-1" {
+		t.Fatalf("r state = mode %s reply %+v, want reply insert mode", got.mode, got.replyTo)
+	}
+
+	model = reactionPickerTestModel([]string{"🔥", "🎉"}, func(store.Message, string) error { return nil })
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	react, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	got = react.(Model)
+	if got.mode != ModeReaction || got.reactionTarget == nil || got.reactionTarget.ID != "m-1" {
+		t.Fatalf("leader r state = mode %s target %+v, want reaction picker for m-1", got.mode, got.reactionTarget)
+	}
+	prompt := stripANSI(got.renderInput())
+	for _, want := range []string{"react:", "[1]🔥", "[2]🎉", "0 clear", "enter custom", "esc cancel"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("reaction prompt missing %q: %q", want, prompt)
+		}
+	}
+}
+
+func TestQuickReactionPickerSelectsConfiguredEmoji(t *testing.T) {
+	var reactedMessage store.Message
+	var reactedEmoji string
+	model := reactionPickerTestModel([]string{"🔥", "🎉"}, func(message store.Message, emoji string) error {
+		reactedMessage = message
+		reactedEmoji = emoji
+		return nil
+	})
+	opened, _ := model.startReactionPicker()
+	model = opened.(Model)
+
+	updated, cmd := model.updateReaction(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
+	if reactedMessage.ID != "m-1" || reactedEmoji != "🎉" {
+		t.Fatalf("reaction callback = message %+v emoji %q, want m-1 🎉", reactedMessage, reactedEmoji)
+	}
+	if got.mode != ModeNormal || got.reactionTarget != nil {
+		t.Fatalf("picker state after send = mode %s target %+v, want normal/no target", got.mode, got.reactionTarget)
+	}
+}
+
+func TestQuickReactionPickerClearsReaction(t *testing.T) {
+	var reactedEmoji string
+	model := reactionPickerTestModel([]string{"🔥"}, func(_ store.Message, emoji string) error {
+		reactedEmoji = emoji
+		return nil
+	})
+	opened, _ := model.startReactionPicker()
+	model = opened.(Model)
+
+	updated, cmd := model.updateReaction(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
+	if reactedEmoji != "" {
+		t.Fatalf("cleared reaction emoji = %q, want empty", reactedEmoji)
+	}
+	if !strings.Contains(got.status, "reaction clear queued") {
+		t.Fatalf("status = %q, want reaction clear queued", got.status)
+	}
+}
+
+func TestQuickReactionPickerCustomAndCancel(t *testing.T) {
+	var called bool
+	model := reactionPickerTestModel([]string{"🔥"}, func(store.Message, string) error {
+		called = true
+		return nil
+	})
+	opened, _ := model.startReactionPicker()
+	model = opened.(Model)
+	custom, cmd := model.updateReaction(tea.KeyMsg{Type: tea.KeyEnter})
+	got := custom.(Model)
+	if cmd != nil || got.mode != ModeCommand || got.commandLine != "react " || got.reactionTarget != nil {
+		t.Fatalf("custom state = mode %s command %q target %+v cmd %v", got.mode, got.commandLine, got.reactionTarget, cmd)
+	}
+
+	model = reactionPickerTestModel([]string{"🔥"}, func(store.Message, string) error {
+		called = true
+		return nil
+	})
+	opened, _ = model.startReactionPicker()
+	model = opened.(Model)
+	cancelled, cmd := model.updateReaction(tea.KeyMsg{Type: tea.KeyEsc})
+	got = cancelled.(Model)
+	if cmd != nil || got.mode != ModeNormal || got.reactionTarget != nil || called {
+		t.Fatalf("cancel state = mode %s target %+v called %v cmd %v", got.mode, got.reactionTarget, called, cmd)
+	}
+}
+
+func TestQuickReactionPickerOpenValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		setup  func(Model) Model
+		status string
+	}{
+		{
+			name: "no message",
+			setup: func(model Model) Model {
+				model.messagesByChat["chat-1"] = nil
+				return model
+			},
+			status: "no message selected",
+		},
+		{
+			name: "no remote id",
+			setup: func(model Model) Model {
+				model.messagesByChat["chat-1"][0].RemoteID = ""
+				return model
+			},
+			status: "focused message has no WhatsApp id",
+		},
+		{
+			name: "offline",
+			setup: func(model Model) Model {
+				model.connectionState = ConnectionOffline
+				return model
+			},
+			status: "reactions need WhatsApp online",
+		},
+		{
+			name: "unavailable",
+			setup: func(model Model) Model {
+				model.sendReaction = nil
+				return model
+			},
+			status: "reactions unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := reactionPickerTestModel([]string{"🔥"}, func(store.Message, string) error { return nil })
+			model = tt.setup(model)
+			updated, cmd := model.startReactionPicker()
+			got := updated.(Model)
+			if cmd != nil || got.mode != ModeNormal || got.reactionTarget != nil || !strings.Contains(got.status, tt.status) {
+				t.Fatalf("startReactionPicker() = mode %s target %+v status %q cmd %v, want status containing %q", got.mode, got.reactionTarget, got.status, cmd, tt.status)
+			}
+		})
+	}
+}
+
+func reactionPickerTestModel(reactions []string, send func(store.Message, string) error) Model {
+	model := NewModel(Options{
+		Config: config.Config{
+			QuickReactions: reactions,
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:        "m-1",
+					RemoteID:  "remote-1",
+					ChatID:    "chat-1",
+					ChatJID:   "chat-1",
+					Sender:    "Alice",
+					SenderJID: "alice@s.whatsapp.net",
+					Body:      "hello",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		SendReaction:    send,
+	})
+	model.focus = FocusMessages
+	model.width = 120
+	model.height = 30
+	return model
+}
+
 func TestLiveModeBlocksSendAndPreservesDraft(t *testing.T) {
 	var persisted bool
 	var savedChatID string
@@ -1607,6 +1782,9 @@ func TestMessageViewportRefsFollowBlockAwareClipping(t *testing.T) {
 				{target: "preview", row: 1},
 				{},
 			},
+			kind:        messageBlockMessage,
+			bubbleStart: 0,
+			bubbleEnd:   4,
 		},
 	}
 
@@ -1618,6 +1796,82 @@ func TestMessageViewportRefsFollowBlockAwareClipping(t *testing.T) {
 		if ref.target != "" {
 			t.Fatalf("messageViewportRefs() included clipped preview ref %+v", ref)
 		}
+	}
+}
+
+func TestMessageViewportRefsMarkOnlyFullyVisibleBubbleRefsPlaceable(t *testing.T) {
+	previewBlock := messageLayoutBlock{
+		lines: []string{"top", "preview-0", "preview-1", "preview-2", "preview-3", "preview-4", "preview-5", "bottom"},
+		refs: []messageLineRef{
+			{},
+			{target: "preview", row: 0},
+			{target: "preview", row: 1},
+			{target: "preview", row: 2},
+			{target: "preview", row: 3},
+			{target: "preview", row: 4},
+			{target: "preview", row: 5},
+			{},
+		},
+		kind:        messageBlockMessage,
+		bubbleStart: 0,
+		bubbleEnd:   8,
+	}
+
+	tests := []struct {
+		name      string
+		blocks    []messageLayoutBlock
+		scrollTop int
+		cursor    int
+		height    int
+		placeable bool
+	}{
+		{
+			name:      "fully visible",
+			blocks:    []messageLayoutBlock{previewBlock},
+			scrollTop: 0,
+			cursor:    0,
+			height:    8,
+			placeable: true,
+		},
+		{
+			name:      "bottom clipped",
+			blocks:    []messageLayoutBlock{previewBlock},
+			scrollTop: 0,
+			cursor:    0,
+			height:    7,
+			placeable: false,
+		},
+		{
+			name: "top clipped",
+			blocks: []messageLayoutBlock{
+				previewBlock,
+				{lines: []string{"selected"}, refs: []messageLineRef{{}}, kind: messageBlockMessage, bubbleEnd: 1},
+			},
+			scrollTop: 0,
+			cursor:    1,
+			height:    8,
+			placeable: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			refs := messageViewportRefs(tt.blocks, tt.scrollTop, tt.cursor, tt.height)
+			var previewRefs []messageLineRef
+			for _, ref := range refs {
+				if ref.target == "preview" {
+					previewRefs = append(previewRefs, ref)
+				}
+			}
+			if len(previewRefs) != 6 {
+				t.Fatalf("visible preview refs = %+v, want all 6 rows", previewRefs)
+			}
+			for _, ref := range previewRefs {
+				if ref.placeable != tt.placeable {
+					t.Fatalf("preview ref %+v placeable = %v, want %v", ref, ref.placeable, tt.placeable)
+				}
+			}
+		})
 	}
 }
 
@@ -2269,6 +2523,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"j/k",
 		"r/l",
 		"pick recent sticker",
+		"quick reaction",
 		"forward selected messages",
 		"retry failed media",
 		"retry-message|retry",
@@ -2285,6 +2540,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	keymap := config.DefaultKeymap()
 	keymap.HelpClose = "ctrl+g"
 	keymap.NormalReply = "leader r"
+	keymap.NormalReact = "leader a"
 	keymap.NormalOpenMedia = "m"
 	keymap.NormalSaveMedia = "leader m"
 	keymap.NormalPickSticker = "leader t"
@@ -2306,7 +2562,7 @@ func TestHelpOverlayUsesConfiguredKeyLabels(t *testing.T) {
 	helped, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	got := helped.(Model)
 	view := stripANSI(got.View())
-	for _, want := range []string{",r", "m", ",m", ",t", "ctrl+g/?"} {
+	for _, want := range []string{",r", ",a", "m", ",m", ",t", "ctrl+g/?"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help view missing configured binding %q\n%s", want, view)
 		}
@@ -3270,6 +3526,42 @@ func TestChatAvatarPreviewRequestsUseOverlayBackendWhenSelected(t *testing.T) {
 	}
 }
 
+func TestChatAvatarPreviewKeyChangesWithAvatarPath(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.jpg")
+	secondPath := filepath.Join(dir, "second.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: firstPath,
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	firstRequest, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest(first) returned false")
+	}
+	model.chats[0].AvatarPath = secondPath
+	secondRequest, ok := model.chatAvatarPreviewRequest(model.chats[0])
+	if !ok {
+		t.Fatal("chatAvatarPreviewRequest(second) returned false")
+	}
+	if media.PreviewKey(firstRequest) == media.PreviewKey(secondRequest) {
+		t.Fatalf("avatar preview key did not change after avatar path changed: %q", media.PreviewKey(firstRequest))
+	}
+}
+
 func TestChatAvatarPreviewRequestsCoverAllVisibleChats(t *testing.T) {
 	tempDir := t.TempDir()
 	chats := make([]store.Chat, 0, 12)
@@ -3592,6 +3884,65 @@ func TestChatAvatarOverlayPlacementsSkipHiddenCompactChatPane(t *testing.T) {
 
 	if placements := model.visibleChatAvatarPlacements(); len(placements) != 0 {
 		t.Fatalf("visibleChatAvatarPlacements() = %+v, want none while compact chat pane is hidden", placements)
+	}
+}
+
+func TestVisibleChatAvatarSignatureTracksPlacementInputs(t *testing.T) {
+	dir := t.TempDir()
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", AvatarPath: filepath.Join(dir, "alice.jpg")},
+				{ID: "chat-2", Title: "Bob", AvatarPath: filepath.Join(dir, "bob.jpg")},
+			},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": nil,
+				"chat-2": nil,
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+	base := model.visibleChatAvatarSignature()
+	if base == "" {
+		t.Fatal("visibleChatAvatarSignature() is empty")
+	}
+
+	reordered := model
+	reordered.chats = slices.Clone(model.chats)
+	reordered.chats[0], reordered.chats[1] = reordered.chats[1], reordered.chats[0]
+	if got := reordered.visibleChatAvatarSignature(); got == base {
+		t.Fatal("visibleChatAvatarSignature() did not change after visible chat order changed")
+	}
+
+	changedPath := model
+	changedPath.chats = slices.Clone(model.chats)
+	changedPath.chats[0].AvatarPath = filepath.Join(dir, "alice-new.jpg")
+	if got := changedPath.visibleChatAvatarSignature(); got == base {
+		t.Fatal("visibleChatAvatarSignature() did not change after avatar source path changed")
+	}
+
+	resized := model
+	resized.height++
+	if got := resized.visibleChatAvatarSignature(); got == base {
+		t.Fatal("visibleChatAvatarSignature() did not change after chat pane geometry changed")
+	}
+
+	hidden := model
+	hidden.compactLayout = true
+	hidden.focus = FocusMessages
+	if got := hidden.visibleChatAvatarSignature(); got == base {
+		t.Fatal("visibleChatAvatarSignature() did not change after compact chat pane became hidden")
 	}
 }
 
@@ -4537,6 +4888,91 @@ func TestStatusAndPromptExposeModeWorkflow(t *testing.T) {
 	}
 	if model.modeStatusColor(ModeInsert) != uiTheme.InsertModeBG {
 		t.Fatalf("insert mode status color = %q, want %q", model.modeStatusColor(ModeInsert), uiTheme.InsertModeBG)
+	}
+}
+
+func TestStatusShowsNotificationMuteOnlyWhenMuted(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+
+	status := stripANSI(model.renderStatus())
+	if strings.Contains(status, "NOTIFICATIONS MUTED") {
+		t.Fatalf("status = %q, want no notification mute module while unmuted", status)
+	}
+
+	model.notificationsMuted = true
+	status = stripANSI(model.renderStatus())
+	if !strings.Contains(status, "NOTIFICATIONS MUTED") {
+		t.Fatalf("status = %q, want notification mute module", status)
+	}
+	if muteIndex, countIndex := strings.Index(status, "NOTIFICATIONS MUTED"), strings.Index(status, "chat 1/1"); muteIndex < 0 || countIndex < 0 || muteIndex < countIndex {
+		t.Fatalf("status = %q, want notification mute module on the right after chat count", status)
+	}
+}
+
+func TestNotificationMuteStatusColorUsesConfig(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	if got := model.notificationMuteStatusColor(); got != lipgloss.Color(config.IndicatorNotificationsMutedDefault) {
+		t.Fatalf("notificationMuteStatusColor() = %q, want default red", got)
+	}
+
+	model.config.IndicatorNotificationsMuted = "#112233"
+	if got := model.notificationMuteStatusColor(); got != lipgloss.Color("#112233") {
+		t.Fatalf("notificationMuteStatusColor() = %q, want #112233", got)
+	}
+
+	model.config.IndicatorNotificationsMuted = config.IndicatorPywal
+	if got := model.notificationMuteStatusColor(); got != warnFG {
+		t.Fatalf("notificationMuteStatusColor() = %q, want warnFG %q for pywal", got, warnFG)
+	}
+}
+
+func TestLeaderNTogglesNotificationsMuted(t *testing.T) {
+	var called int
+	model := NewModel(Options{
+		Config: config.Config{LeaderKey: "space", Keymap: config.DefaultKeymap()},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ToggleNotificationsMuted: func() (bool, error) {
+			called++
+			return true, nil
+		},
+	})
+	model.width = 120
+	model.height = 20
+
+	updated, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	model = updated.(Model)
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	model = runImmediateCmd(t, updated.(Model), cmd)
+
+	if called != 1 {
+		t.Fatalf("toggle callback calls = %d, want 1", called)
+	}
+	if !model.notificationsMuted {
+		t.Fatal("notificationsMuted = false, want true")
+	}
+	if !strings.Contains(model.status, "notifications muted locally") {
+		t.Fatalf("status = %q, want muted confirmation", model.status)
 	}
 }
 
@@ -8131,7 +8567,7 @@ func TestMediaPreviewReadyQueuesOverlaySyncForNewPreview(t *testing.T) {
 	}
 }
 
-func TestSnapshotReloadPausesTerminalOverlays(t *testing.T) {
+func TestSnapshotReloadPausesTerminalMediaOverlayOnlyWhenAvatarsUnchanged(t *testing.T) {
 	localPath := filepath.Join(t.TempDir(), "photo.jpg")
 	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -8157,11 +8593,113 @@ func TestSnapshotReloadPausesTerminalOverlays(t *testing.T) {
 		},
 	})
 	model = updated
-	if !model.mediaOverlayPaused || !model.avatarOverlayPaused {
-		t.Fatalf("overlay pause = media:%v avatar:%v, want both paused", model.mediaOverlayPaused, model.avatarOverlayPaused)
+	if !model.mediaOverlayPaused || model.avatarOverlayPaused {
+		t.Fatalf("overlay pause = media:%v avatar:%v, want media only", model.mediaOverlayPaused, model.avatarOverlayPaused)
 	}
 	if model.overlayPauseGeneration == 0 {
 		t.Fatal("overlayPauseGeneration was not incremented")
+	}
+}
+
+func TestSnapshotReloadKeepsTerminalAvatarOverlayWhenVisibleAvatarUnchanged(t *testing.T) {
+	avatarPath := filepath.Join(t.TempDir(), "avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "before"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+	cacheChatAvatarOverlayPreview(t, &model, model.chats[0], avatarPath, "low-avatar-1", "low-avatar-2")
+
+	cmd := model.syncOverlayCmd()
+	if cmd == nil {
+		t.Fatal("syncOverlayCmd() = nil, want avatar overlay command")
+	}
+	model = applyOverlayCmd(t, model, cmd)
+
+	updated, _ := model.handleSnapshotReloaded(snapshotReloadedMsg{
+		ActiveChatID: "chat-1",
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: avatarPath,
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {
+				{ID: "m-1", ChatID: "chat-1", Sender: "Alice", Body: "after"},
+				{ID: "m-2", ChatID: "chat-1", Sender: "Bob", Body: "new"},
+			}},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model = updated
+	if !model.mediaOverlayPaused || model.avatarOverlayPaused {
+		t.Fatalf("overlay pause = media:%v avatar:%v, want media only", model.mediaOverlayPaused, model.avatarOverlayPaused)
+	}
+}
+
+func TestSnapshotReloadPausesTerminalAvatarOverlayWhenVisibleAvatarChanges(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first-avatar.jpg")
+	secondPath := filepath.Join(dir, "second-avatar.jpg")
+	model := NewModel(Options{
+		Paths: testPaths(t),
+		PreviewReport: media.Report{
+			Selected: media.BackendUeberzugPP,
+			Reasons: map[media.Backend]string{
+				media.BackendUeberzugPP: "available",
+			},
+		},
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: firstPath,
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.width = 120
+	model.height = 20
+	model.focus = FocusChats
+
+	updated, _ := model.handleSnapshotReloaded(snapshotReloadedMsg{
+		ActiveChatID: "chat-1",
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{
+				ID:         "chat-1",
+				Title:      "Alice",
+				AvatarPath: secondPath,
+			}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model = updated
+	if !model.mediaOverlayPaused || !model.avatarOverlayPaused {
+		t.Fatalf("overlay pause = media:%v avatar:%v, want both paused after avatar path changes", model.mediaOverlayPaused, model.avatarOverlayPaused)
 	}
 }
 
@@ -8219,6 +8757,129 @@ func TestStickerOverlayPauseDoesNotRenderLowResolutionFallback(t *testing.T) {
 	view := stripANSI(model.View())
 	if strings.Contains(view, "low-sticker-line") {
 		t.Fatalf("View() rendered low-resolution sticker fallback while overlay was paused\n%s", view)
+	}
+}
+
+func TestClippedStickerOverlayPlacementRequiresFullBubble(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{
+			name: "top clipped",
+			setup: func(model *Model) {
+				model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+					ID:     "m-2",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Body:   "after sticker",
+				})
+				model.messageCursor = 1
+				model.messageScrollTop = 0
+			},
+		},
+		{
+			name: "bottom clipped",
+			setup: func(model *Model) {
+				model.messageCursor = 0
+				model.messageScrollTop = 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := clippedStickerPreviewModel(t, media.BackendUeberzugPP, tt.setup)
+			if placements := model.visibleMediaPlacements(); len(placements) != 0 {
+				t.Fatalf("visibleMediaPlacements() = %+v, want no placement for clipped sticker bubble", placements)
+			}
+			if !hasVisibleUnplaceableMediaPreview(model, previewIsOverlay) {
+				t.Fatal("test setup did not expose a visible-but-unplaceable sticker preview")
+			}
+		})
+	}
+}
+
+func TestClippedStickerSixelPlacementRequiresFullBubble(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*Model)
+	}{
+		{
+			name: "top clipped",
+			setup: func(model *Model) {
+				model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+					ID:     "m-2",
+					ChatID: "chat-1",
+					Sender: "Alice",
+					Body:   "after sticker",
+				})
+				model.messageCursor = 1
+				model.messageScrollTop = 0
+			},
+		},
+		{
+			name: "bottom clipped",
+			setup: func(model *Model) {
+				model.messageCursor = 0
+				model.messageScrollTop = 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model := clippedStickerPreviewModel(t, media.BackendSixel, tt.setup)
+			if placements := model.visibleSixelMediaPlacements(); len(placements) != 0 {
+				t.Fatalf("visibleSixelMediaPlacements() = %+v, want no placement for clipped sticker bubble", placements)
+			}
+			if !hasVisibleUnplaceableMediaPreview(model, previewIsSixel) {
+				t.Fatal("test setup did not expose a visible-but-unplaceable sticker preview")
+			}
+		})
+	}
+}
+
+func TestClippedStickerOverlayPauseReservesBlankWithoutPlacement(t *testing.T) {
+	model := clippedStickerPreviewModel(t, media.BackendUeberzugPP, func(model *Model) {
+		model.messagesByChat["chat-1"] = append(model.messagesByChat["chat-1"], store.Message{
+			ID:     "m-2",
+			ChatID: "chat-1",
+			Sender: "Alice",
+			Body:   "after sticker",
+		})
+		model.messageCursor = 1
+		model.messageScrollTop = 0
+	})
+	setFirstMediaPreviewLines(t, &model, "low-sticker-line")
+	model.mediaOverlayPaused = true
+
+	if placements := model.visibleMediaPlacements(); len(placements) != 0 {
+		t.Fatalf("visibleMediaPlacements() = %+v, want no placement for clipped sticker bubble", placements)
+	}
+	if identifiers := model.visibleMediaPlaceholderIdentifiers(); len(identifiers) != 1 {
+		t.Fatalf("visibleMediaPlaceholderIdentifiers() = %+v, want clipped sticker placeholder", identifiers)
+	}
+	view := stripANSI(model.View())
+	if strings.Contains(view, "low-sticker-line") {
+		t.Fatalf("View() rendered low-resolution sticker fallback while clipped overlay was paused\n%s", view)
+	}
+}
+
+func TestQuotedMediaPreviewPlacementAccountsForQuoteLine(t *testing.T) {
+	withoutQuote := quotedMediaPlacementModel(t, false)
+	withoutPlacements := withoutQuote.visibleMediaPlacements()
+	if len(withoutPlacements) != 1 {
+		t.Fatalf("without quote placements = %+v, want one placement", withoutPlacements)
+	}
+
+	withQuote := quotedMediaPlacementModel(t, true)
+	withPlacements := withQuote.visibleMediaPlacements()
+	if len(withPlacements) != 1 {
+		t.Fatalf("with quote placements = %+v, want one placement", withPlacements)
+	}
+	if withPlacements[0].Y != withoutPlacements[0].Y+1 {
+		t.Fatalf("quoted placement Y = %d, without quote Y = %d, want quote to shift preview down one row", withPlacements[0].Y, withoutPlacements[0].Y)
 	}
 }
 
@@ -9495,13 +10156,22 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 	t.Helper()
 	ensureTestOverlayManager(model)
 	message := model.messagesByChat["chat-1"][0]
-	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	cacheOverlayPreviewForMessage(t, model, message, 0, sourcePath)
+}
+
+func cacheOverlayPreviewForMessage(t *testing.T, model *Model, message store.Message, mediaIndex int, sourcePath string) {
+	t.Helper()
+	ensureTestOverlayManager(model)
+	if mediaIndex < 0 || mediaIndex >= len(message.Media) {
+		t.Fatalf("media index %d out of range for message %s", mediaIndex, message.ID)
+	}
+	request, ok := model.previewRequestForMedia(message, message.Media[mediaIndex], 0, 0)
 	if !ok {
 		t.Fatal("previewRequestForMedia() returned false")
 	}
 	model.previewCache[media.PreviewKey(request)] = media.Preview{
 		Key:             media.PreviewKey(request),
-		MessageID:       "m-1",
+		MessageID:       message.ID,
 		Kind:            media.KindImage,
 		Backend:         media.BackendUeberzugPP,
 		RenderedBackend: media.BackendUeberzugPP,
@@ -9511,6 +10181,125 @@ func cacheOverlayPreview(t *testing.T, model *Model, sourcePath string) {
 		Width:           request.Width,
 		Height:          request.Height,
 	}
+}
+
+func clippedStickerPreviewModel(t *testing.T, backend media.Backend, setup func(*Model)) Model {
+	t.Helper()
+	localPath := filepath.Join(t.TempDir(), "sticker.webp")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, backend)
+	model.messagesByChat["chat-1"][0].Media[0].Kind = "sticker"
+	model.messagesByChat["chat-1"][0].Media[0].FileName = "sticker.webp"
+	model.messagesByChat["chat-1"][0].Media[0].MIMEType = "image/webp"
+	if backend == media.BackendSixel {
+		cacheSixelPreview(t, &model, "sixel-sticker-payload")
+	} else {
+		cacheOverlayPreview(t, &model, localPath)
+	}
+	if setup != nil {
+		setup(&model)
+	}
+	for height := 8; height <= 28; height++ {
+		candidate := model
+		candidate.height = height
+		candidate.previewCache = map[string]media.Preview{}
+		if backend == media.BackendSixel {
+			cacheSixelPreview(t, &candidate, "sixel-sticker-payload")
+		} else {
+			cacheOverlayPreview(t, &candidate, localPath)
+		}
+		include := previewIsOverlay
+		if backend == media.BackendSixel {
+			include = previewIsSixel
+		}
+		if hasVisibleUnplaceableMediaPreview(candidate, include) {
+			return candidate
+		}
+	}
+	t.Fatal("could not find clipped sticker viewport with all preview rows visible")
+	return Model{}
+}
+
+func hasVisibleUnplaceableMediaPreview(model Model, include func(media.Preview) bool) bool {
+	geometry, ok := model.messagePaneGeometry()
+	if !ok {
+		return false
+	}
+	candidates, refs := model.mediaPlacementRefs(geometry.width, geometry.height, include)
+	if len(candidates) == 0 || len(refs) == 0 {
+		return false
+	}
+
+	rowsByTarget := map[string]map[int]bool{}
+	placeableByTarget := map[string]bool{}
+	for _, ref := range refs {
+		if ref.target == "" {
+			continue
+		}
+		if rowsByTarget[ref.target] == nil {
+			rowsByTarget[ref.target] = map[int]bool{}
+		}
+		rowsByTarget[ref.target][ref.row] = true
+		if ref.placeable {
+			placeableByTarget[ref.target] = true
+		}
+	}
+	for identifier, candidate := range candidates {
+		if len(rowsByTarget[identifier]) == candidate.preview.Height && !placeableByTarget[identifier] {
+			return true
+		}
+	}
+	return false
+}
+
+func setFirstMediaPreviewLines(t *testing.T, model *Model, lines ...string) {
+	t.Helper()
+	message := model.messagesByChat["chat-1"][0]
+	request, ok := model.previewRequestForMedia(message, message.Media[0], 0, 0)
+	if !ok {
+		t.Fatal("previewRequestForMedia() returned false")
+	}
+	key := media.PreviewKey(request)
+	preview, ok := model.previewCache[key]
+	if !ok {
+		t.Fatal("preview cache missing first media preview")
+	}
+	preview.Lines = lines
+	model.previewCache[key] = preview
+}
+
+func quotedMediaPlacementModel(t *testing.T, quoted bool) Model {
+	t.Helper()
+	localPath := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(localPath, []byte("fake"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	model := mediaTestModel(localPath, media.BackendUeberzugPP)
+	model.messagesByChat["chat-1"] = []store.Message{
+		{ID: "quote-1", RemoteID: "remote-quote-1", ChatID: "chat-1", Sender: "Alice", Body: "quoted text"},
+		{
+			ID:     "m-1",
+			ChatID: "chat-1",
+			Sender: "Alice",
+			Media: []store.MediaMetadata{{
+				MessageID:     "m-1",
+				FileName:      "photo.jpg",
+				MIMEType:      "image/jpeg",
+				LocalPath:     localPath,
+				DownloadState: "downloaded",
+			}},
+		},
+	}
+	if quoted {
+		model.messagesByChat["chat-1"][1].QuotedMessageID = "quote-1"
+		model.messagesByChat["chat-1"][1].QuotedRemoteID = "remote-quote-1"
+	}
+	model.messageCursor = 1
+	model.messageScrollTop = 1
+	cacheOverlayPreviewForMessage(t, &model, model.messagesByChat["chat-1"][1], 0, localPath)
+	return model
 }
 
 func cacheSixelPreview(t *testing.T, model *Model, payload string) {

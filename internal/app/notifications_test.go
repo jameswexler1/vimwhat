@@ -126,3 +126,47 @@ func TestBuildNotificationIncludesCachedChatAvatarIcon(t *testing.T) {
 		t.Fatalf("notification IconPath = %q, want %q", note.IconPath, thumbPath)
 	}
 }
+
+func TestBuildNotificationSuppressesGlobalLocalMute(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	when := time.Unix(1_700_000_000, 0)
+	if err := db.UpsertChat(ctx, store.Chat{
+		ID:            "chat-1",
+		JID:           "chat-1@s.whatsapp.net",
+		Title:         "Alice",
+		Kind:          "direct",
+		LastMessageAt: when,
+	}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := db.SetGlobalNotificationsMuted(ctx, true); err != nil {
+		t.Fatalf("SetGlobalNotificationsMuted() error = %v", err)
+	}
+
+	_, ok := buildNotification(ctx, db, notificationContext{activeChatID: "other-chat"}, whatsapp.ApplyResult{
+		MessageInserted: true,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-1/msg-1",
+			RemoteID:            "msg-1",
+			ChatID:              "chat-1",
+			ChatJID:             "chat-1@s.whatsapp.net",
+			Sender:              "Alice",
+			SenderJID:           "alice@s.whatsapp.net",
+			Body:                "hello",
+			NotificationPreview: "hello",
+			Timestamp:           when,
+			Status:              "received",
+		},
+	})
+	if ok {
+		t.Fatal("buildNotification() ok = true, want false when globally muted")
+	}
+}

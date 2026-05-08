@@ -31,8 +31,11 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.EmojiMode != EmojiModeAuto {
 		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeAuto)
 	}
-	if cfg.IndicatorNormal != IndicatorPywal || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != IndicatorPywal || cfg.IndicatorCommand != IndicatorPywal || cfg.IndicatorSearch != IndicatorPywal {
-		t.Fatalf("indicator defaults = normal %q insert %q visual %q command %q search %q, want all %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch, IndicatorPywal)
+	if strings.Join(cfg.QuickReactions, " ") != strings.Join(DefaultQuickReactions(), " ") {
+		t.Fatalf("QuickReactions = %q, want defaults", strings.Join(cfg.QuickReactions, " "))
+	}
+	if cfg.IndicatorNormal != IndicatorPywal || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != IndicatorPywal || cfg.IndicatorCommand != IndicatorPywal || cfg.IndicatorSearch != IndicatorPywal || cfg.IndicatorNotificationsMuted != IndicatorNotificationsMutedDefault {
+		t.Fatalf("indicator defaults = normal %q insert %q visual %q command %q search %q notifications %q, want modes %q notifications %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch, cfg.IndicatorNotificationsMuted, IndicatorPywal, IndicatorNotificationsMutedDefault)
 	}
 	if cfg.NotificationBackend != "auto" {
 		t.Fatalf("NotificationBackend = %q, want auto", cfg.NotificationBackend)
@@ -53,8 +56,11 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.LeaderKey != "space" {
 		t.Fatalf("LeaderKey = %q, want space", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalOpenMediaDetached != "shift+enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.InsertMentionSelectAlt != "tab" || cfg.Keymap.InsertMentionMoveDown != "down" || cfg.Keymap.InsertMentionMoveUp != "up" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ForwardSearch != "/" || cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" || cfg.Keymap.ConfirmRun != "enter" {
-		t.Fatalf("keymap defaults = open %q detached-open %q yank %q sticker %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q mention-select %q mention-down %q mention-up %q visual-forward %q forward-send %q forward-search %q forward-down %q forward-up %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ForwardSearch, cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp, cfg.Keymap.ConfirmRun)
+	if cfg.Keymap.NormalOpen != "enter" || cfg.Keymap.NormalOpenMediaDetached != "shift+enter" || cfg.Keymap.NormalYankMessage != "y" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader n" || cfg.Keymap.NormalCopyImage != "leader y" || cfg.Keymap.NormalUnloadPreviews != "leader h f" || cfg.Keymap.NormalDeleteForEverybody != "leader d e" || cfg.Keymap.InsertAttach != "ctrl+f" || cfg.Keymap.InsertPasteImage != "ctrl+v" || cfg.Keymap.InsertNewlineAlt != "shift+enter" || cfg.Keymap.InsertMentionSelectAlt != "tab" || cfg.Keymap.InsertMentionMoveDown != "down" || cfg.Keymap.InsertMentionMoveUp != "up" || cfg.Keymap.VisualForward != "f" || cfg.Keymap.ForwardSend != "enter" || cfg.Keymap.ForwardSearch != "/" || cfg.Keymap.ForwardMoveDown != "j" || cfg.Keymap.ForwardMoveUp != "k" || cfg.Keymap.ConfirmRun != "enter" {
+		t.Fatalf("keymap defaults = open %q detached-open %q yank %q sticker %q notifications %q copy-image %q unload %q delete-everybody %q attach %q paste-image %q newline-alt %q mention-select %q mention-down %q mention-up %q visual-forward %q forward-send %q forward-search %q forward-down %q forward-up %q confirm-run %q", cfg.Keymap.NormalOpen, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalUnloadPreviews, cfg.Keymap.NormalDeleteForEverybody, cfg.Keymap.InsertAttach, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertNewlineAlt, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSend, cfg.Keymap.ForwardSearch, cfg.Keymap.ForwardMoveDown, cfg.Keymap.ForwardMoveUp, cfg.Keymap.ConfirmRun)
+	}
+	if cfg.Keymap.NormalReact != "leader r" || cfg.Keymap.ReactionCustom != "enter" || cfg.Keymap.ReactionClear != "0" || cfg.Keymap.ReactionSelect1 != "1" || cfg.Keymap.ReactionSelect9 != "9" {
+		t.Fatalf("reaction keymap defaults = normal %q custom %q clear %q select1 %q select9 %q", cfg.Keymap.NormalReact, cfg.Keymap.ReactionCustom, cfg.Keymap.ReactionClear, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionSelect9)
 	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
@@ -70,11 +76,13 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`editor = "nvim"`,
 		`preview_backend = "chafa"`,
 		`emoji_mode = "full"`,
+		`quick_reactions = "🔥 🎉"`,
 		`indicator_normal = "#112233"`,
 		`indicator_insert = "pywal"`,
 		`indicator_visual = "#abc"`,
 		`indicator_command = "#AABBCC"`,
 		`indicator_search = "PYWAL"`,
+		`indicator_notifications_muted = "#cc1122"`,
 		`notification_backend = "command"`,
 		`notification_command = "notify-send vimwhat"`,
 		`clipboard_command = "wl-copy"`,
@@ -91,7 +99,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_normal_open_media_detached = "alt+enter"`,
 		`key_normal_yank_message = "Y"`,
 		`key_normal_edit_message = "leader e"`,
+		`key_normal_react = "leader x"`,
 		`key_normal_pick_sticker = "leader t"`,
+		`key_normal_toggle_notifications = "leader m"`,
 		`key_normal_copy_image = "leader c"`,
 		`key_normal_save_media = "leader y"`,
 		`key_insert_paste_image = "ctrl+p"`,
@@ -101,6 +111,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_insert_send = "ctrl+s"`,
 		`key_visual_forward = "F"`,
 		`key_forward_search = "s"`,
+		`key_reaction_select_1 = "a"`,
+		`key_reaction_clear = "c"`,
 		`preview_max_width = 44`,
 		`preview_max_height = 10`,
 		`preview_delay_ms = 0`,
@@ -125,8 +137,11 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.EmojiMode != EmojiModeFull {
 		t.Fatalf("EmojiMode = %q, want %q", cfg.EmojiMode, EmojiModeFull)
 	}
-	if cfg.IndicatorNormal != "#112233" || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != "#abc" || cfg.IndicatorCommand != "#AABBCC" || cfg.IndicatorSearch != IndicatorPywal {
-		t.Fatalf("indicators = normal %q insert %q visual %q command %q search %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch)
+	if strings.Join(cfg.QuickReactions, " ") != "🔥 🎉" {
+		t.Fatalf("QuickReactions = %q", strings.Join(cfg.QuickReactions, " "))
+	}
+	if cfg.IndicatorNormal != "#112233" || cfg.IndicatorInsert != IndicatorPywal || cfg.IndicatorVisual != "#abc" || cfg.IndicatorCommand != "#AABBCC" || cfg.IndicatorSearch != IndicatorPywal || cfg.IndicatorNotificationsMuted != "#cc1122" {
+		t.Fatalf("indicators = normal %q insert %q visual %q command %q search %q notifications %q", cfg.IndicatorNormal, cfg.IndicatorInsert, cfg.IndicatorVisual, cfg.IndicatorCommand, cfg.IndicatorSearch, cfg.IndicatorNotificationsMuted)
 	}
 	if cfg.NotificationBackend != "command" {
 		t.Fatalf("NotificationBackend = %q, want command", cfg.NotificationBackend)
@@ -164,8 +179,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	if cfg.LeaderKey != "," {
 		t.Fatalf("LeaderKey = %q", cfg.LeaderKey)
 	}
-	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalOpenMediaDetached != "alt+enter" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertMentionSelectAlt != "alt+enter" || cfg.Keymap.InsertMentionMoveDown != "j" || cfg.Keymap.InsertMentionMoveUp != "k" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.ForwardSearch != "s" {
-		t.Fatalf("keymap = quit %q detached-open %q yank %q edit %q sticker %q copy-image %q save %q paste-image %q mention-select %q mention-down %q mention-up %q send %q visual-forward %q forward-search %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSearch)
+	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalOpenMediaDetached != "alt+enter" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalReact != "leader x" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalToggleNotifications != "leader m" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertMentionSelectAlt != "alt+enter" || cfg.Keymap.InsertMentionMoveDown != "j" || cfg.Keymap.InsertMentionMoveUp != "k" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.ForwardSearch != "s" || cfg.Keymap.ReactionSelect1 != "a" || cfg.Keymap.ReactionClear != "c" {
+		t.Fatalf("keymap = quit %q detached-open %q yank %q edit %q react %q sticker %q notifications %q copy-image %q save %q paste-image %q mention-select %q mention-down %q mention-up %q send %q visual-forward %q forward-search %q reaction1 %q reaction-clear %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalReact, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.ForwardSearch, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -239,6 +254,29 @@ func TestLoadRejectsLeaderKeyDigit(t *testing.T) {
 	}
 }
 
+func TestLoadAllowsReactionDigitKeysAndRejectsNormalDigitKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`key_reaction_select_1 = "1"`), 0o644); err != nil {
+		t.Fatalf("WriteFile(reaction) error = %v", err)
+	}
+	if _, err := Load(Paths{ConfigFile: path}); err != nil {
+		t.Fatalf("Load(reaction digit) error = %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte(`key_normal_quit = "1"`), 0o644); err != nil {
+		t.Fatalf("WriteFile(normal) error = %v", err)
+	}
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load(normal digit) error = nil, want digit reservation error")
+	}
+	if !strings.Contains(err.Error(), "digits are reserved") {
+		t.Fatalf("Load(normal digit) error = %v, want digit reservation context", err)
+	}
+}
+
 func TestLoadRejectsInvalidKeyBinding(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -304,6 +342,37 @@ func TestLoadRejectsInvalidEmojiMode(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidQuickReactions(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "empty", content: `quick_reactions = ""`},
+		{name: "too many", content: `quick_reactions = "1 2 3 4 5 6 7 8 9 10"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+			if err := os.WriteFile(path, []byte(tt.content), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			_, err := Load(Paths{ConfigFile: path})
+			if err == nil {
+				t.Fatal("Load() error = nil, want invalid quick reactions error")
+			}
+			if !strings.Contains(err.Error(), "quick_reactions") {
+				t.Fatalf("Load() error = %v, want quick_reactions context", err)
+			}
+		})
+	}
+
+	if err := ValidateQuickReactions([]string{"👍 ❤️"}); err == nil {
+		t.Fatal("ValidateQuickReactions() error = nil, want whitespace rejection")
+	}
+}
+
 func TestLoadRejectsInvalidModeIndicator(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -318,6 +387,23 @@ func TestLoadRejectsInvalidModeIndicator(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "indicator_insert") {
 		t.Fatalf("Load() error = %v, want indicator_insert context", err)
+	}
+}
+
+func TestLoadRejectsInvalidNotificationsMutedIndicator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if err := os.WriteFile(path, []byte(`indicator_notifications_muted = "red"`), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(Paths{ConfigFile: path})
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid notification mute indicator error")
+	}
+	if !strings.Contains(err.Error(), "indicator_notifications_muted") {
+		t.Fatalf("Load() error = %v, want indicator_notifications_muted context", err)
 	}
 }
 
@@ -356,12 +442,16 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 	}
 	content := string(data)
 	for _, want := range []string{
+		`quick_reactions = "👍 ❤️ 😂 😮 😢 🙏 👎"`,
+		`indicator_notifications_muted = "#ff0000"`,
 		`leader_key = "space"`,
 		`clipboard_image_paste_command = ""`,
 		`clipboard_image_copy_command = ""`,
 		`key_normal_yank_message = "y"`,
 		`key_normal_open_media_detached = "shift+enter"`,
 		`key_normal_edit_message = "leader e"`,
+		`key_normal_react = "leader r"`,
+		`key_normal_toggle_notifications = "leader n"`,
 		`key_normal_copy_image = "leader y"`,
 		`key_normal_unload_previews = "leader h f"`,
 		`key_normal_delete_for_everybody = "leader d e"`,
@@ -376,6 +466,9 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`key_forward_search = "/"`,
 		`key_forward_move_down = "j"`,
 		`key_forward_move_up = "k"`,
+		`# Reaction picker`,
+		`key_reaction_select_1 = "1"`,
+		`key_reaction_clear = "0"`,
 		`key_confirm_run = "enter"`,
 		`downloads_dir = "~/Downloads"`,
 	} {
@@ -431,6 +524,18 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.NormalUnloadPreviews != "leader h f" {
 		t.Fatalf("NormalUnloadPreviews = %q, want leader h f", cfg.Keymap.NormalUnloadPreviews)
+	}
+	if strings.Join(cfg.QuickReactions, " ") != "👍 ❤️ 😂 😮 😢 🙏 👎" {
+		t.Fatalf("QuickReactions = %q", strings.Join(cfg.QuickReactions, " "))
+	}
+	if cfg.IndicatorNotificationsMuted != IndicatorNotificationsMutedDefault {
+		t.Fatalf("IndicatorNotificationsMuted = %q, want %q", cfg.IndicatorNotificationsMuted, IndicatorNotificationsMutedDefault)
+	}
+	if cfg.Keymap.NormalReact != "leader r" || cfg.Keymap.ReactionSelect1 != "1" || cfg.Keymap.ReactionClear != "0" {
+		t.Fatalf("reaction keys = normal %q select1 %q clear %q", cfg.Keymap.NormalReact, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
+	}
+	if cfg.Keymap.NormalToggleNotifications != "leader n" {
+		t.Fatalf("NormalToggleNotifications = %q, want leader n", cfg.Keymap.NormalToggleNotifications)
 	}
 	if cfg.Keymap.NormalDeleteForEverybody != "leader d e" {
 		t.Fatalf("NormalDeleteForEverybody = %q, want leader d e", cfg.Keymap.NormalDeleteForEverybody)

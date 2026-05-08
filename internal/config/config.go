@@ -11,38 +11,41 @@ import (
 )
 
 type Config struct {
-	Editor                     string
-	PreviewBackend             string
-	EmojiMode                  string
-	IndicatorNormal            string
-	IndicatorInsert            string
-	IndicatorVisual            string
-	IndicatorCommand           string
-	IndicatorSearch            string
-	NotificationBackend        string
-	NotificationCommand        string
-	ClipboardCommand           string
-	ClipboardImagePasteCommand string
-	ClipboardImageCopyCommand  string
-	FilePickerCommand          string
-	StickerPickerCommand       string
-	ImageViewerCommand         string
-	VideoPlayerCommand         string
-	AudioPlayerCommand         string
-	FileOpenerCommand          string
-	LeaderKey                  string
-	Keymap                     Keymap
-	PreviewMaxWidth            int
-	PreviewMaxHeight           int
-	PreviewDelayMS             int
-	DownloadsDir               string
+	Editor                      string
+	PreviewBackend              string
+	EmojiMode                   string
+	QuickReactions              []string
+	IndicatorNormal             string
+	IndicatorInsert             string
+	IndicatorVisual             string
+	IndicatorCommand            string
+	IndicatorSearch             string
+	IndicatorNotificationsMuted string
+	NotificationBackend         string
+	NotificationCommand         string
+	ClipboardCommand            string
+	ClipboardImagePasteCommand  string
+	ClipboardImageCopyCommand   string
+	FilePickerCommand           string
+	StickerPickerCommand        string
+	ImageViewerCommand          string
+	VideoPlayerCommand          string
+	AudioPlayerCommand          string
+	FileOpenerCommand           string
+	LeaderKey                   string
+	Keymap                      Keymap
+	PreviewMaxWidth             int
+	PreviewMaxHeight            int
+	PreviewDelayMS              int
+	DownloadsDir                string
 }
 
 const (
-	EmojiModeAuto   = "auto"
-	EmojiModeFull   = "full"
-	EmojiModeCompat = "compat"
-	IndicatorPywal  = "pywal"
+	EmojiModeAuto                      = "auto"
+	EmojiModeFull                      = "full"
+	EmojiModeCompat                    = "compat"
+	IndicatorPywal                     = "pywal"
+	IndicatorNotificationsMutedDefault = "#ff0000"
 )
 
 func Load(paths Paths) (Config, error) {
@@ -67,27 +70,29 @@ func Default(paths Paths) Config {
 	downloadsDir := filepath.Join(mustHomeDir(), "Downloads")
 
 	return Config{
-		Editor:               platformDefaultEditor(),
-		PreviewBackend:       "auto",
-		EmojiMode:            EmojiModeAuto,
-		IndicatorNormal:      IndicatorPywal,
-		IndicatorInsert:      IndicatorPywal,
-		IndicatorVisual:      IndicatorPywal,
-		IndicatorCommand:     IndicatorPywal,
-		IndicatorSearch:      IndicatorPywal,
-		NotificationBackend:  "auto",
-		FilePickerCommand:    platformDefaultFilePickerCommand(),
-		StickerPickerCommand: platformDefaultStickerPickerCommand(),
-		ImageViewerCommand:   platformDefaultImageViewerCommand(),
-		VideoPlayerCommand:   platformDefaultVideoPlayerCommand(),
-		AudioPlayerCommand:   platformDefaultAudioPlayerCommand(),
-		FileOpenerCommand:    platformDefaultFileOpenerCommand(),
-		LeaderKey:            "space",
-		Keymap:               DefaultKeymap(),
-		PreviewMaxWidth:      67,
-		PreviewMaxHeight:     18,
-		PreviewDelayMS:       80,
-		DownloadsDir:         downloadsDir,
+		Editor:                      platformDefaultEditor(),
+		PreviewBackend:              "auto",
+		EmojiMode:                   EmojiModeAuto,
+		QuickReactions:              DefaultQuickReactions(),
+		IndicatorNormal:             IndicatorPywal,
+		IndicatorInsert:             IndicatorPywal,
+		IndicatorVisual:             IndicatorPywal,
+		IndicatorCommand:            IndicatorPywal,
+		IndicatorSearch:             IndicatorPywal,
+		IndicatorNotificationsMuted: IndicatorNotificationsMutedDefault,
+		NotificationBackend:         "auto",
+		FilePickerCommand:           platformDefaultFilePickerCommand(),
+		StickerPickerCommand:        platformDefaultStickerPickerCommand(),
+		ImageViewerCommand:          platformDefaultImageViewerCommand(),
+		VideoPlayerCommand:          platformDefaultVideoPlayerCommand(),
+		AudioPlayerCommand:          platformDefaultAudioPlayerCommand(),
+		FileOpenerCommand:           platformDefaultFileOpenerCommand(),
+		LeaderKey:                   "space",
+		Keymap:                      DefaultKeymap(),
+		PreviewMaxWidth:             67,
+		PreviewMaxHeight:            18,
+		PreviewDelayMS:              80,
+		DownloadsDir:                downloadsDir,
 	}
 }
 
@@ -142,6 +147,11 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			if err != nil {
 				return fmt.Errorf("line %d: emoji_mode: %w", lineNo, err)
 			}
+		case "quick_reactions":
+			cfg.QuickReactions, err = ParseQuickReactions(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: quick_reactions: %w", lineNo, err)
+			}
 		case "indicator_normal":
 			cfg.IndicatorNormal, err = parseModeIndicator(parsed)
 			if err != nil {
@@ -166,6 +176,11 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.IndicatorSearch, err = parseModeIndicator(parsed)
 			if err != nil {
 				return fmt.Errorf("line %d: indicator_search: %w", lineNo, err)
+			}
+		case "indicator_notifications_muted":
+			cfg.IndicatorNotificationsMuted, err = parseModeIndicator(parsed)
+			if err != nil {
+				return fmt.Errorf("line %d: indicator_notifications_muted: %w", lineNo, err)
 			}
 		case "notification_backend":
 			cfg.NotificationBackend, err = parseNotificationBackend(parsed)
@@ -226,8 +241,60 @@ func parseSimpleTOML(input string, cfg *Config) error {
 	if err := ValidateKeymap(*cfg); err != nil {
 		return err
 	}
+	if err := ValidateQuickReactions(cfg.QuickReactions); err != nil {
+		return fmt.Errorf("quick_reactions: %w", err)
+	}
 
 	return nil
+}
+
+func DefaultQuickReactions() []string {
+	return []string{"👍", "❤️", "😂", "😮", "😢", "🙏", "👎"}
+}
+
+func NormalizeQuickReactions(input []string) []string {
+	out := normalizeQuickReactionTokens(input)
+	if err := ValidateQuickReactions(out); err != nil {
+		return DefaultQuickReactions()
+	}
+	return out
+}
+
+func ParseQuickReactions(value string) ([]string, error) {
+	reactions := strings.Fields(value)
+	if err := ValidateQuickReactions(reactions); err != nil {
+		return nil, err
+	}
+	return reactions, nil
+}
+
+func ValidateQuickReactions(reactions []string) error {
+	if len(reactions) == 0 {
+		return fmt.Errorf("must contain at least 1 reaction")
+	}
+	if len(reactions) > 9 {
+		return fmt.Errorf("must contain at most 9 reactions")
+	}
+	for i, reaction := range reactions {
+		if strings.TrimSpace(reaction) == "" {
+			return fmt.Errorf("reaction %d must not be empty", i+1)
+		}
+		if strings.TrimSpace(reaction) != reaction || len(strings.Fields(reaction)) != 1 {
+			return fmt.Errorf("reaction %d must not contain whitespace", i+1)
+		}
+	}
+	return nil
+}
+
+func normalizeQuickReactionTokens(input []string) []string {
+	out := make([]string, 0, len(input))
+	for _, reaction := range input {
+		reaction = strings.TrimSpace(reaction)
+		if reaction != "" {
+			out = append(out, reaction)
+		}
+	}
+	return out
 }
 
 func ResolveEmojiMode(mode string) string {

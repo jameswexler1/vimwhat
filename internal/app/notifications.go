@@ -207,6 +207,10 @@ func buildNotification(ctx context.Context, db *store.Store, view notificationCo
 	if suppressActiveChatNotification(message.ChatID, view) {
 		return notify.Notification{}, false
 	}
+	muted, err := db.GlobalNotificationsMuted(ctx)
+	if err != nil || muted {
+		return notify.Notification{}, false
+	}
 	chat, ok, err := db.ChatByID(ctx, message.ChatID)
 	if err != nil || !ok || chat.Muted {
 		return notify.Notification{}, false

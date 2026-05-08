@@ -155,10 +155,11 @@ type UISnapshot struct {
 }
 
 type Snapshot struct {
-	Chats          []Chat
-	MessagesByChat map[string][]Message
-	DraftsByChat   map[string]string
-	ActiveChatID   string
+	Chats              []Chat
+	MessagesByChat     map[string][]Message
+	DraftsByChat       map[string]string
+	ActiveChatID       string
+	NotificationsMuted bool
 }
 
 type Stats struct {

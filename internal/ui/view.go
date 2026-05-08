@@ -2262,7 +2262,10 @@ func (m Model) renderStatus() string {
 	if len(m.chats) > 0 {
 		rightCount = fmt.Sprintf(" chat %d/%d ", m.activeChat+1, len(m.chats))
 	}
-	right := statusSegment(rightText+rightCount, primaryFG, borderColor, false)
+	rightInfoText := rightText + rightCount
+	rightInfo := statusSegment(rightInfoText, primaryFG, borderColor, false)
+	rightMute := m.renderNotificationMuteStatus()
+	right := rightInfo + rightMute
 
 	spacerStyle := lipgloss.NewStyle().Foreground(softFG)
 	if !barsTransparent() {
@@ -2276,8 +2279,19 @@ func (m Model) renderStatus() string {
 		center = truncateDisplay(center, centerWidth)
 		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
 	}
+	if used > width && rightMute != "" {
+		rightInfoWidth := lipgloss.Width(rightInfo)
+		rightInfoWidth = max(0, rightInfoWidth-(used-width))
+		if rightInfoWidth == 0 {
+			rightInfo = ""
+		} else {
+			rightInfo = statusSegment(truncateDisplay(rightInfoText, rightInfoWidth), primaryFG, borderColor, false)
+		}
+		right = rightInfo + rightMute
+		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
+	}
 	if used > width {
-		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount, width)
+		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount+m.notificationMuteStatusText(), width)
 	}
 	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, width-used)))
 	return left + center + spacer + right
@@ -2398,6 +2412,31 @@ func (m Model) renderConnectionStatus() string {
 	return statusSegment(" WA:"+label+" ", connectionStatusColor(m.connectionState), borderColor, false)
 }
 
+func (m Model) renderNotificationMuteStatus() string {
+	if !m.notificationsMuted {
+		return ""
+	}
+	return statusSegment(" NOTIFICATIONS MUTED ", uiTheme.BarBG, m.notificationMuteStatusColor(), true)
+}
+
+func (m Model) notificationMuteStatusText() string {
+	if !m.notificationsMuted {
+		return ""
+	}
+	return " NOTIFICATIONS MUTED"
+}
+
+func (m Model) notificationMuteStatusColor() lipgloss.Color {
+	value := strings.TrimSpace(m.config.IndicatorNotificationsMuted)
+	if value == "" {
+		return lipgloss.Color(config.IndicatorNotificationsMutedDefault)
+	}
+	if strings.EqualFold(value, config.IndicatorPywal) {
+		return warnFG
+	}
+	return lipgloss.Color(value)
+}
+
 func statusSegment(text string, fg, bg lipgloss.Color, bold bool) string {
 	style := lipgloss.NewStyle().Foreground(fg).Bold(bold)
 	if bg != "" {
@@ -2437,6 +2476,8 @@ func modeIndicatorConfigValue(cfg config.Config, mode Mode) string {
 		return cfg.IndicatorCommand
 	case ModeSearch:
 		return cfg.IndicatorSearch
+	case ModeReaction:
+		return cfg.IndicatorCommand
 	default:
 		return cfg.IndicatorNormal
 	}
@@ -2453,6 +2494,8 @@ func defaultModeStatusColor(mode Mode) lipgloss.Color {
 	case ModeSearch:
 		return warnFG
 	case ModeForward:
+		return activeBorder
+	case ModeReaction:
 		return activeBorder
 	case ModeConfirm:
 		return warnFG
@@ -2474,9 +2517,36 @@ func (m Model) renderInput() string {
 	case ModeConfirm:
 		hint := fmt.Sprintf("%s confirm  %s cancel", displayBinding(keys.ConfirmRun, leader), displayBinding(keys.ConfirmCancel, leader))
 		return m.renderPrompt("delete for everybody? type Y: "+m.confirmLine, hint)
+	case ModeReaction:
+		return m.renderReactionPrompt()
 	default:
 		return ""
 	}
+}
+
+func (m Model) renderReactionPrompt() string {
+	keys := m.config.Keymap
+	leader := m.config.LeaderKey
+	selectBindings := []string{
+		keys.ReactionSelect1,
+		keys.ReactionSelect2,
+		keys.ReactionSelect3,
+		keys.ReactionSelect4,
+		keys.ReactionSelect5,
+		keys.ReactionSelect6,
+		keys.ReactionSelect7,
+		keys.ReactionSelect8,
+		keys.ReactionSelect9,
+	}
+	parts := []string{"react:"}
+	for i, reaction := range m.quickReactions() {
+		if i >= len(selectBindings) {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("[%s]%s", displayBinding(selectBindings[i], leader), reaction))
+	}
+	hint := fmt.Sprintf("%s clear  %s custom  %s cancel", displayBinding(keys.ReactionClear, leader), displayBinding(keys.ReactionCustom, leader), displayBinding(keys.ReactionCancel, leader))
+	return m.renderPrompt(strings.Join(parts, " "), hint)
 }
 
 func (m Model) renderPrompt(content, hint string) string {
@@ -2600,7 +2670,7 @@ func (m Model) renderMessageFooter(width int) string {
 }
 
 func (m Model) renderMessageFooterWithNotice(width int, notice string) string {
-	if m.mode == ModeCommand || m.mode == ModeSearch || m.mode == ModeConfirm {
+	if m.mode == ModeCommand || m.mode == ModeSearch || m.mode == ModeConfirm || m.mode == ModeReaction {
 		return ""
 	}
 	if m.mode == ModeInsert {
@@ -2731,7 +2801,7 @@ func (m Model) inputHeight() int {
 		return 0
 	}
 	switch m.mode {
-	case ModeCommand, ModeSearch, ModeConfirm:
+	case ModeCommand, ModeSearch, ModeConfirm, ModeReaction:
 		return 1
 	default:
 		return 0
@@ -2753,6 +2823,7 @@ func (m Model) renderHelp(width int) string {
 		{Key: keysFor(keys.NormalMoveDown, keys.NormalMoveUp), Action: "move"},
 		{Key: key(keys.NormalOpen), Action: "open/preview"},
 		{Key: key(keys.NormalReply), Action: "reply"},
+		{Key: key(keys.NormalReact), Action: "react"},
 		{Key: key(keys.NormalSearch), Action: "search"},
 		{Key: key(keys.NormalCommand), Action: "command"},
 		{Key: keysFor(keys.HelpClose, keys.HelpCloseAlt), Action: "close help"},
@@ -2767,6 +2838,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.NormalFocusNext, keys.NormalFocusPrevious), Action: "cycle focus"},
 			{Key: keysFor(keys.NormalSearchNext, keys.NormalSearchPrevious), Action: "next / previous search match"},
 			{Key: keysFor(keys.NormalToggleUnread, keys.NormalTogglePinned), Action: "unread filter / pinned sort"},
+			{Key: key(keys.NormalToggleNotifications), Action: "mute notifications"},
 		},
 	}
 	mediaActions := helpSection{
@@ -2781,6 +2853,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.NormalSaveMedia, keys.NormalCopyImage), Action: "save media / copy image"},
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
+			{Key: key(keys.NormalReact), Action: "quick reaction"},
 			{Key: key(keys.NormalRetryFailedMedia), Action: "retry failed media"},
 			{Key: key(keys.NormalDeleteForEverybody), Action: "delete for everyone"},
 		},

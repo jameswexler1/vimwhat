@@ -13,8 +13,9 @@ import (
 )
 
 type messageLineRef struct {
-	target string
-	row    int
+	target    string
+	row       int
+	placeable bool
 }
 
 type messageLayoutBlock struct {
@@ -22,6 +23,8 @@ type messageLayoutBlock struct {
 	refs         []messageLineRef
 	messageIndex int
 	kind         messageBlockKind
+	bubbleStart  int
+	bubbleEnd    int
 }
 
 type mediaPlacementCandidate struct {
@@ -62,8 +65,8 @@ func (m Model) visibleOverlayIdentifiers() map[string]bool {
 		}
 	}
 	if m.mediaOverlayPaused {
-		for _, placement := range m.visibleMediaPlacements() {
-			visible[placement.Identifier] = true
+		for _, identifier := range m.visibleMediaPlaceholderIdentifiers() {
+			visible[identifier] = true
 		}
 	}
 	if m.avatarOverlayPaused {
@@ -85,47 +88,19 @@ func (m Model) visibleOverlayPlacements() []media.Placement {
 }
 
 func (m Model) visibleMediaPlacements() []media.Placement {
-	if m.layoutWidth() <= 0 || m.height <= 0 {
-		return nil
-	}
-	geometry, ok := m.messagePaneGeometry()
-	if !ok {
-		return nil
-	}
-	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height, previewIsOverlay)
-	if len(candidates) == 0 || len(viewportRefs) == 0 {
+	geometry, targets := m.visibleMediaPlacementTargets(previewIsOverlay, true)
+	if len(targets) == 0 {
 		return nil
 	}
 
-	rowsByTarget := make(map[string]map[int]int, len(candidates))
-	firstRows := make(map[string]int, len(candidates))
-	for identifier := range candidates {
-		firstRows[identifier] = -1
-	}
-	for y, ref := range viewportRefs {
-		if ref.target == "" {
-			continue
-		}
-		if rowsByTarget[ref.target] == nil {
-			rowsByTarget[ref.target] = map[int]int{}
-		}
-		rowsByTarget[ref.target][ref.row] = y
-		if ref.row == 0 {
-			firstRows[ref.target] = y
-		}
-	}
-
-	placements := make([]media.Placement, 0, len(candidates))
-	for identifier, candidate := range candidates {
+	placements := make([]media.Placement, 0, len(targets))
+	for _, target := range targets {
+		candidate := target.candidate
 		preview := candidate.preview
-		firstRow := firstRows[identifier]
-		if firstRow == -1 || len(rowsByTarget[identifier]) < preview.Height {
-			continue
-		}
 		xOffset := m.mediaXOffset(geometry.width, candidate)
-		yOffset := 1 + firstRow
+		yOffset := 1 + target.firstRow
 		placements = append(placements, media.Placement{
-			Identifier: identifier,
+			Identifier: target.identifier,
 			X:          geometry.x + xOffset,
 			Y:          geometry.y + yOffset,
 			MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
@@ -135,6 +110,18 @@ func (m Model) visibleMediaPlacements() []media.Placement {
 		})
 	}
 	return placements
+}
+
+func (m Model) visibleMediaPlaceholderIdentifiers() []string {
+	_, targets := m.visibleMediaPlacementTargets(previewIsOverlay, false)
+	if len(targets) == 0 {
+		return nil
+	}
+	identifiers := make([]string, 0, len(targets))
+	for _, target := range targets {
+		identifiers = append(identifiers, target.identifier)
+	}
+	return identifiers
 }
 
 func (m Model) visibleChatAvatarPlacements() []media.Placement {
@@ -179,20 +166,51 @@ func (m Model) visibleChatAvatarPlacements() []media.Placement {
 }
 
 func (m Model) visibleSixelMediaPlacements() []media.SixelPlacement {
-	if m.layoutWidth() <= 0 || m.height <= 0 {
+	geometry, targets := m.visibleMediaPlacementTargets(previewIsSixel, true)
+	if len(targets) == 0 {
 		return nil
+	}
+
+	placements := make([]media.SixelPlacement, 0, len(targets))
+	for _, target := range targets {
+		candidate := target.candidate
+		preview := candidate.preview
+		xOffset := m.mediaXOffset(geometry.width, candidate)
+		yOffset := 1 + target.firstRow
+		placements = append(placements, media.SixelPlacement{
+			Identifier: target.identifier,
+			X:          geometry.x + xOffset,
+			Y:          geometry.y + yOffset,
+			MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
+			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
+			Payload:    preview.Lines,
+		})
+	}
+	return placements
+}
+
+type visibleMediaPlacementTarget struct {
+	identifier string
+	candidate  mediaPlacementCandidate
+	firstRow   int
+}
+
+func (m Model) visibleMediaPlacementTargets(include func(media.Preview) bool, requirePlaceable bool) (paneGeometry, []visibleMediaPlacementTarget) {
+	if m.layoutWidth() <= 0 || m.height <= 0 {
+		return paneGeometry{}, nil
 	}
 	geometry, ok := m.messagePaneGeometry()
 	if !ok {
-		return nil
+		return paneGeometry{}, nil
 	}
-	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height, previewIsSixel)
+	candidates, viewportRefs := m.mediaPlacementRefs(geometry.width, geometry.height, include)
 	if len(candidates) == 0 || len(viewportRefs) == 0 {
-		return nil
+		return geometry, nil
 	}
 
 	rowsByTarget := make(map[string]map[int]int, len(candidates))
 	firstRows := make(map[string]int, len(candidates))
+	placeableByTarget := make(map[string]bool, len(candidates))
 	for identifier := range candidates {
 		firstRows[identifier] = -1
 	}
@@ -207,27 +225,28 @@ func (m Model) visibleSixelMediaPlacements() []media.SixelPlacement {
 		if ref.row == 0 {
 			firstRows[ref.target] = y
 		}
+		if ref.placeable {
+			placeableByTarget[ref.target] = true
+		}
 	}
 
-	placements := make([]media.SixelPlacement, 0, len(candidates))
+	targets := make([]visibleMediaPlacementTarget, 0, len(candidates))
 	for identifier, candidate := range candidates {
 		preview := candidate.preview
 		firstRow := firstRows[identifier]
 		if firstRow == -1 || len(rowsByTarget[identifier]) < preview.Height {
 			continue
 		}
-		xOffset := m.mediaXOffset(geometry.width, candidate)
-		yOffset := 1 + firstRow
-		placements = append(placements, media.SixelPlacement{
-			Identifier: identifier,
-			X:          geometry.x + xOffset,
-			Y:          geometry.y + yOffset,
-			MaxWidth:   min(preview.Width, max(1, geometry.width-xOffset)),
-			MaxHeight:  min(preview.Height, max(1, geometry.height-yOffset)),
-			Payload:    preview.Lines,
+		if requirePlaceable && !placeableByTarget[identifier] {
+			continue
+		}
+		targets = append(targets, visibleMediaPlacementTarget{
+			identifier: identifier,
+			candidate:  candidate,
+			firstRow:   firstRow,
 		})
 	}
-	return placements
+	return geometry, targets
 }
 
 func (m Model) visibleSixelChatAvatarPlacements() []media.SixelPlacement {
@@ -369,6 +388,8 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 		active := i == m.messageCursor
 		bubble := m.renderMessageBubble(message, width, active, selected)
 		bubbleLines := strings.Split(alignMessageBubble(bubble, width, message.IsOutgoing), "\n")
+		bubbleStart := 0
+		bubbleEnd := len(bubbleLines)
 		refs := make([]messageLineRef, len(bubbleLines))
 
 		for _, item := range message.Media {
@@ -396,6 +417,8 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 		if date != "" && date != lastDate {
 			lines = append([]string{renderDaySeparator(date, width)}, lines...)
 			refs = append([]messageLineRef{{}}, refs...)
+			bubbleStart++
+			bubbleEnd++
 			lastDate = date
 		}
 		blocks = append(blocks, messageLayoutBlock{
@@ -403,6 +426,8 @@ func (m Model) mediaPlacementRefs(width, height int, include func(media.Preview)
 			refs:         refs,
 			messageIndex: i,
 			kind:         messageBlockMessage,
+			bubbleStart:  bubbleStart,
+			bubbleEnd:    bubbleEnd,
 		})
 	}
 
@@ -433,7 +458,11 @@ func (m Model) previewLineOffset(message store.Message, item store.MediaMetadata
 	if shouldShowMessageSender(m.currentChat(), message) {
 		senderLines = 1
 	}
-	offset := 1 + senderLines
+	quoteLines := 0
+	if m.messageQuoteLine(message, max(1, preview.Width)) != "" {
+		quoteLines = 1
+	}
+	offset := 1 + senderLines + quoteLines
 	for _, candidate := range message.Media {
 		if mediaActivationKey(message, candidate) == mediaActivationKey(message, item) {
 			return offset, true
@@ -466,11 +495,21 @@ func messageViewportRefs(blocks []messageLayoutBlock, scrollTop, cursor, height 
 		if span.index < 0 || span.index >= len(blocks) {
 			continue
 		}
+		block := blocks[span.index]
 		refs := blocks[span.index].refs
 		before := len(out)
 		start := clamp(span.start, 0, len(refs))
 		end := clamp(span.end, start, len(refs))
-		out = append(out, refs[start:end]...)
+		placeable := block.kind == messageBlockMessage &&
+			block.bubbleEnd > block.bubbleStart &&
+			span.start <= block.bubbleStart &&
+			span.end >= block.bubbleEnd
+		for _, ref := range refs[start:end] {
+			if ref.target != "" {
+				ref.placeable = placeable
+			}
+			out = append(out, ref)
+		}
 		for len(out)-before < span.end-span.start {
 			out = append(out, messageLineRef{})
 		}
