@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -2523,6 +2524,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"j/k",
 		"r/l",
 		"pick recent sticker",
+		"compose in editor",
 		"quick reaction",
 		"forward focused message",
 		"forward selected messages",
@@ -9346,6 +9348,219 @@ func TestEditMessageRejectsIncomingAndMediaMessages(t *testing.T) {
 				t.Fatalf("edit state = cmd %T target %+v status %q", cmd, got.editTarget, got.status)
 			}
 		})
+	}
+}
+
+func TestComposeEditorLeaderLoadsDraftIntoComposer(t *testing.T) {
+	var calledChatID string
+	var calledInitial string
+	var savedChatID string
+	var savedBody string
+	var pausedPresenceChatID string
+	var pausedPresenceValue bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "old draft"},
+			ActiveChatID:   "chat-1",
+		},
+		ComposeInEditor: func(chatID, initial string) tea.Cmd {
+			calledChatID = chatID
+			calledInitial = initial
+			return func() tea.Msg {
+				return ComposerEditedMsg{ChatID: chatID, Body: "edited\nbody"}
+			}
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+		ConnectionState: ConnectionOnline,
+		SendPresence: func(chatID string, composing bool) error {
+			pausedPresenceChatID = chatID
+			pausedPresenceValue = composing
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+	model.ownPresenceChatID = "chat-1"
+	model.ownPresenceComposing = true
+	model.composerMentionsByChat["chat-1"] = []store.MessageMention{{
+		MessageID:   "draft",
+		JID:         "123@s.whatsapp.net",
+		DisplayName: "Alice",
+		StartByte:   0,
+		EndByte:     6,
+	}}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	model = updated.(Model)
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = updated.(Model)
+
+	if calledChatID != "chat-1" || calledInitial != "old draft" || cmd == nil {
+		t.Fatalf("compose editor call = (%q, %q, %T), want chat-1 old draft cmd", calledChatID, calledInitial, cmd)
+	}
+	if model.mode != ModeInsert || model.composer != "old draft" || !strings.Contains(model.status, "opening editor") {
+		t.Fatalf("opening state = mode %s composer %q status %q", model.mode, model.composer, model.status)
+	}
+	if !model.terminalOwnerActive {
+		t.Fatal("terminal owner was not marked active while editor is open")
+	}
+	if pausedPresenceChatID != "chat-1" || pausedPresenceValue {
+		t.Fatalf("presence pause = (%q, %v), want chat-1 false", pausedPresenceChatID, pausedPresenceValue)
+	}
+
+	model = runImmediateCmd(t, model, cmd)
+	if model.terminalOwnerActive {
+		t.Fatal("terminal owner was not cleared after editor completion")
+	}
+	if model.mode != ModeInsert || model.composer != "edited\nbody" || model.draftsByChat["chat-1"] != "edited\nbody" {
+		t.Fatalf("edited state = mode %s composer %q drafts %+v", model.mode, model.composer, model.draftsByChat)
+	}
+	if savedChatID != "chat-1" || savedBody != "edited\nbody" {
+		t.Fatalf("saved draft = (%q, %q), want edited body", savedChatID, savedBody)
+	}
+	if len(model.messagesByChat["chat-1"]) != 0 {
+		t.Fatalf("editor compose sent %d messages, want none", len(model.messagesByChat["chat-1"]))
+	}
+	if _, ok := model.composerMentionsByChat["chat-1"]; ok || len(model.composerMentions) != 0 {
+		t.Fatalf("stale mentions were not cleared: current=%+v byChat=%+v", model.composerMentions, model.composerMentionsByChat)
+	}
+}
+
+func TestComposeEditorCommandAliasStartsEditor(t *testing.T) {
+	var called bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "draft"},
+			ActiveChatID:   "chat-1",
+		},
+		ComposeInEditor: func(chatID, initial string) tea.Cmd {
+			called = true
+			if chatID != "chat-1" || initial != "draft" {
+				t.Fatalf("ComposeInEditor(%q, %q), want chat-1 draft", chatID, initial)
+			}
+			return func() tea.Msg {
+				return ComposerEditedMsg{ChatID: chatID, Body: initial}
+			}
+		},
+	})
+
+	updated, cmd := model.executeCommand("compose-editor")
+	model = updated.(Model)
+	if !called || cmd == nil || model.mode != ModeInsert || !model.terminalOwnerActive {
+		t.Fatalf("compose-editor state = called %v cmd %T mode %s terminalOwner %v", called, cmd, model.mode, model.terminalOwnerActive)
+	}
+}
+
+func TestComposeEditorErrorPreservesDraft(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "old draft"},
+			ActiveChatID:   "chat-1",
+		},
+		ComposeInEditor: func(chatID, initial string) tea.Cmd {
+			return func() tea.Msg {
+				return ComposerEditedMsg{ChatID: chatID, Err: errors.New("editor exited")}
+			}
+		},
+		SaveDraft: func(chatID, body string) error {
+			t.Fatal("SaveDraft should not be called after editor failure")
+			return nil
+		},
+	})
+
+	updated, cmd := model.executeCommand("editor")
+	model = updated.(Model)
+	model = runImmediateCmd(t, model, cmd)
+	if model.terminalOwnerActive || model.mode != ModeInsert || model.composer != "old draft" || model.draftsByChat["chat-1"] != "old draft" || !strings.Contains(model.status, "editor failed") {
+		t.Fatalf("error state = terminalOwner %v mode %s composer %q drafts %+v status %q", model.terminalOwnerActive, model.mode, model.composer, model.draftsByChat, model.status)
+	}
+}
+
+func TestComposeEditorInvalidatesTerminalMediaBeforeLaunch(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "draft"},
+			ActiveChatID:   "chat-1",
+		},
+		ComposeInEditor: func(chatID, initial string) tea.Cmd {
+			return func() tea.Msg {
+				return ComposerEditedMsg{ChatID: chatID, Body: initial}
+			}
+		},
+	})
+	model.overlay = media.NewOverlayManagerForWriter(&bytes.Buffer{})
+	if err := model.overlay.SyncEpoch(context.Background(), model.overlay.Epoch(), []media.Placement{{
+		Identifier: "image-1",
+		X:          1,
+		Y:          1,
+		MaxWidth:   1,
+		MaxHeight:  1,
+		Path:       "image.png",
+	}}); err != nil {
+		t.Fatalf("seed overlay: %v", err)
+	}
+	model.sixel = media.NewSixelManagerForWriter(&bytes.Buffer{})
+	if err := model.sixel.SyncEpoch(context.Background(), model.sixel.Epoch(), []media.SixelPlacement{{
+		Identifier: "sixel-1",
+		X:          1,
+		Y:          1,
+		MaxWidth:   1,
+		MaxHeight:  1,
+		Payload:    []string{"payload"},
+	}}); err != nil {
+		t.Fatalf("seed sixel: %v", err)
+	}
+	overlayEpoch := model.overlay.Epoch()
+	sixelEpoch := model.sixel.Epoch()
+
+	updated, cmd := model.startComposeEditor()
+	model = updated.(Model)
+	if cmd == nil || !model.terminalOwnerActive {
+		t.Fatalf("start editor = cmd %T terminalOwner %v", cmd, model.terminalOwnerActive)
+	}
+	if !model.overlaySyncPending || model.overlayPendingSignature != "" || model.overlay.Epoch() <= overlayEpoch {
+		t.Fatalf("overlay clear state = pending %v signature %q epoch %d was %d", model.overlaySyncPending, model.overlayPendingSignature, model.overlay.Epoch(), overlayEpoch)
+	}
+	if !model.sixelSyncPending || model.sixelPendingSignature != "" || model.sixel.Epoch() <= sixelEpoch {
+		t.Fatalf("sixel clear state = pending %v signature %q epoch %d was %d", model.sixelSyncPending, model.sixelPendingSignature, model.sixel.Epoch(), sixelEpoch)
+	}
+}
+
+func TestTerminalOwnerSuppressesPreviewCommands(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.terminalOwnerActive = true
+	model.previewRequested["preview"] = true
+	sentinel := func() tea.Msg {
+		return "editor"
+	}
+
+	updated, cmd := model.withPreviewCmd(sentinel)
+	got := updated.(Model)
+	if !got.terminalOwnerActive || cmd == nil {
+		t.Fatalf("terminal owner guard = active %v cmd %T", got.terminalOwnerActive, cmd)
+	}
+	if msg := cmd(); msg != "editor" {
+		t.Fatalf("guarded cmd returned %#v, want editor sentinel", msg)
 	}
 }
 

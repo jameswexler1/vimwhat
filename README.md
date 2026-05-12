@@ -174,6 +174,7 @@ key_normal_open = "enter"
 key_normal_open_media = "o"
 key_normal_yank_message = "y"
 key_normal_edit_message = "leader e"
+key_normal_compose_editor = "leader c e"
 key_normal_pick_sticker = "leader t"
 key_normal_copy_image = "leader y"
 key_normal_save_media = "leader s"
@@ -218,6 +219,7 @@ Useful command-mode actions:
 :paste-image
 :attach
 :attach <path>
+:compose-editor
 :edit-message
 :sticker
 :delete-message
@@ -234,6 +236,8 @@ Useful command-mode actions:
 ```
 
 Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the current clipboard image as the composer attachment, preserving composer text as the caption. `key_normal_copy_image` copies the focused image message to the clipboard and auto-downloads remote image media first when possible. The default image clipboard commands auto-detect Wayland/X11 tools; set `clipboard_image_paste_command` or `clipboard_image_copy_command` to override them. Paste commands may write to `{path}` or stdout, and copy commands may use `{path}` and `{mime}` or receive image bytes on stdin.
+
+External editor composition uses `key_normal_compose_editor` or `:compose-editor`. It opens the active chat draft in `editor`, writes the saved result back into the inline composer, persists it as the draft, and does not send until the normal composer send key is pressed. Editor commands are argv templates; if `{path}` is absent, vimwhat appends the temp draft file path.
 
 Sticker sending uses `key_normal_pick_sticker` or `:sticker`. Linux defaults to `sticker_picker_command = "nsxiv -t -o -p {files}"`; commands may use `{files}` for the temporary sticker file list, `{dir}` for the picker directory, and `{chooser}` for a chooser-output file. WebP stickers are selectable in v1; Lottie/TGS stickers are cached as metadata but skipped by the current picker/send path.
 

@@ -502,6 +502,102 @@ func pickAttachment(commandTemplate string) tea.Cmd {
 	})
 }
 
+func composeInEditor(paths config.Paths, cfg config.Config, chatID, initial string) tea.Cmd {
+	draftPath, err := prepareComposeEditorDraft(paths, initial)
+	if err != nil {
+		return composerEditorError(chatID, err)
+	}
+	cmd, err := composeEditorCommand(paths, cfg.Editor, draftPath)
+	if err != nil {
+		_ = os.Remove(draftPath)
+		return composerEditorError(chatID, err)
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return composerEditedMessage(chatID, draftPath, err)
+	})
+}
+
+func composerEditorError(chatID string, err error) tea.Cmd {
+	return func() tea.Msg {
+		return ui.ComposerEditedMsg{ChatID: chatID, Err: err}
+	}
+}
+
+func prepareComposeEditorDraft(paths config.Paths, initial string) (string, error) {
+	root := strings.TrimSpace(paths.TransientDir)
+	if root == "" {
+		root = os.TempDir()
+	} else if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create editor temp dir: %w", err)
+	}
+	dir := filepath.Join(root, "compose")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create editor compose dir: %w", err)
+	}
+	file, err := os.CreateTemp(dir, "vimwhat-compose-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create editor draft: %w", err)
+	}
+	path := file.Name()
+	if _, err := file.WriteString(initial); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write editor draft: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close editor draft: %w", err)
+	}
+	return path, nil
+}
+
+func composeEditorCommand(paths config.Paths, editor, draftPath string) (*exec.Cmd, error) {
+	editor = strings.TrimSpace(editor)
+	if editor == "" {
+		editor = config.Default(paths).Editor
+	}
+	hasPathPlaceholder := strings.Contains(editor, "{path}")
+	argv, err := splitCommandLine(editor)
+	if err != nil {
+		return nil, err
+	}
+	if len(argv) == 0 {
+		return nil, fmt.Errorf("editor command is empty")
+	}
+	replaceArgPlaceholder(argv, "{path}", draftPath)
+	if !hasPathPlaceholder {
+		argv = append(argv, draftPath)
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return nil, fmt.Errorf("editor %q not found", argv[0])
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, nil
+}
+
+func composerEditedMessage(chatID, draftPath string, err error) ui.ComposerEditedMsg {
+	defer os.Remove(draftPath)
+	if err != nil {
+		return ui.ComposerEditedMsg{ChatID: chatID, Err: err}
+	}
+	body, err := readEditedComposerDraft(draftPath)
+	return ui.ComposerEditedMsg{ChatID: chatID, Body: body, Err: err}
+}
+
+func readEditedComposerDraft(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read editor draft: %w", err)
+	}
+	body := strings.ReplaceAll(string(data), "\r\n", "\n")
+	body = strings.ReplaceAll(body, "\r", "\n")
+	body = strings.TrimSuffix(body, "\n")
+	return body, nil
+}
+
 func pickSticker(paths config.Paths, cfg config.Config, db *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		cmd, err := stickerPickerCommand(paths, cfg, db)

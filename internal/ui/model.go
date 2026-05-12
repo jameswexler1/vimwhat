@@ -147,6 +147,12 @@ type ClipboardImageCopiedMsg struct {
 	Err       error
 }
 
+type ComposerEditedMsg struct {
+	ChatID string
+	Body   string
+	Err    error
+}
+
 type StickerPickedMsg struct {
 	Sticker   store.RecentSticker
 	Err       error
@@ -368,6 +374,7 @@ type Options struct {
 	SearchMessages               func(chatID, query string, limit int) ([]store.Message, error)
 	SearchMentionCandidates      func(chatID, query string, limit int) ([]store.MentionCandidate, error)
 	ForwardMessages              func(ForwardMessagesRequest) tea.Cmd
+	ComposeInEditor              func(chatID, initial string) tea.Cmd
 	CopyToClipboard              func(text string) error
 	PasteAttachmentFromClipboard func() tea.Cmd
 	PasteImageFromClipboard      func() tea.Cmd
@@ -471,6 +478,7 @@ type Model struct {
 	leaderSequence               string
 	yankRegister                 string
 	quitting                     bool
+	terminalOwnerActive          bool
 	compactLayout                bool
 	infoPaneVisible              bool
 	helpVisible                  bool
@@ -511,6 +519,7 @@ type Model struct {
 	searchMessages               func(chatID, query string, limit int) ([]store.Message, error)
 	searchMentionCandidates      func(chatID, query string, limit int) ([]store.MentionCandidate, error)
 	forwardMessages              func(ForwardMessagesRequest) tea.Cmd
+	composeInEditor              func(chatID, initial string) tea.Cmd
 	copyToClipboard              func(text string) error
 	pasteAttachmentFromClipboard func() tea.Cmd
 	copyImageToClipboard         func(media store.MediaMetadata) tea.Cmd
@@ -649,6 +658,7 @@ func NewModel(opts Options) Model {
 		searchMessages:               opts.SearchMessages,
 		searchMentionCandidates:      opts.SearchMentionCandidates,
 		forwardMessages:              opts.ForwardMessages,
+		composeInEditor:              opts.ComposeInEditor,
 		copyToClipboard:              opts.CopyToClipboard,
 		pasteAttachmentFromClipboard: opts.PasteAttachmentFromClipboard,
 		copyImageToClipboard:         opts.CopyImageToClipboard,
@@ -1604,6 +1614,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleClipboardAttachmentPasted(msg)
 	case ClipboardImageCopiedMsg:
 		return withPreviewResult(m.handleClipboardImageCopied(msg))
+	case ComposerEditedMsg:
+		next, cmd := m.handleComposerEdited(msg)
+		return next.withPreviewCmd(cmd)
 	case AttachmentPickedMsg:
 		return m.handlePickedAttachment(msg)
 	case StickerPickedMsg:
@@ -1831,6 +1844,7 @@ const (
 	normalActionQuit                = "quit"
 	normalActionHelp                = "help"
 	normalActionInsert              = "insert"
+	normalActionComposeEditor       = "compose_editor"
 	normalActionReply               = "reply"
 	normalActionReact               = "react"
 	normalActionForward             = "forward"
@@ -1905,6 +1919,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalQuit, action: normalActionQuit},
 		{binding: keys.NormalHelp, action: normalActionHelp},
 		{binding: keys.NormalInsert, action: normalActionInsert},
+		{binding: keys.NormalComposeEditor, action: normalActionComposeEditor},
 		{binding: keys.NormalReply, action: normalActionReply},
 		{binding: keys.NormalReact, action: normalActionReact},
 		{binding: keys.NormalForward, action: normalActionForward},
@@ -1952,6 +1967,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.beginInsert(nil)
+	case normalActionComposeEditor:
+		return m.startComposeEditor()
 	case normalActionReply:
 		return m.beginReplyToFocusedMessage()
 	case normalActionReact:
@@ -2103,6 +2120,42 @@ func (m Model) beginReplyToFocusedMessage() (tea.Model, tea.Cmd) {
 	return m.beginInsert(&message)
 }
 
+func (m Model) startComposeEditor() (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	if m.editTarget != nil {
+		m.status = "editor compose unavailable while editing a message"
+		return m, nil
+	}
+	if m.composeInEditor == nil {
+		m.status = "editor compose unavailable"
+		return m, nil
+	}
+	chatID := m.currentChat().ID
+	initial := m.draftsByChat[chatID]
+	if m.mode == ModeInsert {
+		initial = m.composer
+	}
+	m.mode = ModeInsert
+	m.focus = FocusMessages
+	m.composer = initial
+	m.composerMentions = slices.Clone(m.composerMentionsByChat[chatID])
+	m.clearMentionState()
+	cmd := m.composeInEditor(chatID, initial)
+	if cmd == nil {
+		m.status = "editor compose unavailable"
+		return m, nil
+	}
+	m.sendOwnPresence(chatID, false)
+	m.terminalOwnerActive = true
+	overlayCmd := m.clearOverlayForTerminalOwnerCmd()
+	sixelCmd := m.clearSixelForTerminalOwnerCmd()
+	m.status = "opening editor"
+	return m, sequenceCmds(overlayCmd, sixelCmd, cmd)
+}
+
 func (m Model) beginEditFocusedMessage() (tea.Model, tea.Cmd) {
 	message, ok := m.focusedMessage()
 	if !ok {
@@ -2124,6 +2177,39 @@ func (m Model) beginEditFocusedMessage() (tea.Model, tea.Cmd) {
 	m.sendOwnPresence(m.currentChat().ID, true)
 	m.status = "editing message"
 	return m, batchCmds(activateCmd, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration))
+}
+
+func (m Model) handleComposerEdited(msg ComposerEditedMsg) (Model, tea.Cmd) {
+	chatID := strings.TrimSpace(msg.ChatID)
+	if chatID == "" {
+		chatID = m.currentChat().ID
+	}
+	if msg.Err != nil {
+		m.terminalOwnerActive = false
+		if chatID == m.currentChat().ID {
+			m.mode = ModeInsert
+			m.focus = FocusMessages
+		}
+		m.status = fmt.Sprintf("editor failed: %v", msg.Err)
+		return m, nil
+	}
+
+	m.terminalOwnerActive = false
+	m.clearMentionState()
+	delete(m.composerMentionsByChat, chatID)
+	if chatID == m.currentChat().ID {
+		m.mode = ModeInsert
+		m.focus = FocusMessages
+		m.composer = msg.Body
+		m.composerMentions = nil
+	}
+	m.localSetDraft(chatID, msg.Body)
+	if strings.TrimSpace(msg.Body) == "" {
+		m.status = "draft cleared from editor"
+	} else {
+		m.status = "draft loaded from editor"
+	}
+	return m, m.saveDraftCmd(chatID, msg.Body)
 }
 
 func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
@@ -3125,6 +3211,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.copyFocusedImage()
 	case cmd == "paste-attachment" || cmd == "paste attachment" || cmd == "paste-image" || cmd == "paste image":
 		return m.startClipboardAttachmentPaste()
+	case cmd == "compose-editor" || cmd == "compose editor" || cmd == "editor":
+		return m.startComposeEditor()
 	case cmd == "retry-message" || cmd == "retry message" || cmd == "retry":
 		return m, m.retryFocusedMediaMessage()
 	case cmd == "history-fetch" || cmd == "history fetch":
@@ -4057,6 +4145,9 @@ func (m Model) withPreviewCmd(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, batchCmds(cmd, m.clearOverlayCmd(), m.clearSixelCmd())
 	}
+	if m.terminalOwnerActive {
+		return m, cmd
+	}
 	next := m
 	next.reportVisibleChatsChanged()
 	next, stickerCmd := next.ensureVisibleStickerMedia()
@@ -4187,6 +4278,22 @@ func batchCmds(cmds ...tea.Cmd) tea.Cmd {
 		return active[0]
 	}
 	return tea.Batch(active...)
+}
+
+func sequenceCmds(cmds ...tea.Cmd) tea.Cmd {
+	var active []tea.Cmd
+	for _, cmd := range cmds {
+		if cmd != nil {
+			active = append(active, cmd)
+		}
+	}
+	if len(active) == 0 {
+		return nil
+	}
+	if len(active) == 1 {
+		return active[0]
+	}
+	return tea.Sequence(active...)
 }
 
 var inlineFallbackAllowed = platformAllowsInlineFallback
@@ -4462,6 +4569,29 @@ func (m *Model) clearOverlayCmd() tea.Cmd {
 	}
 }
 
+func (m *Model) clearOverlayForTerminalOwnerCmd() tea.Cmd {
+	signature := ""
+	if m.overlay == nil {
+		m.overlaySignature = ""
+		m.overlaySyncPending = false
+		m.overlayPendingSignature = ""
+		return nil
+	}
+	m.overlay.Invalidate()
+	m.overlaySyncPending = true
+	m.overlayPendingSignature = signature
+	manager := m.overlay
+	epoch := manager.Epoch()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
+		return mediaOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(ctx, epoch, nil),
+		}
+	}
+}
+
 func (m *Model) syncSixelCmd() tea.Cmd {
 	if m.previewReport.Selected != media.BackendSixel {
 		return m.clearSixelCmd()
@@ -4537,6 +4667,29 @@ func (m *Model) clearSixelCmd() tea.Cmd {
 		return nil
 	}
 	m.invalidateStaleSixelSync(signature)
+	m.sixelSyncPending = true
+	m.sixelPendingSignature = signature
+	manager := m.sixel
+	epoch := manager.Epoch()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalMediaSyncTimeout)
+		defer cancel()
+		return sixelOverlayMsg{
+			Signature: signature,
+			Err:       manager.SyncEpoch(ctx, epoch, nil),
+		}
+	}
+}
+
+func (m *Model) clearSixelForTerminalOwnerCmd() tea.Cmd {
+	signature := ""
+	if m.sixel == nil {
+		m.sixelSignature = ""
+		m.sixelSyncPending = false
+		m.sixelPendingSignature = ""
+		return nil
+	}
+	m.sixel.Invalidate()
 	m.sixelSyncPending = true
 	m.sixelPendingSignature = signature
 	manager := m.sixel

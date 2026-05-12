@@ -424,6 +424,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ForwardMessages: func(request ui.ForwardMessagesRequest) tea.Cmd {
 			return forwardMessagesCmd(liveEnabled, forwardRequests, request)
 		},
+		ComposeInEditor: func(chatID, initial string) tea.Cmd {
+			return composeInEditor(env.Paths, env.Config, chatID, initial)
+		},
 		SaveMedia: func(media store.MediaMetadata) error {
 			storeCtx, cancelStore := uiStoreWriteContext()
 			defer cancelStore()

@@ -29,6 +29,7 @@ type Keymap struct {
 	NormalQuit                string
 	NormalHelp                string
 	NormalInsert              string
+	NormalComposeEditor       string
 	NormalReply               string
 	NormalReact               string
 	NormalForward             string
@@ -134,6 +135,7 @@ func DefaultKeymap() Keymap {
 		NormalQuit:                "q",
 		NormalHelp:                "?",
 		NormalInsert:              "i",
+		NormalComposeEditor:       "leader c e",
 		NormalReply:               "r",
 		NormalReact:               "leader r",
 		NormalForward:             "f",
@@ -246,6 +248,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	}
 	if input.NormalInsert == "" {
 		input.NormalInsert = defaults.NormalInsert
+	}
+	if input.NormalComposeEditor == "" {
+		input.NormalComposeEditor = defaults.NormalComposeEditor
 	}
 	if input.NormalReply == "" {
 		input.NormalReply = defaults.NormalReply
@@ -497,6 +502,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_normal_quit", Mode: KeyModeNormal, Value: k.NormalQuit},
 		{Name: "key_normal_help", Mode: KeyModeNormal, Value: k.NormalHelp},
 		{Name: "key_normal_insert", Mode: KeyModeNormal, Value: k.NormalInsert},
+		{Name: "key_normal_compose_editor", Mode: KeyModeNormal, Value: k.NormalComposeEditor},
 		{Name: "key_normal_reply", Mode: KeyModeNormal, Value: k.NormalReply},
 		{Name: "key_normal_react", Mode: KeyModeNormal, Value: k.NormalReact},
 		{Name: "key_normal_forward", Mode: KeyModeNormal, Value: k.NormalForward},
@@ -600,6 +606,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.NormalHelp = normalized
 	case "key_normal_insert":
 		k.NormalInsert = normalized
+	case "key_normal_compose_editor":
+		k.NormalComposeEditor = normalized
 	case "key_normal_reply":
 		k.NormalReply = normalized
 	case "key_normal_react":

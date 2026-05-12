@@ -358,6 +358,75 @@ func TestPickStickerUsesExistingCacheWithoutSync(t *testing.T) {
 	}
 }
 
+func TestPrepareComposeEditorDraftUsesTransientDir(t *testing.T) {
+	root := t.TempDir()
+	path, err := prepareComposeEditorDraft(config.Paths{TransientDir: root}, "hello")
+	if err != nil {
+		t.Fatalf("prepareComposeEditorDraft() error = %v", err)
+	}
+	defer os.Remove(path)
+	if !strings.HasPrefix(path, filepath.Join(root, "compose")) {
+		t.Fatalf("draft path = %q, want under transient compose dir", path)
+	}
+	if got := string(mustReadFile(t, path)); got != "hello" {
+		t.Fatalf("draft content = %q, want hello", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(draft) error = %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("draft mode = %03o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestComposeEditorCommandAppendsDraftPathWhenPlaceholderMissing(t *testing.T) {
+	draftPath := filepath.Join(t.TempDir(), "draft.txt")
+	cmd, err := composeEditorCommand(config.Paths{}, "sh -c true", draftPath)
+	if err != nil {
+		t.Fatalf("composeEditorCommand() error = %v", err)
+	}
+	want := "sh\x00-c\x00true\x00" + draftPath
+	if got := strings.Join(cmd.Args, "\x00"); got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+	if cmd.Stdin != os.Stdin || cmd.Stdout != os.Stdout || cmd.Stderr != os.Stderr {
+		t.Fatalf("editor stdio = stdin %T stdout %T stderr %T, want real process stdio", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+	}
+}
+
+func TestComposeEditorCommandReplacesPathPlaceholder(t *testing.T) {
+	draftPath := filepath.Join(t.TempDir(), "draft with spaces.txt")
+	cmd, err := composeEditorCommand(config.Paths{}, `sh -c "printf edited > {path}"`, draftPath)
+	if err != nil {
+		t.Fatalf("composeEditorCommand() error = %v", err)
+	}
+	if len(cmd.Args) != 3 || !strings.Contains(cmd.Args[2], draftPath) {
+		t.Fatalf("args = %#v, want placeholder replaced without appending", cmd.Args)
+	}
+}
+
+func TestComposeEditorCommandReportsMissingEditor(t *testing.T) {
+	_, err := composeEditorCommand(config.Paths{}, "vimwhat-editor-definitely-missing", filepath.Join(t.TempDir(), "draft.txt"))
+	if err == nil || !strings.Contains(err.Error(), "editor") || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("composeEditorCommand() error = %v, want missing editor", err)
+	}
+}
+
+func TestComposerEditedMessageReadsNormalizesAndCleansUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "draft.txt")
+	if err := os.WriteFile(path, []byte("hello\r\nworld\r\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(draft) error = %v", err)
+	}
+	msg := composerEditedMessage("chat-1", path, nil)
+	if msg.Err != nil || msg.ChatID != "chat-1" || msg.Body != "hello\nworld" {
+		t.Fatalf("composerEditedMessage() = %+v, want normalized body", msg)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("draft cleanup Stat() error = %v, want not exist", err)
+	}
+}
+
 func TestExpandStickerPickerArgsSplicesFiles(t *testing.T) {
 	got := expandStickerPickerArgs(
 		[]string{"nsxiv", "-t", "-o", "-p", "{files}"},
