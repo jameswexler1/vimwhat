@@ -9,6 +9,7 @@ require (
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/uniseg v0.4.7
+	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e
 	go.mau.fi/whatsmeow v0.0.0-20260123225751-89be06b020db
 	modernc.org/sqlite v1.48.2
 )
@@ -37,7 +38,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
-	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.mau.fi/libsignal v0.2.1 // indirect
 	go.mau.fi/util v0.9.5 // indirect
 	golang.org/x/crypto v0.47.0 // indirect

@@ -3399,6 +3399,46 @@ func TestChatTopAndBottomCommandsKeepActiveCellVisible(t *testing.T) {
 	}
 }
 
+func TestChatTopNavigationWithLastColumnGuardDoesNotTouchTerminalEdge(t *testing.T) {
+	chats := numberedChats(8)
+	chats[0].Unread = 20
+	chats[0].AvatarPath = "/tmp/avatar-top.jfif"
+	messages := map[string][]store.Message{}
+	for _, chat := range chats {
+		messages[chat.ID] = nil
+	}
+	model := NewModel(Options{
+		ReserveLastColumn: true,
+		Snapshot: store.Snapshot{
+			Chats:          chats,
+			MessagesByChat: messages,
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-7",
+		},
+	})
+	model.width = 80
+	model.height = 24
+	model.focus = FocusChats
+
+	top, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	model = top.(Model)
+	if model.activeChat != 0 || model.chatScrollTop != 0 {
+		t.Fatalf("g activeChat=%d chatScrollTop=%d, want top visible", model.activeChat, model.chatScrollTop)
+	}
+
+	view := stripANSI(model.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) > model.height {
+		t.Fatalf("View() produced %d lines, want <= %d\n%s", len(lines), model.height, view)
+	}
+	maxWidth := model.width - lastColumnGuardMargin
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width > maxWidth {
+			t.Fatalf("line %d width = %d, want <= %d with last-column guard\n%s", i+1, width, maxWidth, view)
+		}
+	}
+}
+
 func TestChatSearchKeepsMatchedCellVisible(t *testing.T) {
 	chats := numberedChats(8)
 	chats[6].Title = "Needle Team"
