@@ -75,11 +75,12 @@ type Keymap struct {
 	InsertMentionMoveDown  string
 	InsertMentionMoveUp    string
 
-	VisualCancel   string
-	VisualMoveDown string
-	VisualMoveUp   string
-	VisualYank     string
-	VisualForward  string
+	VisualCancel             string
+	VisualMoveDown           string
+	VisualMoveUp             string
+	VisualYank               string
+	VisualForward            string
+	VisualDeleteForEverybody string
 
 	ForwardCancel       string
 	ForwardSend         string
@@ -182,11 +183,12 @@ func DefaultKeymap() Keymap {
 		InsertMentionMoveDown:  "down",
 		InsertMentionMoveUp:    "up",
 
-		VisualCancel:   "esc",
-		VisualMoveDown: "j",
-		VisualMoveUp:   "k",
-		VisualYank:     "y",
-		VisualForward:  "f",
+		VisualCancel:             "esc",
+		VisualMoveDown:           "j",
+		VisualMoveUp:             "k",
+		VisualYank:               "y",
+		VisualForward:            "f",
+		VisualDeleteForEverybody: "leader d e",
 
 		ForwardCancel:       "esc",
 		ForwardSend:         "enter",
@@ -398,6 +400,9 @@ func NormalizeKeymap(input Keymap) Keymap {
 	if input.VisualForward == "" {
 		input.VisualForward = defaults.VisualForward
 	}
+	if input.VisualDeleteForEverybody == "" {
+		input.VisualDeleteForEverybody = defaults.VisualDeleteForEverybody
+	}
 	if input.ForwardCancel == "" {
 		input.ForwardCancel = defaults.ForwardCancel
 	}
@@ -559,6 +564,7 @@ func KeymapBindings(k Keymap) []KeyBinding {
 		{Name: "key_visual_move_up", Mode: KeyModeVisual, Value: k.VisualMoveUp},
 		{Name: "key_visual_yank", Mode: KeyModeVisual, Value: k.VisualYank},
 		{Name: "key_visual_forward", Mode: KeyModeVisual, Value: k.VisualForward},
+		{Name: "key_visual_delete_for_everybody", Mode: KeyModeVisual, Value: k.VisualDeleteForEverybody},
 		{Name: "key_forward_cancel", Mode: KeyModeForward, Value: k.ForwardCancel},
 		{Name: "key_forward_send", Mode: KeyModeForward, Value: k.ForwardSend},
 		{Name: "key_forward_toggle", Mode: KeyModeForward, Value: k.ForwardToggle},
@@ -713,6 +719,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 		k.VisualYank = normalized
 	case "key_visual_forward":
 		k.VisualForward = normalized
+	case "key_visual_delete_for_everybody":
+		k.VisualDeleteForEverybody = normalized
 	case "key_forward_cancel":
 		k.ForwardCancel = normalized
 	case "key_forward_send":
@@ -876,8 +884,8 @@ func ValidateKeymap(cfg Config) error {
 		if len(tokens) == 0 {
 			return fmt.Errorf("%s: must not be empty", binding.Name)
 		}
-		if tokens[0] == "leader" && binding.Mode != KeyModeNormal {
-			return fmt.Errorf("%s: leader sequences are only supported in normal mode", binding.Name)
+		if tokens[0] == "leader" && !modeSupportsLeader(binding.Mode) {
+			return fmt.Errorf("%s: leader sequences are only supported in normal and visual mode", binding.Name)
 		}
 		if binding.Mode == KeyModeNormal {
 			first := tokens[0]
@@ -904,6 +912,10 @@ func ValidateKeymap(cfg Config) error {
 	}
 
 	return nil
+}
+
+func modeSupportsLeader(mode string) bool {
+	return mode == KeyModeNormal || mode == KeyModeVisual
 }
 
 func validateModeBindings(mode string, bindings []KeyBinding, leader string) error {

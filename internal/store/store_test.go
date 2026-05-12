@@ -1062,6 +1062,21 @@ func TestListMessagesBeforeAndOldestMessage(t *testing.T) {
 	if len(older) != 2 || older[0].ID != "m-1" || older[1].ID != "m-2" {
 		t.Fatalf("older messages = %+v, want m-1,m-2 in ascending order", older)
 	}
+
+	deleted, err := db.DeleteMessageForEveryone(ctx, "m-2")
+	if err != nil {
+		t.Fatalf("DeleteMessageForEveryone(m-2) error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteMessageForEveryone(m-2) deleted = false, want true")
+	}
+	older, err = db.ListMessagesBefore(ctx, "chat-1", Message{ID: "m-3", Timestamp: base.Add(2 * time.Minute)}, 2)
+	if err != nil {
+		t.Fatalf("ListMessagesBefore() after delete error = %v", err)
+	}
+	if len(older) != 2 || older[0].ID != "m-1" || older[1].ID != "m-2" || older[1].DeletedAt.IsZero() || older[1].DeletedReason != "everyone" {
+		t.Fatalf("older messages after tombstone = %+v, want m-1 and deleted m-2", older)
+	}
 }
 
 func TestMessageQueriesHideEmptyRowsWithoutMedia(t *testing.T) {
@@ -1362,6 +1377,14 @@ func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
 		t.Fatalf("deleted row = body %q deletedAt %d reason %q", body, deletedAt, reason)
 	}
 
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() after delete error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "chat-1/remote-1" || messages[0].Body != "" || messages[0].DeletedAt.IsZero() || messages[0].DeletedReason != "everyone" {
+		t.Fatalf("messages after delete = %+v, want delete-for-everyone tombstone", messages)
+	}
+
 	results, err := store.SearchMessages(ctx, "chat-1", "remove", 10)
 	if err != nil {
 		t.Fatalf("SearchMessages() error = %v", err)
@@ -1376,6 +1399,54 @@ func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
 	}
 	if deleted {
 		t.Fatal("DeleteMessageForEveryone(second) deleted = true, want false")
+	}
+}
+
+func TestDeleteMessageForEveryoneTombstoneHidesMediaDetails(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	if err := store.AddMessageWithMedia(ctx, Message{
+		ID:         "m-media",
+		RemoteID:   "remote-media",
+		ChatID:     "chat-1",
+		Sender:     "me",
+		Body:       "photo caption",
+		Timestamp:  time.Unix(1_700_000_000, 0),
+		IsOutgoing: true,
+		Status:     "sent",
+	}, []MediaMetadata{{
+		FileName:      "photo.jpg",
+		MIMEType:      "image/jpeg",
+		SizeBytes:     1024,
+		DownloadState: "downloaded",
+	}}); err != nil {
+		t.Fatalf("AddMessageWithMedia() error = %v", err)
+	}
+
+	deleted, err := store.DeleteMessageForEveryone(ctx, "m-media")
+	if err != nil {
+		t.Fatalf("DeleteMessageForEveryone() error = %v", err)
+	}
+	if !deleted {
+		t.Fatal("DeleteMessageForEveryone() deleted = false, want true")
+	}
+
+	messages, err := store.ListMessages(ctx, "chat-1", 10)
+	if err != nil {
+		t.Fatalf("ListMessages() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "m-media" || messages[0].DeletedAt.IsZero() || len(messages[0].Media) != 0 {
+		t.Fatalf("deleted media message = %+v, want tombstone without media", messages)
 	}
 }
 

@@ -1304,8 +1304,8 @@ func TestHandleDeleteEveryoneRequestSendsRemoteRevokeBeforeLocalDelete(t *testin
 	if err != nil {
 		t.Fatalf("ListMessages() error = %v", err)
 	}
-	if len(messages) != 0 {
-		t.Fatalf("messages after delete = %+v, want none", messages)
+	if len(messages) != 1 || messages[0].ID != message.ID || messages[0].Body != "" || messages[0].DeletedAt.IsZero() || messages[0].DeletedReason != "everyone" {
+		t.Fatalf("messages after delete = %+v, want delete-for-everyone tombstone", messages)
 	}
 }
 

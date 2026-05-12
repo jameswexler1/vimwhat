@@ -192,6 +192,7 @@ key_insert_remove_attachment = "ctrl+x"
 
 key_visual_yank = "y"
 key_visual_forward = "f"
+key_visual_delete_for_everybody = "leader d e"
 
 key_forward_send = "enter"
 key_forward_toggle = "space"

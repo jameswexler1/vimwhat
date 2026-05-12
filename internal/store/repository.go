@@ -18,7 +18,9 @@ const (
 					FROM media_metadata visible_mm
 					WHERE visible_mm.message_id = m.id
 				))`
-	chatLastPreviewSQL = `c.last_preview AS last_preview`
+	deletedForEveryoneMessageWhereSQL = `(m.deleted_at > 0 AND trim(m.deleted_reason) = 'everyone')`
+	conversationMessageWhereSQL       = `((m.deleted_at = 0 AND ` + renderableMessageWhereSQL + `) OR ` + deletedForEveryoneMessageWhereSQL + `)`
+	chatLastPreviewSQL                = `c.last_preview AS last_preview`
 
 	uiSnapshotKindNotifications = "notifications"
 	uiSnapshotNameGlobalMute    = "global_mute"
@@ -238,8 +240,7 @@ func (s *Store) ListMessages(ctx context.Context, chatID string, limit int) ([]M
 				deleted_at, deleted_reason, edited_at
 				FROM messages m
 				WHERE m.chat_id = ?
-					AND m.deleted_at = 0
-					AND `+renderableMessageWhereSQL+`
+					AND `+conversationMessageWhereSQL+`
 				ORDER BY m.timestamp_unix DESC, m.id DESC
 				LIMIT ?
 			)
@@ -353,8 +354,7 @@ func (s *Store) ListMessagesBefore(ctx context.Context, chatID string, before Me
 				deleted_at, deleted_reason, edited_at
 				FROM messages m
 				WHERE m.chat_id = ?
-					AND m.deleted_at = 0
-					AND `+renderableMessageWhereSQL+`
+					AND `+conversationMessageWhereSQL+`
 					AND (
 						m.timestamp_unix < ?
 						OR (m.timestamp_unix = ? AND m.id < ?)
@@ -707,6 +707,10 @@ func refreshChatPreview(ctx context.Context, execer chatPreviewExecer, chatID st
 
 func messageRenderableForPreview(message Message) bool {
 	return message.DeletedAt.IsZero() && (strings.TrimSpace(message.Body) != "" || len(message.Media) > 0)
+}
+
+func messageDeletedForEveryone(message Message) bool {
+	return !message.DeletedAt.IsZero() && strings.EqualFold(strings.TrimSpace(message.DeletedReason), "everyone")
 }
 
 func refreshChatPreviewForMessage(ctx context.Context, execer chatPreviewExecer, messageID string) error {
@@ -2178,7 +2182,7 @@ func (s *Store) attachMediaMetadata(ctx context.Context, messages []Message) ([]
 	ids := make([]string, 0, len(messages))
 	seen := make(map[string]struct{}, len(messages))
 	for _, message := range messages {
-		if message.ID == "" {
+		if message.ID == "" || messageDeletedForEveryone(message) {
 			continue
 		}
 		if _, ok := seen[message.ID]; ok {
@@ -2257,7 +2261,7 @@ func (s *Store) attachMessageReactions(ctx context.Context, messages []Message) 
 	ids := make([]string, 0, len(messages))
 	seen := make(map[string]struct{}, len(messages))
 	for _, message := range messages {
-		if message.ID == "" {
+		if message.ID == "" || messageDeletedForEveryone(message) {
 			continue
 		}
 		if _, ok := seen[message.ID]; ok {
@@ -2313,7 +2317,7 @@ func (s *Store) attachMessageMentions(ctx context.Context, messages []Message) (
 	ids := make([]string, 0, len(messages))
 	seen := make(map[string]struct{}, len(messages))
 	for _, message := range messages {
-		if message.ID == "" {
+		if message.ID == "" || messageDeletedForEveryone(message) {
 			continue
 		}
 		if _, ok := seen[message.ID]; ok {

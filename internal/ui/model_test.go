@@ -2527,6 +2527,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"compose in editor",
 		"quick reaction",
 		"forward focused message",
+		"select, yank, delete, cancel",
 		"forward selected messages",
 		"retry failed media",
 		"retry-message|retry",
@@ -9204,7 +9205,7 @@ func TestDeleteMessageRequiresConfirmationAndRemovesFocusedMessage(t *testing.T)
 	}
 }
 
-func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) {
+func TestDeleteMessageForEverybodyWaitsForCompletionBeforeTombstone(t *testing.T) {
 	var queued store.Message
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -9246,8 +9247,8 @@ func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) 
 	got = typed.(Model)
 	confirmed, cmd := got.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
 	got = confirmed.(Model)
-	if queued.ID != "m-2" {
-		t.Fatalf("queued message = %+v, want m-2", queued)
+	if queued.ID != "" {
+		t.Fatalf("delete command ran before execution: %+v", queued)
 	}
 	if len(got.messagesByChat["chat-1"]) != 2 {
 		t.Fatalf("message removed before completion: %+v", got.messagesByChat["chat-1"])
@@ -9261,9 +9262,261 @@ func TestDeleteMessageForEverybodyWaitsForCompletionBeforeRemoval(t *testing.T) 
 
 	handled, _ := got.Update(cmd())
 	got = handled.(Model)
+	if queued.ID != "m-2" {
+		t.Fatalf("queued message = %+v, want m-2", queued)
+	}
 	messages := got.messagesByChat["chat-1"]
-	if len(messages) != 1 || messages[0].ID != "m-1" {
-		t.Fatalf("messages after delete completion = %+v", messages)
+	if len(messages) != 2 || messages[0].ID != "m-1" || messages[1].ID != "m-2" || messages[1].Body != "" || messages[1].DeletedAt.IsZero() || messages[1].DeletedReason != "everyone" {
+		t.Fatalf("messages after delete completion = %+v, want m-2 tombstone", messages)
+	}
+	view := stripANSI(got.renderMessages(80, 12))
+	if !strings.Contains(view, "This message was deleted") || strings.Contains(view, "delete me") {
+		t.Fatalf("deleted message view =\n%s", view)
+	}
+}
+
+func TestVisualDeleteForEverybodyLeaderConfirmsSelectedMessages(t *testing.T) {
+	var queued []string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "one", IsOutgoing: true, Status: "sent"},
+					{ID: "m-2", RemoteID: "remote-2", ChatID: "chat-1", Sender: "me", Body: "two", IsOutgoing: true, Status: "sent"},
+					{ID: "m-3", RemoteID: "remote-3", ChatID: "chat-1", Sender: "me", Body: "three", IsOutgoing: true, Status: "sent"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			return func() tea.Msg {
+				queued = append(queued, message.ID)
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 2
+
+	leader, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	model = leader.(Model)
+	prefix, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	model = prefix.(Model)
+	if !model.leaderPending || model.leaderSequence != "d" {
+		t.Fatalf("visual leader prefix = pending %v sequence %q", model.leaderPending, model.leaderSequence)
+	}
+	armed, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	model = armed.(Model)
+	if cmd != nil || len(queued) != 0 {
+		t.Fatalf("visual delete armed command = %T queued=%+v, want confirmation only", cmd, queued)
+	}
+	if model.mode != ModeConfirm || len(model.deleteForEveryoneConfirmMessages) != 3 || !strings.Contains(model.status, "delete 3 message") {
+		t.Fatalf("confirm state = mode %s count %d status %q", model.mode, len(model.deleteForEveryoneConfirmMessages), model.status)
+	}
+
+	typed, _ := model.updateConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	model = typed.(Model)
+	confirmed, cmd := model.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	model = confirmed.(Model)
+	if cmd == nil || model.mode != ModeNormal {
+		t.Fatalf("visual delete confirm = cmd %T mode %s", cmd, model.mode)
+	}
+	handled, _ := model.Update(cmd())
+	model = handled.(Model)
+	if strings.Join(queued, ",") != "m-1,m-2,m-3" {
+		t.Fatalf("queued deletes = %+v", queued)
+	}
+	for _, message := range model.messagesByChat["chat-1"] {
+		if message.Body != "" || message.DeletedAt.IsZero() || message.DeletedReason != "everyone" {
+			t.Fatalf("message after visual delete = %+v, want tombstone", message)
+		}
+	}
+	if !strings.Contains(model.status, "deleted 3 messages") {
+		t.Fatalf("status = %q, want batch delete success", model.status)
+	}
+}
+
+func TestVisualDeleteForEverybodyLowercaseYDoesNotConfirm(t *testing.T) {
+	var queued bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "one", IsOutgoing: true, Status: "sent"},
+					{ID: "m-2", RemoteID: "remote-2", ChatID: "chat-1", Sender: "me", Body: "two", IsOutgoing: true, Status: "sent"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			queued = true
+			return func() tea.Msg {
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 1
+	model.armDeleteSelectedMessagesForEveryone()
+	if model.mode != ModeConfirm {
+		t.Fatalf("mode = %s, want confirm", model.mode)
+	}
+
+	typed, _ := model.updateConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	model = typed.(Model)
+	cancelled, cmd := model.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	model = cancelled.(Model)
+	if cmd != nil || queued {
+		t.Fatalf("lowercase y confirmed visual delete: cmd=%T queued=%v", cmd, queued)
+	}
+	if model.mode != ModeNormal || len(model.deleteForEveryoneConfirmMessages) != 0 || !strings.Contains(model.status, "cancelled") {
+		t.Fatalf("cancel state = mode %s confirm %d status %q", model.mode, len(model.deleteForEveryoneConfirmMessages), model.status)
+	}
+}
+
+func TestVisualDeleteForEverybodyRejectsMixedSelectionBeforeQueueing(t *testing.T) {
+	var queued bool
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "outgoing", IsOutgoing: true, Status: "sent"},
+					{ID: "m-2", RemoteID: "remote-2", ChatID: "chat-1", Sender: "Alice", Body: "incoming"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			queued = true
+			return nil
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 1
+
+	updated, cmd := model.runVisualAction(visualActionDeleteForEveryone)
+	model = updated.(Model)
+	if cmd != nil || queued {
+		t.Fatalf("mixed visual delete queued: cmd=%T queued=%v", cmd, queued)
+	}
+	if model.mode != ModeVisual || len(model.deleteForEveryoneConfirmMessages) != 0 || !strings.Contains(model.status, "message 2") || !strings.Contains(model.status, "only your outgoing messages") {
+		t.Fatalf("mixed reject state = mode %s confirm %d status %q", model.mode, len(model.deleteForEveryoneConfirmMessages), model.status)
+	}
+}
+
+func TestVisualDeleteForEverybodyStopsAfterRuntimeFailure(t *testing.T) {
+	var queued []string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {
+					{ID: "m-1", RemoteID: "remote-1", ChatID: "chat-1", Sender: "me", Body: "one", IsOutgoing: true, Status: "sent"},
+					{ID: "m-2", RemoteID: "remote-2", ChatID: "chat-1", Sender: "me", Body: "two", IsOutgoing: true, Status: "sent"},
+					{ID: "m-3", RemoteID: "remote-3", ChatID: "chat-1", Sender: "me", Body: "three", IsOutgoing: true, Status: "sent"},
+				},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			return func() tea.Msg {
+				queued = append(queued, message.ID)
+				if message.ID == "m-2" {
+					return MessageDeletedForEveryoneMsg{MessageID: message.ID, Err: errors.New("network down")}
+				}
+				return MessageDeletedForEveryoneMsg{MessageID: message.ID}
+			}
+		},
+	})
+	model.mode = ModeVisual
+	model.focus = FocusMessages
+	model.visualAnchor = 0
+	model.messageCursor = 2
+	model.armDeleteSelectedMessagesForEveryone()
+	typed, _ := model.updateConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	model = typed.(Model)
+	confirmed, cmd := model.updateConfirm(tea.KeyMsg{Type: tea.KeyEnter})
+	model = confirmed.(Model)
+	if cmd == nil {
+		t.Fatal("visual delete command = nil")
+	}
+
+	handled, _ := model.Update(cmd())
+	model = handled.(Model)
+	if strings.Join(queued, ",") != "m-1,m-2" {
+		t.Fatalf("queued deletes = %+v, want stop before m-3", queued)
+	}
+	messages := model.messagesByChat["chat-1"]
+	if messages[0].DeletedAt.IsZero() || messages[0].DeletedReason != "everyone" || !messages[1].DeletedAt.IsZero() || !messages[2].DeletedAt.IsZero() {
+		t.Fatalf("messages after partial failure = %+v", messages)
+	}
+	if !strings.Contains(model.status, "deleted 1/3") || !strings.Contains(model.status, "network down") {
+		t.Fatalf("status = %q, want partial failure", model.status)
+	}
+}
+
+func TestDeletedMessageBubbleSuppressesOriginalContentDetails(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", JID: "chat-1@g.us", Title: "Group", Kind: "group"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:             "m-1",
+					RemoteID:       "remote-1",
+					ChatID:         "chat-1",
+					ChatJID:        "chat-1@g.us",
+					Sender:         "Alice",
+					SenderJID:      "alice@s.whatsapp.net",
+					Body:           "original secret",
+					Timestamp:      time.Date(2026, 1, 2, 15, 4, 0, 0, time.UTC),
+					Status:         "read",
+					QuotedRemoteID: "quoted-1",
+					DeletedAt:      time.Unix(1_700_000_100, 0),
+					DeletedReason:  "everyone",
+					EditedAt:       time.Unix(1_700_000_050, 0),
+					Media: []store.MediaMetadata{{
+						FileName: "photo.jpg",
+						MIMEType: "image/jpeg",
+					}},
+					Reactions: []store.Reaction{{
+						Emoji:     "👍",
+						SenderJID: "bob@s.whatsapp.net",
+					}},
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+	})
+	model.focus = FocusMessages
+
+	view := stripANSI(model.renderMessages(80, 10))
+	for _, want := range []string{"Alice", "This message was deleted", "15:04"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("deleted message view missing %q\n%s", want, view)
+		}
+	}
+	for _, hidden := range []string{"original secret", "reply", "photo.jpg", "👍", "edited", "[✓✓]"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("deleted message view leaked %q\n%s", hidden, view)
+		}
 	}
 }
 
@@ -9329,6 +9582,43 @@ func TestDeleteMessageForEverybodyRejectsIncomingMessage(t *testing.T) {
 		t.Fatalf("delete-message-everybody command = %T, want nil", cmd)
 	}
 	if got.deleteForEveryoneConfirmID != "" || !strings.Contains(got.status, "only your outgoing messages") {
+		t.Fatalf("state = confirm %q status %q", got.deleteForEveryoneConfirmID, got.status)
+	}
+}
+
+func TestDeleteMessageForEverybodyRejectsAlreadyDeletedMessage(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{
+				"chat-1": {{
+					ID:            "m-1",
+					RemoteID:      "remote-1",
+					ChatID:        "chat-1",
+					Sender:        "me",
+					IsOutgoing:    true,
+					Status:        "sent",
+					DeletedAt:     time.Unix(1_700_000_000, 0),
+					DeletedReason: "everyone",
+				}},
+			},
+			DraftsByChat: map[string]string{},
+			ActiveChatID: "chat-1",
+		},
+		ConnectionState: ConnectionOnline,
+		DeleteMessageForEveryone: func(message store.Message) tea.Cmd {
+			t.Fatal("DeleteMessageForEveryone should not be called for an already deleted message")
+			return nil
+		},
+	})
+	model.focus = FocusMessages
+
+	updated, cmd := model.executeCommand("delete-message-everybody")
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatalf("delete-message-everybody command = %T, want nil", cmd)
+	}
+	if got.deleteForEveryoneConfirmID != "" || !strings.Contains(got.status, "message is already deleted") {
 		t.Fatalf("state = confirm %q status %q", got.deleteForEveryoneConfirmID, got.status)
 	}
 }

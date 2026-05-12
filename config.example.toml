@@ -101,6 +101,7 @@ key_visual_move_down = "j"
 key_visual_move_up = "k"
 key_visual_yank = "y"
 key_visual_forward = "f"
+key_visual_delete_for_everybody = "leader d e"
 
 # Forward picker
 key_forward_cancel = "esc"

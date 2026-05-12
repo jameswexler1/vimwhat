@@ -82,7 +82,7 @@ func unknownCSISequenceFromString(value string) (string, bool) {
 }
 
 func (m Model) keyMatchesLeaderStart(msg tea.KeyMsg) bool {
-	if !m.hasNormalLeaderBindings() {
+	if !m.hasLeaderBindings(m.mode) {
 		return false
 	}
 	leader := strings.TrimSpace(m.config.LeaderKey)
@@ -93,8 +93,13 @@ func (m Model) keyMatchesLeaderStart(msg tea.KeyMsg) bool {
 }
 
 func (m Model) hasNormalLeaderBindings() bool {
+	return m.hasLeaderBindings(ModeNormal)
+}
+
+func (m Model) hasLeaderBindings(mode Mode) bool {
+	keyMode := string(mode)
 	for _, binding := range config.KeymapBindings(m.config.Keymap) {
-		if binding.Mode != config.KeyModeNormal {
+		if binding.Mode != keyMode {
 			continue
 		}
 		if bindingStartsWithLeader(binding.Value) {

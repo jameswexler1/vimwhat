@@ -1593,6 +1593,7 @@ func (m Model) renderMessageBubble(message store.Message, availableWidth int, ac
 }
 
 func (m Model) renderMessageBubbleForViewport(message store.Message, availableWidth int, active, selected bool, visibleOverlays map[string]bool) string {
+	deleted := messageDeletedForEveryone(message)
 	border := incomingLine
 	fg := primaryFG
 	metaFG := softFG
@@ -1611,7 +1612,9 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 
 	body := strings.TrimSpace(m.sanitizeDisplayBody(message.Body))
-	if body == "" && len(message.Media) == 0 {
+	if deleted {
+		body = deletedMessagePlaceholder
+	} else if body == "" && len(message.Media) == 0 {
 		body = "(empty)"
 	}
 	meta := messageBubbleMeta(message)
@@ -1628,37 +1631,52 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 		Padding(0, 1)
 	boxStyle = highlightedItemBorderStyle(boxStyle, border, active, selected)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
-	if m.messageUsesMediaBubbleWidth(message, active) {
+	if !deleted && m.messageUsesMediaBubbleWidth(message, active) {
 		maxBubbleWidth = max(6, mediaBubbleWidth(availableWidth))
 	}
 	previewWidth, _ := m.previewDimensions()
-	contentWidth := m.bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, message, previewWidth)
+	measureMessage := message
+	if deleted {
+		measureMessage.QuotedRemoteID = ""
+		measureMessage.Media = nil
+		measureMessage.Reactions = nil
+	}
+	contentWidth := m.bubbleContentWidth(boxStyle, maxBubbleWidth, body, meta, sender, measureMessage, previewWidth)
 	bodyStyle := lipgloss.NewStyle().Foreground(fg)
+	if deleted {
+		bodyStyle = lipgloss.NewStyle().Foreground(softFG).Italic(true)
+	}
 	messageSearchQuery := m.messageSearchQuery()
 
 	var lines []string
 	if sender != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
 	}
-	if quote := m.messageQuoteLine(message, contentWidth); quote != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Italic(true).Render(quote))
+	if !deleted {
+		if quote := m.messageQuoteLine(message, contentWidth); quote != "" {
+			lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Italic(true).Render(quote))
+		}
 	}
-	for _, item := range message.Media {
-		if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
-			lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
-		} else {
-			state := m.mediaAttachmentState(message, item)
-			lines = append(lines, m.renderAttachmentLine(item, contentWidth, active || selected, state))
+	if !deleted {
+		for _, item := range message.Media {
+			if preview, ok := m.mediaPreview(message, item, contentWidth); ok {
+				lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
+			} else {
+				state := m.mediaAttachmentState(message, item)
+				lines = append(lines, m.renderAttachmentLine(item, contentWidth, active || selected, state))
+			}
 		}
 	}
 	if body != "" {
 		for _, line := range strings.Split(wrapPlainText(body, contentWidth), "\n") {
 			line = truncateDisplay(line, contentWidth)
-			lines = append(lines, renderSearchHighlightedText(line, messageSearchQuery, bodyStyle, active && containsSearchMatch(body, messageSearchQuery)))
+			lines = append(lines, renderSearchHighlightedText(line, messageSearchQuery, bodyStyle, !deleted && active && containsSearchMatch(body, messageSearchQuery)))
 		}
 	}
-	if reactions := m.messageReactionLine(message, contentWidth); reactions != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(reactions))
+	if !deleted {
+		if reactions := m.messageReactionLine(message, contentWidth); reactions != "" {
+			lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(reactions))
+		}
 	}
 	if meta != "" {
 		meta = truncateDisplay(meta, contentWidth)
@@ -2106,6 +2124,9 @@ func messageBubbleMeta(message store.Message) string {
 	if !message.Timestamp.IsZero() {
 		parts = append(parts, message.Timestamp.Format("15:04"))
 	}
+	if messageDeletedForEveryone(message) {
+		return strings.Join(parts, " ")
+	}
 	if message.IsOutgoing {
 		if ticks := messageStatusTicks(message.Status); ticks != "" {
 			parts = append(parts, ticks)
@@ -2516,12 +2537,20 @@ func (m Model) renderInput() string {
 		return m.renderPrompt("/"+m.searchLine, hint)
 	case ModeConfirm:
 		hint := fmt.Sprintf("%s confirm  %s cancel", displayBinding(keys.ConfirmRun, leader), displayBinding(keys.ConfirmCancel, leader))
-		return m.renderPrompt("delete for everybody? type Y: "+m.confirmLine, hint)
+		return m.renderPrompt(m.deleteForEveryonePrompt()+" type Y: "+m.confirmLine, hint)
 	case ModeReaction:
 		return m.renderReactionPrompt()
 	default:
 		return ""
 	}
+}
+
+func (m Model) deleteForEveryonePrompt() string {
+	count := len(m.deleteForEveryoneConfirmMessages)
+	if count > 1 {
+		return fmt.Sprintf("delete %d messages for everybody?", count)
+	}
+	return "delete for everybody?"
 }
 
 func (m Model) renderReactionPrompt() string {
@@ -2867,7 +2896,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.InsertSend, keys.CommandRun, keys.SearchRun), Action: "send or run current prompt"},
 			{Key: keysFor(keys.InsertNewline, keys.InsertNewlineAlt), Action: "insert newline"},
 			{Key: keysFor(keys.InsertAttach, keys.InsertPasteImage, keys.InsertRemoveAttachment), Action: "attach, paste attachment, remove"},
-			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualCancel), Action: "select, yank, cancel"},
+			{Key: keysFor(keys.NormalVisual, keys.VisualYank, keys.VisualDeleteForEverybody, keys.VisualCancel), Action: "select, yank, delete, cancel"},
 			{Key: keysFor(keys.VisualForward, keys.ForwardSearch, keys.ForwardToggle, keys.ForwardSend), Action: "forward selected messages"},
 			{Key: key(keys.ConfirmRun), Action: "confirm only after uppercase Y"},
 		},
