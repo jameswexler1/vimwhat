@@ -173,9 +173,11 @@ key_normal_move_up = "k"
 key_normal_open = "enter"
 key_normal_open_media = "o"
 key_normal_yank_message = "y"
+key_normal_paste_text = "p"
 key_normal_edit_message = "leader e"
 key_normal_compose_editor = "leader c e"
 key_normal_pick_sticker = "leader t"
+key_normal_toggle_pinned = "leader p"
 key_normal_copy_image = "leader y"
 key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
@@ -216,6 +218,7 @@ Useful command-mode actions:
 :media open
 :media save
 :copy-image
+:paste
 :paste-image
 :attach
 :attach <path>
@@ -234,6 +237,8 @@ Useful command-mode actions:
 :clear-preview-cache
 :quit
 ```
+
+Text clipboard paste uses `key_normal_paste_text` or `:paste`. It appends clipboard text to the active chat draft, switches to insert mode, persists the draft, and does not send until the normal composer send key is pressed. Set `clipboard_paste_command` to override text clipboard reads.
 
 Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the current clipboard image as the composer attachment, preserving composer text as the caption. `key_normal_copy_image` copies the focused image message to the clipboard and auto-downloads remote image media first when possible. The default image clipboard commands auto-detect Wayland/X11 tools; set `clipboard_image_paste_command` or `clipboard_image_copy_command` to override them. Paste commands may write to `{path}` or stdout, and copy commands may use `{path}` and `{mime}` or receive image bytes on stdin.
 

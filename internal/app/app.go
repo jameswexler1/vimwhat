@@ -386,6 +386,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 		CopyToClipboard: func(text string) error {
 			return copyToClipboard(context.Background(), env.Config.ClipboardCommand, text)
 		},
+		PasteTextFromClipboard: func(chatID string) tea.Cmd {
+			return pasteTextFromClipboard(env.Config.ClipboardPasteCommand, chatID)
+		},
 		PasteAttachmentFromClipboard: func() tea.Cmd {
 			return pasteAttachmentFromClipboard(env.Paths, env.Config.ClipboardImagePasteCommand)
 		},

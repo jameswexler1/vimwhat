@@ -2824,6 +2824,7 @@ func (m Model) renderHelp(width int) string {
 		{Key: key(keys.NormalOpen), Action: "open/preview"},
 		{Key: key(keys.NormalReply), Action: "reply"},
 		{Key: key(keys.NormalReact), Action: "react"},
+		{Key: key(keys.NormalPasteText), Action: "paste"},
 		{Key: key(keys.NormalSearch), Action: "search"},
 		{Key: key(keys.NormalCommand), Action: "command"},
 		{Key: keysFor(keys.HelpClose, keys.HelpCloseAlt), Action: "close help"},
@@ -2879,7 +2880,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: "media", Action: "preview/open/save/hide, copy-image"},
 			{Key: "chat", Action: "history fetch, mark-read, quote-jump"},
 			{Key: "send", Action: "react <emoji>|clear, retry-message|retry"},
-			{Key: "more", Action: "compose-editor, edit-message, sticker, preview-backend, attach, paste-attachment, delete-message-everybody"},
+			{Key: "more", Action: "paste, delete-message-everybody, compose-editor, edit-message"},
 		},
 	}
 

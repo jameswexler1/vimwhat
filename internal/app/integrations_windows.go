@@ -12,6 +12,18 @@ func platformClipboardCommands() [][]string {
 	return [][]string{{"clip.exe"}}
 }
 
+func platformClipboardPasteCommands() [][]string {
+	return [][]string{{
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-STA",
+		"-Command",
+		windowsClipboardTextPasteCommand,
+	}}
+}
+
 func platformImagePasteCommands(_ string) []imageClipboardCommand {
 	return []imageClipboardCommand{{
 		argv: []string{
@@ -41,6 +53,17 @@ func platformImageCopyCommands(path string, _ string) []imageClipboardCommand {
 		pathMode: true,
 	}}
 }
+
+const windowsClipboardTextPasteCommand = `
+Add-Type -AssemblyName System.Windows.Forms
+$text = [System.Windows.Forms.Clipboard]::GetText()
+if ($null -eq $text) { exit 0 }
+$bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+$stdout = [Console]::OpenStandardOutput()
+$stdout.Write($bytes, 0, $bytes.Length)
+$stdout.Flush()
+exit 0
+`
 
 const windowsClipboardImagePasteCommand = `
 Add-Type -AssemblyName System.Windows.Forms

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -92,8 +93,11 @@ type imageClipboardCommand struct {
 
 const clipboardFileDropPrefix = "VIMWHAT_FILEDROP:"
 const clipboardAttachmentMaxBytes int64 = 64 << 20
+const clipboardTextMaxBytes int64 = 1 << 20
 
 var errClipboardAttachmentTooLarge = errors.New("clipboard attachment exceeds 64 MiB limit")
+var errClipboardTextTooLarge = errors.New("clipboard text exceeds 1 MiB limit")
+var errClipboardTextEmpty = errors.New("clipboard is empty")
 
 func pasteImageFromClipboard(paths config.Paths, commandTemplate string) tea.Cmd {
 	return pasteAttachmentFromClipboard(paths, commandTemplate)
@@ -106,11 +110,82 @@ func pasteAttachmentFromClipboard(paths config.Paths, commandTemplate string) te
 	}
 }
 
+func pasteTextFromClipboard(commandTemplate, chatID string) tea.Cmd {
+	return func() tea.Msg {
+		text, err := readTextFromClipboard(context.Background(), commandTemplate)
+		return ui.ClipboardTextPastedMsg{ChatID: chatID, Text: text, Err: err}
+	}
+}
+
 func copyImageToClipboard(commandTemplate string, item store.MediaMetadata) tea.Cmd {
 	return func() tea.Msg {
 		err := writeImageToClipboard(context.Background(), commandTemplate, item)
 		return ui.ClipboardImageCopiedMsg{Media: item, Err: err}
 	}
+}
+
+func readTextFromClipboard(ctx context.Context, commandTemplate string) (string, error) {
+	commands := clipboardPasteCommands(commandTemplate)
+	if len(commands) == 0 {
+		return "", fmt.Errorf("no clipboard paste command found")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for _, argv := range commands {
+		if len(argv) == 0 {
+			continue
+		}
+		if strings.TrimSpace(commandTemplate) == "" {
+			if _, err := exec.LookPath(argv[0]); err != nil {
+				lastErr = err
+				continue
+			}
+		}
+		stdout := &limitedBuffer{limit: clipboardTextMaxBytes + 1}
+		if err := runClipboardCommand(ctx, argv, nil, stdout); err != nil {
+			if stdout.exceeded {
+				return "", errClipboardTextTooLarge
+			}
+			lastErr = err
+			continue
+		}
+		if stdout.exceeded || int64(stdout.Len()) > clipboardTextMaxBytes {
+			return "", errClipboardTextTooLarge
+		}
+		data := stdout.Bytes()
+		if len(data) == 0 {
+			return "", errClipboardTextEmpty
+		}
+		if !utf8.Valid(data) {
+			return "", fmt.Errorf("clipboard text is not valid UTF-8")
+		}
+		return normalizeClipboardText(string(data)), nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("no clipboard paste command found")
+}
+
+func clipboardPasteCommands(commandTemplate string) [][]string {
+	commandTemplate = strings.TrimSpace(commandTemplate)
+	if commandTemplate != "" {
+		argv, err := splitCommandLine(commandTemplate)
+		if err != nil || len(argv) == 0 {
+			return nil
+		}
+		return [][]string{argv}
+	}
+	return platformClipboardPasteCommands()
+}
+
+func normalizeClipboardText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return text
 }
 
 func readImageFromClipboard(ctx context.Context, paths config.Paths, commandTemplate string) (ui.Attachment, error) {

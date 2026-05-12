@@ -5551,6 +5551,117 @@ func TestPasteImageCommandStagesClipboardImage(t *testing.T) {
 	}
 }
 
+func TestNormalPasteTextAppendsClipboardIntoComposer(t *testing.T) {
+	var pastedChatID string
+	var savedChatID string
+	var savedBody string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "old draft"},
+			ActiveChatID:   "chat-1",
+		},
+		PasteTextFromClipboard: func(chatID string) tea.Cmd {
+			pastedChatID = chatID
+			return func() tea.Msg {
+				return ClipboardTextPastedMsg{ChatID: chatID, Text: "\nnew text"}
+			}
+		},
+		SaveDraft: func(chatID, body string) error {
+			savedChatID = chatID
+			savedBody = body
+			return nil
+		},
+	})
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	got := updated.(Model)
+	if cmd == nil || pastedChatID != "chat-1" || got.mode != ModeNormal || got.status != "pasting clipboard" {
+		t.Fatalf("paste start = cmd nil %v chat %q mode %s status %q", cmd == nil, pastedChatID, got.mode, got.status)
+	}
+	got = runImmediateCmd(t, got, cmd)
+	if got.mode != ModeInsert || got.focus != FocusMessages || got.composer != "old draft\nnew text" {
+		t.Fatalf("paste result = mode %s focus %s composer %q", got.mode, got.focus, got.composer)
+	}
+	if got.draftsByChat["chat-1"] != "old draft\nnew text" || savedChatID != "chat-1" || savedBody != "old draft\nnew text" {
+		t.Fatalf("saved draft = local %q saved %q/%q", got.draftsByChat["chat-1"], savedChatID, savedBody)
+	}
+}
+
+func TestNormalPasteTextFailurePreservesDraft(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{"chat-1": "old draft"},
+			ActiveChatID:   "chat-1",
+		},
+		PasteTextFromClipboard: func(chatID string) tea.Cmd {
+			return func() tea.Msg {
+				return ClipboardTextPastedMsg{ChatID: chatID, Err: errors.New("clipboard unavailable")}
+			}
+		},
+	})
+
+	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	got := runImmediateCmd(t, updated.(Model), cmd)
+	if got.mode != ModeNormal || got.draftsByChat["chat-1"] != "old draft" || got.composer != "" || !strings.Contains(got.status, "paste failed") {
+		t.Fatalf("failure state = mode %s draft %q composer %q status %q", got.mode, got.draftsByChat["chat-1"], got.composer, got.status)
+	}
+}
+
+func TestPasteTextCommandAliasUsesClipboardPaste(t *testing.T) {
+	var pastedChatID string
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		PasteTextFromClipboard: func(chatID string) tea.Cmd {
+			pastedChatID = chatID
+			return func() tea.Msg {
+				return ClipboardTextPastedMsg{ChatID: chatID, Text: "from command"}
+			}
+		},
+		SaveDraft: func(chatID, body string) error { return nil },
+	})
+
+	updated, cmd := model.executeCommand("paste")
+	got := updated.(Model)
+	if cmd == nil || pastedChatID != "chat-1" {
+		t.Fatalf(":paste command = cmd nil %v chat %q", cmd == nil, pastedChatID)
+	}
+	got = runImmediateCmd(t, got, cmd)
+	if got.mode != ModeInsert || got.composer != "from command" {
+		t.Fatalf(":paste result = mode %s composer %q", got.mode, got.composer)
+	}
+}
+
+func TestNormalLeaderPTogglesPinnedSort(t *testing.T) {
+	model := NewModel(Options{
+		Snapshot: store.Snapshot{
+			Chats: []store.Chat{
+				{ID: "chat-1", Title: "Alice", Pinned: true},
+				{ID: "chat-2", Title: "Bob"},
+			},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil, "chat-2": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	model.pinnedFirst = true
+
+	leader, _ := model.updateNormal(tea.KeyMsg{Type: tea.KeySpace})
+	updated, _ := leader.(Model).updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	got := updated.(Model)
+	if got.pinnedFirst {
+		t.Fatalf("pinnedFirst = true, want toggled off")
+	}
+}
+
 func TestInsertPasteAttachmentReplacesStagedAttachment(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{

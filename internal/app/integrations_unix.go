@@ -23,6 +23,18 @@ func platformClipboardCommands() [][]string {
 	return append(commands, []string{"pbcopy"}, []string{"termux-clipboard-set"})
 }
 
+func platformClipboardPasteCommands() [][]string {
+	var commands [][]string
+	if os.Getenv("WAYLAND_DISPLAY") != "" {
+		commands = append(commands, []string{"wl-paste"})
+	}
+	if os.Getenv("DISPLAY") != "" {
+		commands = append(commands, []string{"xclip", "-selection", "clipboard", "-o"})
+		commands = append(commands, []string{"xsel", "--clipboard", "--output"})
+	}
+	return append(commands, []string{"pbpaste"}, []string{"termux-clipboard-get"})
+}
+
 func platformImagePasteCommands(mediaDir string) []imageClipboardCommand {
 	var commands []imageClipboardCommand
 	if os.Getenv("WAYLAND_DISPLAY") != "" {

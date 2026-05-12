@@ -63,6 +63,7 @@ func DefaultFileContent(paths Paths) string {
 	fmt.Fprintf(&b, "notification_backend = %q\n", cfg.NotificationBackend)
 	fmt.Fprintf(&b, "notification_command = %q\n", cfg.NotificationCommand)
 	fmt.Fprintf(&b, "clipboard_command = %q\n", cfg.ClipboardCommand)
+	fmt.Fprintf(&b, "clipboard_paste_command = %q\n", cfg.ClipboardPasteCommand)
 	fmt.Fprintf(&b, "clipboard_image_paste_command = %q\n", cfg.ClipboardImagePasteCommand)
 	fmt.Fprintf(&b, "clipboard_image_copy_command = %q\n", cfg.ClipboardImageCopyCommand)
 	fmt.Fprintf(&b, "file_picker_command = %q\n", cfg.FilePickerCommand)

@@ -61,6 +61,42 @@ func TestReadImageFromClipboardRejectsNonImageData(t *testing.T) {
 	}
 }
 
+func TestReadTextFromClipboardCommandStdoutNormalizesNewlines(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "clipboard.txt")
+	if err := os.WriteFile(source, []byte("hello\r\nworld\r!"), 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	text, err := readTextFromClipboard(context.Background(), `sh -c "cat `+source+`"`)
+	if err != nil {
+		t.Fatalf("readTextFromClipboard() error = %v", err)
+	}
+	if text != "hello\nworld\n!" {
+		t.Fatalf("clipboard text = %q, want normalized newlines", text)
+	}
+}
+
+func TestReadTextFromClipboardRejectsEmptyClipboard(t *testing.T) {
+	_, err := readTextFromClipboard(context.Background(), `sh -c "printf ''"`)
+	if !errors.Is(err, errClipboardTextEmpty) {
+		t.Fatalf("readTextFromClipboard() error = %v, want empty clipboard", err)
+	}
+}
+
+func TestReadTextFromClipboardRejectsOversizedClipboard(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "clipboard.txt")
+	if err := os.WriteFile(source, bytes.Repeat([]byte("x"), int(clipboardTextMaxBytes)+1), 0o600); err != nil {
+		t.Fatalf("WriteFile(source) error = %v", err)
+	}
+
+	_, err := readTextFromClipboard(context.Background(), `cat `+source)
+	if !errors.Is(err, errClipboardTextTooLarge) {
+		t.Fatalf("readTextFromClipboard() error = %v, want oversized clipboard", err)
+	}
+}
+
 func TestWriteImageToClipboardPipesImageWhenPlaceholderMissing(t *testing.T) {
 	dir := t.TempDir()
 	source := writeTinyPNG(t, dir, "source.png")

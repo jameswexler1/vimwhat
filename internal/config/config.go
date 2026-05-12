@@ -24,6 +24,7 @@ type Config struct {
 	NotificationBackend         string
 	NotificationCommand         string
 	ClipboardCommand            string
+	ClipboardPasteCommand       string
 	ClipboardImagePasteCommand  string
 	ClipboardImageCopyCommand   string
 	FilePickerCommand           string
@@ -191,6 +192,8 @@ func parseSimpleTOML(input string, cfg *Config) error {
 			cfg.NotificationCommand = parsed
 		case "clipboard_command":
 			cfg.ClipboardCommand = parsed
+		case "clipboard_paste_command":
+			cfg.ClipboardPasteCommand = parsed
 		case "clipboard_image_paste_command":
 			cfg.ClipboardImagePasteCommand = parsed
 		case "clipboard_image_copy_command":
@@ -238,6 +241,7 @@ func parseSimpleTOML(input string, cfg *Config) error {
 		return err
 	}
 
+	cfg.Keymap = NormalizeKeymap(cfg.Keymap)
 	if err := ValidateKeymap(*cfg); err != nil {
 		return err
 	}

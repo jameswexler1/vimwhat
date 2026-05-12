@@ -141,6 +141,12 @@ type ClipboardAttachmentPastedMsg struct {
 
 type ClipboardImagePastedMsg = ClipboardAttachmentPastedMsg
 
+type ClipboardTextPastedMsg struct {
+	ChatID string
+	Text   string
+	Err    error
+}
+
 type ClipboardImageCopiedMsg struct {
 	MessageID string
 	Media     store.MediaMetadata
@@ -376,6 +382,7 @@ type Options struct {
 	ForwardMessages              func(ForwardMessagesRequest) tea.Cmd
 	ComposeInEditor              func(chatID, initial string) tea.Cmd
 	CopyToClipboard              func(text string) error
+	PasteTextFromClipboard       func(chatID string) tea.Cmd
 	PasteAttachmentFromClipboard func() tea.Cmd
 	PasteImageFromClipboard      func() tea.Cmd
 	CopyImageToClipboard         func(media store.MediaMetadata) tea.Cmd
@@ -521,6 +528,7 @@ type Model struct {
 	forwardMessages              func(ForwardMessagesRequest) tea.Cmd
 	composeInEditor              func(chatID, initial string) tea.Cmd
 	copyToClipboard              func(text string) error
+	pasteTextFromClipboard       func(chatID string) tea.Cmd
 	pasteAttachmentFromClipboard func() tea.Cmd
 	copyImageToClipboard         func(media store.MediaMetadata) tea.Cmd
 	pickAttachment               func() tea.Cmd
@@ -660,6 +668,7 @@ func NewModel(opts Options) Model {
 		forwardMessages:              opts.ForwardMessages,
 		composeInEditor:              opts.ComposeInEditor,
 		copyToClipboard:              opts.CopyToClipboard,
+		pasteTextFromClipboard:       opts.PasteTextFromClipboard,
 		pasteAttachmentFromClipboard: opts.PasteAttachmentFromClipboard,
 		copyImageToClipboard:         opts.CopyImageToClipboard,
 		pickAttachment:               opts.PickAttachment,
@@ -1612,6 +1621,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case ClipboardAttachmentPastedMsg:
 		return m.handleClipboardAttachmentPasted(msg)
+	case ClipboardTextPastedMsg:
+		return withPreviewResult(m.handleClipboardTextPasted(msg))
 	case ClipboardImageCopiedMsg:
 		return withPreviewResult(m.handleClipboardImageCopied(msg))
 	case ComposerEditedMsg:
@@ -1864,6 +1875,7 @@ const (
 	normalActionOpenMedia           = "open_media"
 	normalActionOpenMediaDetached   = "open_media_detached"
 	normalActionYankMessage         = "yank_message"
+	normalActionPasteText           = "paste_text"
 	normalActionEditMessage         = "edit_message"
 	normalActionPickSticker         = "pick_sticker"
 	normalActionSearchNext          = "search_next"
@@ -1939,6 +1951,7 @@ func (m Model) normalActionBindings() []normalActionBinding {
 		{binding: keys.NormalOpenMedia, action: normalActionOpenMedia},
 		{binding: keys.NormalOpenMediaDetached, action: normalActionOpenMediaDetached},
 		{binding: keys.NormalYankMessage, action: normalActionYankMessage},
+		{binding: keys.NormalPasteText, action: normalActionPasteText},
 		{binding: keys.NormalEditMessage, action: normalActionEditMessage},
 		{binding: keys.NormalPickSticker, action: normalActionPickSticker},
 		{binding: keys.NormalSearchNext, action: normalActionSearchNext},
@@ -2072,6 +2085,8 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		return m.openFocusedMediaDetached()
 	case normalActionYankMessage:
 		return m.yankFocusedMessage()
+	case normalActionPasteText:
+		return m.startClipboardTextPaste()
 	case normalActionEditMessage:
 		return m.beginEditFocusedMessage()
 	case normalActionPickSticker:
@@ -3209,6 +3224,8 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m.saveFocusedMedia()
 	case cmd == "copy-image" || cmd == "copy image":
 		return m.copyFocusedImage()
+	case cmd == "paste" || cmd == "paste-text" || cmd == "paste text" || cmd == "clipboard-paste" || cmd == "clipboard paste":
+		return m.startClipboardTextPaste()
 	case cmd == "paste-attachment" || cmd == "paste attachment" || cmd == "paste-image" || cmd == "paste image":
 		return m.startClipboardAttachmentPaste()
 	case cmd == "compose-editor" || cmd == "compose editor" || cmd == "editor":
@@ -5681,6 +5698,46 @@ func (m Model) handleClipboardAttachmentPasted(msg ClipboardAttachmentPastedMsg)
 	return m, nil
 }
 
+func (m Model) handleClipboardTextPasted(msg ClipboardTextPastedMsg) (tea.Model, tea.Cmd) {
+	chatID := strings.TrimSpace(msg.ChatID)
+	if chatID == "" && len(m.chats) > 0 {
+		chatID = m.currentChat().ID
+	}
+	if msg.Err != nil {
+		m.status = fmt.Sprintf("paste failed: %v", msg.Err)
+		return m, nil
+	}
+	if msg.Text == "" {
+		m.status = "clipboard is empty"
+		return m, nil
+	}
+	if chatID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+
+	currentChatID := m.currentChat().ID
+	body := m.draftsByChat[chatID]
+	if chatID == currentChatID && m.mode == ModeInsert {
+		body = m.composer
+	}
+	body += msg.Text
+	if chatID == currentChatID {
+		m.mode = ModeInsert
+		m.focus = FocusMessages
+		m.composer = body
+		m.composerMentions = slices.Clone(m.composerMentionsByChat[chatID])
+		m.clearMentionState()
+		m.pruneComposerMentions()
+		m.sendOwnPresence(chatID, true)
+	} else {
+		m.clearMentionState()
+	}
+	m.localSetDraft(chatID, body)
+	m.status = "pasted clipboard into composer"
+	return m, batchCmds(m.saveDraftCmd(chatID, body), ownPresenceIdleCmd(chatID, m.ownPresenceGeneration))
+}
+
 func (m Model) handleClipboardImageCopied(msg ClipboardImageCopiedMsg) (tea.Model, tea.Cmd) {
 	m.clearMediaDownloadInFlight(msg.MessageID)
 	if msg.Err != nil {
@@ -5752,6 +5809,20 @@ func (m Model) startClipboardAttachmentPaste() (tea.Model, tea.Cmd) {
 	}
 	m.status = "pasting attachment from clipboard"
 	return m, m.pasteAttachmentFromClipboard()
+}
+
+func (m Model) startClipboardTextPaste() (tea.Model, tea.Cmd) {
+	if len(m.chats) == 0 || m.currentChat().ID == "" {
+		m.status = "no chat selected"
+		return m, nil
+	}
+	if m.pasteTextFromClipboard == nil {
+		m.status = "clipboard paste unavailable"
+		return m, nil
+	}
+	chatID := m.currentChat().ID
+	m.status = "pasting clipboard"
+	return m, m.pasteTextFromClipboard(chatID)
 }
 
 func (m *Model) stageAttachmentPath(path string) error {
