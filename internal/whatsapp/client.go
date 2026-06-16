@@ -1228,9 +1228,9 @@ func (c *Client) downloadMediaToFile(ctx context.Context, descriptor MediaDownlo
 				sourceDescriptor.FileEncSHA256,
 				sourceDescriptor.FileSHA256,
 				sourceDescriptor.MediaKey,
-				mediaDownloadValidationLength(sourceDescriptor),
 				mediaType,
 				"",
+				len(sourceDescriptor.FileSHA256) == 0,
 				file,
 			)
 		}
@@ -1266,9 +1266,9 @@ func (c *Client) downloadMediaBytes(ctx context.Context, descriptor MediaDownloa
 				sourceDescriptor.FileEncSHA256,
 				sourceDescriptor.FileSHA256,
 				sourceDescriptor.MediaKey,
-				mediaDownloadValidationLength(sourceDescriptor),
 				mediaType,
 				"",
+				len(sourceDescriptor.FileSHA256) == 0,
 			)
 		}
 		if err == nil {
@@ -1332,17 +1332,6 @@ func resetMediaDownloadTarget(file *os.File) error {
 		return fmt.Errorf("rewind media download target: %w", err)
 	}
 	return nil
-}
-
-func mediaDownloadValidationLength(descriptor MediaDownloadDescriptor) int {
-	if descriptor.FileLength <= 0 || len(descriptor.FileSHA256) == 0 {
-		return -1
-	}
-	maxInt := int64(int(^uint(0) >> 1))
-	if descriptor.FileLength > maxInt {
-		return -1
-	}
-	return int(descriptor.FileLength)
 }
 
 func (c *Client) GetChatAvatar(ctx context.Context, chatJID, existingID string) (ChatAvatarResult, error) {

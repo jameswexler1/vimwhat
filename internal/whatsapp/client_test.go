@@ -173,13 +173,10 @@ func TestStickerSyncUsesAllAppStatePatchNames(t *testing.T) {
 	}
 }
 
-func TestMediaDownloadValidationLengthRequiresPlaintextSHA(t *testing.T) {
+func TestMediaDownloadNeedsBufferedWriteRequiresPlaintextSHA(t *testing.T) {
 	withoutPlaintextSHA := MediaDownloadDescriptor{FileLength: 123}
 	if !mediaDownloadNeedsBufferedWrite(withoutPlaintextSHA) {
 		t.Fatal("mediaDownloadNeedsBufferedWrite() = false, want true without plaintext SHA")
-	}
-	if got := mediaDownloadValidationLength(withoutPlaintextSHA); got != -1 {
-		t.Fatalf("mediaDownloadValidationLength(without SHA) = %d, want -1", got)
 	}
 
 	withPlaintextSHA := MediaDownloadDescriptor{
@@ -188,9 +185,6 @@ func TestMediaDownloadValidationLengthRequiresPlaintextSHA(t *testing.T) {
 	}
 	if mediaDownloadNeedsBufferedWrite(withPlaintextSHA) {
 		t.Fatal("mediaDownloadNeedsBufferedWrite() = true, want false with plaintext SHA")
-	}
-	if got := mediaDownloadValidationLength(withPlaintextSHA); got != 123 {
-		t.Fatalf("mediaDownloadValidationLength(with SHA) = %d, want 123", got)
 	}
 }
 

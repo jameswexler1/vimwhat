@@ -196,6 +196,7 @@ The live read-only sync milestone is implemented and has been manually validated
 - Convert incoming chat, message, receipt, and media metadata events into the existing `internal/store` schema through `internal/whatsapp.Ingestor`.
 - Keep outbound sending disabled or clearly marked pending until incoming event ingestion is stable.
 - Add tests with a mocked protocol event source before relying on manual WhatsApp traffic.
+- Protocol maintenance is active: after local sync stopped around 2026-06-06/2026-06-07 on the January 2026 `whatsmeow` snapshot, the dependency was refreshed to the 2026-06-11 upstream snapshot and the direct-path media download adapter was updated for the current hash-validation API.
 
 The remote history fetch milestone now has an implemented first pass:
 
