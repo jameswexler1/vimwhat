@@ -1573,7 +1573,7 @@ func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
 	}
 }
 
-func TestSyncOverlayRendersAndBlocksInput(t *testing.T) {
+func TestSyncProgressIsNonBlocking(t *testing.T) {
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{
@@ -1596,15 +1596,18 @@ func TestSyncOverlayRendersAndBlocksInput(t *testing.T) {
 		Receipts:  1,
 	}})
 	view := stripANSI(updated.View())
-	for _, want := range []string{"Syncing WhatsApp updates", "2/4 events (50%)", "3 messages", "Input is paused"} {
+	for _, want := range []string{"syncing WhatsApp updates 2/4"} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("sync overlay missing %q\n%s", want, view)
+			t.Fatalf("sync progress missing %q\n%s", want, view)
 		}
 	}
+	if strings.Contains(view, "Input is paused") {
+		t.Fatalf("sync progress blocked the interface\n%s", view)
+	}
 
-	blocked, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if blocked.(Model).activeChat != 0 {
-		t.Fatalf("activeChat = %d, want input blocked at 0", blocked.(Model).activeChat)
+	navigated, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if navigated.(Model).activeChat != 1 {
+		t.Fatalf("activeChat = %d, want cached navigation to move to 1", navigated.(Model).activeChat)
 	}
 }
 
@@ -1651,7 +1654,7 @@ func TestLiveStartupOverlayClearsOnEmptySyncUpdate(t *testing.T) {
 	}
 }
 
-func TestSyncOverlayCompletesAndClears(t *testing.T) {
+func TestSyncCompletionUsesStatusWithoutOverlay(t *testing.T) {
 	model := NewModel(Options{})
 	model.width = 80
 	model.height = 20
@@ -1661,13 +1664,107 @@ func TestSyncOverlayCompletesAndClears(t *testing.T) {
 		Total:     8,
 		Processed: 8,
 	}})
-	if view := stripANSI(updated.View()); !strings.Contains(view, "Sync complete") {
-		t.Fatalf("completed overlay missing\n%s", view)
+	if updated.syncOverlay.Visible {
+		t.Fatal("sync completion unexpectedly displayed a blocking overlay")
+	}
+	if view := stripANSI(updated.View()); !strings.Contains(view, "sync complete") {
+		t.Fatalf("sync completion status missing\n%s", view)
+	}
+}
+
+func TestSyncFinalizationWaitsForSnapshotApplication(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ReloadSnapshot: func(activeChatID string, _ int) (store.Snapshot, error) {
+			return store.Snapshot{
+				Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+				MessagesByChat: map[string][]store.Message{
+					"chat-1": {{ID: "chat-1/new", ChatID: "chat-1", Body: "latest"}},
+				},
+				DraftsByChat: map[string]string{},
+				ActiveChatID: activeChatID,
+			}, nil
+		},
+	})
+	ready := true
+	updated, cmd := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Refresh:       true,
+		Sync: &SyncProgressUpdate{
+			Completed:  true,
+			Finalizing: true,
+		},
+	})
+	if updated.protocolReady || !updated.syncFinalizePending || cmd == nil {
+		t.Fatalf("finalizing state = ready:%v pending:%v cmd:%v", updated.protocolReady, updated.syncFinalizePending, cmd != nil)
 	}
 
-	cleared, _ := updated.Update(syncOverlayDoneMsg{Generation: updated.syncOverlay.Generation})
-	if view := stripANSI(cleared.(Model).View()); strings.Contains(view, "Sync complete") {
-		t.Fatalf("completed overlay did not clear\n%s", view)
+	msg := cmd()
+	reloaded, _ := updated.handleSnapshotReloaded(msg.(snapshotReloadedMsg))
+	if !reloaded.protocolReady || reloaded.syncFinalizePending {
+		t.Fatalf("reloaded state = ready:%v pending:%v", reloaded.protocolReady, reloaded.syncFinalizePending)
+	}
+	if got := reloaded.currentMessages(); len(got) != 1 || got[0].Body != "latest" {
+		t.Fatalf("current messages = %+v", got)
+	}
+}
+
+func TestSyncFinalizationDoesNotAcceptAnOlderInflightSnapshot(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ReloadSnapshot: func(activeChatID string, _ int) (store.Snapshot, error) {
+			return store.Snapshot{
+				Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
+				MessagesByChat: map[string][]store.Message{
+					"chat-1": {{ID: "chat-1/latest", ChatID: "chat-1", Body: "latest"}},
+				},
+				DraftsByChat: map[string]string{},
+				ActiveChatID: activeChatID,
+			}, nil
+		},
+	})
+	model.reloadInFlight = true
+	ready := true
+	finalizing, _ := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Refresh:       true,
+		Sync:          &SyncProgressUpdate{Completed: true, Finalizing: true},
+	})
+	if !finalizing.syncFinalizeNeedsReload {
+		t.Fatal("finalization did not mark the in-flight snapshot as stale")
+	}
+
+	stale := snapshotReloadedMsg{
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": {{ID: "chat-1/stale", ChatID: "chat-1", Body: "stale"}}},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+		ActiveChatID: "chat-1",
+	}
+	waiting, cmd := finalizing.handleSnapshotReloaded(stale)
+	if cmd == nil || waiting.protocolReady {
+		t.Fatalf("stale reload result = cmd:%v ready:%v", cmd != nil, waiting.protocolReady)
+	}
+	latest := cmd().(snapshotReloadedMsg)
+	reloaded, _ := waiting.handleSnapshotReloaded(latest)
+	if got := reloaded.currentMessages(); len(got) != 1 || got[0].Body != "latest" {
+		t.Fatalf("current messages = %+v", got)
 	}
 }
 

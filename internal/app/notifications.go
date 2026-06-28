@@ -246,3 +246,35 @@ func suppressActiveChatNotification(chatID string, view notificationContext) boo
 	}
 	return view.appFocusKnown && view.appFocused
 }
+
+func queueCatchUpSummary(
+	ctx context.Context,
+	db *store.Store,
+	jobs chan<- notify.Notification,
+	view notificationContext,
+	chatMessages map[string]int,
+) bool {
+	if db == nil || len(chatMessages) == 0 {
+		return false
+	}
+	if view.appFocusKnown && view.appFocused {
+		return false
+	}
+	muted, err := db.GlobalNotificationsMuted(ctx)
+	if err != nil || muted {
+		return false
+	}
+	eligibleChats := 0
+	eligibleMessages := 0
+	for chatID, messages := range chatMessages {
+		chat, ok, err := db.ChatByID(ctx, chatID)
+		if err == nil && ok && !chat.Muted {
+			eligibleChats++
+			eligibleMessages += messages
+		}
+	}
+	if eligibleChats == 0 || eligibleMessages == 0 {
+		return false
+	}
+	return queueNotification(ctx, jobs, notify.FormatCatchUpSummary(eligibleMessages, eligibleChats))
+}

@@ -231,6 +231,8 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 		return ApplyResult{}, nil
 	case EventOfflineSync:
 		return ApplyResult{}, nil
+	case EventMessageRecovery:
+		return ApplyResult{}, nil
 	default:
 		return ApplyResult{}, fmt.Errorf("unsupported whatsapp event kind %q", event.Kind)
 	}

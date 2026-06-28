@@ -811,6 +811,12 @@ func TestRunLiveWhatsAppStartupAppStateSyncDoesNotDelayOfflineSyncProgress(t *te
 }
 
 func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) {
+	previousSettle := offlineSyncSettle
+	offlineSyncSettle = 50 * time.Millisecond
+	t.Cleanup(func() {
+		offlineSyncSettle = previousSettle
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -903,11 +909,29 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 	})
 
 	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageRecovery,
+		Recovery: whatsapp.MessageRecoveryEvent{
+			ChatID:    "chat-1",
+			MessageID: "chat-1/msg-1",
+			Pending:   true,
+		},
+	}
+	session.events <- whatsapp.Event{
 		Kind: whatsapp.EventOfflineSync,
 		Offline: whatsapp.OfflineSyncEvent{
 			Completed: true,
 			Total:     2,
 			Processed: 2,
+		},
+	}
+	assertNoLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Completed
+	})
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageRecovery,
+		Recovery: whatsapp.MessageRecoveryEvent{
+			ChatID:    "chat-1",
+			MessageID: "chat-1/msg-1",
 		},
 	}
 	completed := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
@@ -3490,7 +3514,7 @@ func waitForStoredMessages(t *testing.T, db *store.Store, chatID string, count i
 
 func waitForLiveUpdate(t *testing.T, updates <-chan ui.LiveUpdate, match func(ui.LiveUpdate) bool) ui.LiveUpdate {
 	t.Helper()
-	deadline := time.After(time.Second)
+	deadline := time.After(4 * time.Second)
 	for {
 		select {
 		case update := <-updates:

@@ -54,6 +54,7 @@ const (
 
 type LiveUpdate struct {
 	ConnectionState ConnectionState
+	ProtocolReady   *bool
 	Status          string
 	Refresh         bool
 	HistoryChatID   string
@@ -65,16 +66,19 @@ type LiveUpdate struct {
 }
 
 type SyncProgressUpdate struct {
-	Active         bool
-	Completed      bool
-	Title          string
-	Subtitle       string
-	Total          int
-	Processed      int
-	AppDataChanges int
-	Messages       int
-	Notifications  int
-	Receipts       int
+	Active          bool
+	Completed       bool
+	Finalizing      bool
+	Degraded        bool
+	Title           string
+	Subtitle        string
+	Total           int
+	Processed       int
+	AppDataChanges  int
+	Messages        int
+	Notifications   int
+	Receipts        int
+	PendingRecovery int
 }
 
 type PresenceUpdate struct {
@@ -457,6 +461,7 @@ type Model struct {
 	config                           config.Config
 	status                           string
 	connectionState                  ConnectionState
+	protocolReady                    bool
 	notificationsMuted               bool
 	commandLine                      string
 	searchLine                       string
@@ -567,6 +572,9 @@ type Model struct {
 	messageLimitsByChat              map[string]int
 	historyRequestedByChat           map[string]bool
 	syncOverlay                      syncOverlayState
+	syncFinalizePending              bool
+	syncFinalizeNeedsReload          bool
+	syncFinalizeRetries              int
 	pollTerminalSize                 bool
 }
 
@@ -660,6 +668,7 @@ func NewModel(opts Options) Model {
 		config:                       normalizeConfig(opts.Config),
 		status:                       "ready",
 		connectionState:              opts.ConnectionState,
+		protocolReady:                !opts.RequireOnlineForSend || opts.ConnectionState == ConnectionOnline,
 		notificationsMuted:           opts.Snapshot.NotificationsMuted,
 		pinnedFirst:                  true,
 		persistMessage:               opts.PersistMessage,
@@ -802,6 +811,10 @@ func (m Model) Init() tea.Cmd {
 	return batchCmds(m.waitForLiveUpdateCmd(), m.terminalSizePollCmd())
 }
 
+func (m Model) whatsAppReady() bool {
+	return m.connectionState == ConnectionOnline && (!m.requireOnlineForSend || m.protocolReady)
+}
+
 func (m Model) waitForLiveUpdateCmd() tea.Cmd {
 	if m.liveUpdates == nil {
 		return nil
@@ -822,6 +835,12 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 			m.presenceSubscribed = map[string]bool{}
 			m.presenceByChat = map[string]PresenceUpdate{}
 		} else if previous != ConnectionOnline {
+			m.subscribeCurrentChatPresence()
+		}
+	}
+	if update.ProtocolReady != nil {
+		m.protocolReady = *update.ProtocolReady
+		if m.protocolReady && m.connectionState == ConnectionOnline {
 			m.subscribeCurrentChatPresence()
 		}
 	}
@@ -860,7 +879,18 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 		}
 	}
 
-	if update.Refresh && m.reloadSnapshot != nil {
+	if update.Sync != nil && update.Sync.Finalizing && update.Refresh && m.reloadSnapshot != nil {
+		m.syncFinalizePending = true
+		m.syncFinalizeRetries = 0
+		m.protocolReady = false
+		if m.reloadInFlight {
+			m.syncFinalizeNeedsReload = true
+		} else {
+			m.refreshDebouncePending = false
+			m.reloadInFlight = true
+			cmds = append(cmds, m.reloadSnapshotCmd())
+		}
+	} else if update.Refresh && m.reloadSnapshot != nil {
 		if m.reloadInFlight {
 			m.refreshQueued = true
 		} else if !m.refreshDebouncePending {
@@ -907,7 +937,7 @@ func presenceEmpty(presence PresenceUpdate) bool {
 
 func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	m.syncOverlay.Generation++
-	m.syncOverlay.Visible = update.Active || update.Completed
+	m.syncOverlay.Visible = false
 	m.syncOverlay.Active = update.Active
 	m.syncOverlay.Completed = update.Completed
 	m.syncOverlay.Title = strings.TrimSpace(update.Title)
@@ -929,12 +959,13 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if update.Finalizing {
+		m.status = syncProgressStatus(update, "finalizing WhatsApp updates")
+		return m, nil
+	}
 	if update.Completed {
-		if strings.TrimSpace(m.status) == "" || strings.Contains(strings.ToLower(m.status), "syncing") {
-			m.status = syncProgressStatus(update, "sync complete")
-		}
-		generation := m.syncOverlay.Generation
-		return m, syncOverlayDoneCmd(generation)
+		m.status = syncProgressStatus(update, "sync complete")
+		return m, nil
 	}
 	m.syncOverlay = syncOverlayState{}
 	return m, nil
@@ -942,7 +973,13 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 
 func syncProgressStatus(update SyncProgressUpdate, fallback string) string {
 	if title := strings.TrimSpace(update.Title); title != "" {
-		return title
+		fallback = title
+	}
+	if update.PendingRecovery > 0 {
+		return fmt.Sprintf("%s; recovering %d message(s)", fallback, update.PendingRecovery)
+	}
+	if update.Active && update.Total > 0 {
+		return fmt.Sprintf("%s %d/%d", fallback, min(update.Processed, update.Total), update.Total)
 	}
 	return fallback
 }
@@ -1034,7 +1071,26 @@ func (m Model) reloadSnapshotCmd() tea.Cmd {
 
 func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) {
 	m.reloadInFlight = false
+	if m.syncFinalizePending && m.syncFinalizeNeedsReload {
+		m.syncFinalizeNeedsReload = false
+		m.reloadInFlight = true
+		return m, m.reloadSnapshotCmd()
+	}
 	if msg.Err != nil {
+		if m.syncFinalizePending {
+			if m.syncFinalizeRetries < 2 && m.reloadSnapshot != nil {
+				m.syncFinalizeRetries++
+				m.reloadInFlight = true
+				m.status = fmt.Sprintf("final refresh failed; retrying (%d/2)", m.syncFinalizeRetries)
+				return m, m.reloadSnapshotCmd()
+			}
+			m.syncFinalizePending = false
+			m.syncFinalizeNeedsReload = false
+			m.syncFinalizeRetries = 0
+			m.protocolReady = true
+			m.status = fmt.Sprintf("sync applied; final refresh failed: %v", msg.Err)
+			return m, m.nextQueuedRefreshCmd()
+		}
 		m.status = fmt.Sprintf("refresh failed: %v", msg.Err)
 		return m, m.nextQueuedRefreshCmd()
 	}
@@ -1050,6 +1106,13 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 	if err := m.applySnapshot(msg.Snapshot, preferredChatID, m.messageFilter); err != nil {
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
+	}
+	if m.syncFinalizePending {
+		m.syncFinalizePending = false
+		m.syncFinalizeNeedsReload = false
+		m.syncFinalizeRetries = 0
+		m.protocolReady = true
+		m.status = "sync complete"
 	}
 	if m.terminalOverlayBackendActive() {
 		m.pauseOverlays(true, previousAvatarSignature != m.visibleChatAvatarSignature())
@@ -2301,7 +2364,7 @@ func ownPresenceIdleCmd(chatID string, generation int) tea.Cmd {
 
 func (m *Model) sendOwnPresence(chatID string, composing bool) {
 	chatID = strings.TrimSpace(chatID)
-	if chatID == "" || m.sendPresence == nil || m.connectionState != ConnectionOnline {
+	if chatID == "" || m.sendPresence == nil || !m.whatsAppReady() {
 		return
 	}
 	if composing {
@@ -2328,7 +2391,7 @@ func (m *Model) handleCurrentChatActivated() tea.Cmd {
 }
 
 func (m *Model) subscribeCurrentChatPresence() {
-	if m.subscribePresence == nil || m.connectionState != ConnectionOnline {
+	if m.subscribePresence == nil || !m.whatsAppReady() {
 		return
 	}
 	chat := m.currentChat()
@@ -2355,7 +2418,7 @@ func (m *Model) markCurrentChatRead(manual bool) tea.Cmd {
 		}
 		return nil
 	}
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		if manual {
 			m.status = "read receipts need WhatsApp online"
 		}
@@ -2539,8 +2602,8 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.localSetDraft(chatID, m.composer)
 			return m, m.saveDraftCmd(chatID, m.composer)
 		}
-		if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
-			m.status = "sending needs WhatsApp online"
+		if m.requireOnlineForSend && !m.whatsAppReady() {
+			m.status = "sending needs WhatsApp online and ready"
 			m.localSetDraft(chatID, m.composer)
 			return m, m.saveDraftCmd(chatID, m.composer)
 		}
@@ -3580,7 +3643,7 @@ func (m *Model) loadOlderOrRequestHistory() tea.Cmd {
 }
 
 func (m Model) startHistoryRequest(chatID, contextLabel string) (Model, tea.Cmd) {
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		m.status = "no older local messages; WhatsApp is not online"
 		return m, nil
 	}
@@ -3638,7 +3701,7 @@ func (m *Model) jumpToQuotedMessage() tea.Cmd {
 		m.status = "loading quoted history"
 		return m.loadOlderMessagesCmd(chatID, messages[0], historyPageSize)
 	}
-	if m.connectionState == ConnectionOnline && m.requestHistory != nil {
+	if m.whatsAppReady() && m.requestHistory != nil {
 		next, cmd := m.startHistoryRequest(chatID, "quote")
 		*m = next
 		if cmd != nil {
@@ -3678,7 +3741,7 @@ func (m *Model) reactToMessage(message store.Message, emoji string) tea.Cmd {
 		m.status = "focused message has no WhatsApp id"
 		return nil
 	}
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		m.status = "reactions need WhatsApp online"
 		return nil
 	}
@@ -3704,7 +3767,7 @@ func (m Model) startReactionPicker() (tea.Model, tea.Cmd) {
 		m.status = "focused message has no WhatsApp id"
 		return m, nil
 	}
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		m.status = "reactions need WhatsApp online"
 		return m, nil
 	}
@@ -5868,7 +5931,7 @@ func (m Model) startStickerPicker() (tea.Model, tea.Cmd) {
 		m.status = "sticker send is unavailable"
 		return m, nil
 	}
-	if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
+	if m.requireOnlineForSend && !m.whatsAppReady() {
 		m.status = "sticker send needs WhatsApp online"
 		return m, nil
 	}
@@ -5981,7 +6044,7 @@ func (m Model) validateRetryMessage(message store.Message) error {
 	if len(message.Media) > 1 {
 		return fmt.Errorf("only one attachment per message is supported")
 	}
-	if m.requireOnlineForSend && m.connectionState != ConnectionOnline {
+	if m.requireOnlineForSend && !m.whatsAppReady() {
 		return fmt.Errorf("retry needs WhatsApp online")
 	}
 	item := message.Media[0]
@@ -6216,7 +6279,7 @@ func (m Model) validateDeleteForEveryone(message store.Message) error {
 	if m.deleteMessageForEveryone == nil {
 		return fmt.Errorf("live delete is unavailable")
 	}
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		return fmt.Errorf("WhatsApp must be online")
 	}
 	if !message.IsOutgoing {
@@ -6274,7 +6337,7 @@ func (m Model) validateEditTarget(message store.Message) error {
 	if m.editMessage == nil {
 		return fmt.Errorf("live edit is unavailable")
 	}
-	if m.connectionState != ConnectionOnline {
+	if !m.whatsAppReady() {
 		return fmt.Errorf("WhatsApp must be online")
 	}
 	if !message.IsOutgoing {

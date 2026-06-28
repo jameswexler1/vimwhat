@@ -1062,15 +1062,37 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 	go func() {
 		defer close(out)
 		defer c.client.RemoveEventHandler(handlerID)
+		offlineActive := false
 
 		for {
 			select {
 			case evt := <-raw:
-				for _, normalized := range c.normalizeWhatsmeowEvent(ctx, evt) {
+				normalizedEvents := c.normalizeWhatsmeowEvent(ctx, evt)
+				for _, normalized := range normalizedEvents {
 					select {
 					case out <- normalized:
 					case <-ctx.Done():
 						return
+					}
+				}
+				switch evt.(type) {
+				case *events.OfflineSyncPreview:
+					offlineActive = true
+				case *events.OfflineSyncCompleted:
+					offlineActive = false
+				default:
+					if offlineActive {
+						select {
+						case out <- Event{
+							Kind: EventOfflineSync,
+							Offline: OfflineSyncEvent{
+								Progress:  true,
+								Processed: 1,
+							},
+						}:
+						case <-ctx.Done():
+							return
+						}
 					}
 				}
 			case <-ctx.Done():
@@ -1483,6 +1505,7 @@ const (
 	EventConnectionState     EventKind = "connection_state"
 	EventHistoryStatus       EventKind = "history_status"
 	EventOfflineSync         EventKind = "offline_sync"
+	EventMessageRecovery     EventKind = "message_recovery"
 	EventContactUpsert       EventKind = "contact_upsert"
 	EventChatAvatarUpdate    EventKind = "chat_avatar_update"
 	EventGroupParticipants   EventKind = "group_participants"
@@ -1501,6 +1524,7 @@ const (
 
 type Event struct {
 	Kind          EventKind
+	Replayed      bool
 	Chat          ChatEvent
 	Message       MessageEvent
 	Edit          MessageEditEvent
@@ -1514,6 +1538,7 @@ type Event struct {
 	Connection    ConnectionEvent
 	History       HistoryEvent
 	Offline       OfflineSyncEvent
+	Recovery      MessageRecoveryEvent
 	Contact       ContactEvent
 	Avatar        AvatarEvent
 	Participants  GroupParticipantsEvent
@@ -1591,6 +1616,7 @@ type MessageEvent struct {
 	ForwardPayload      []byte
 	Mentions            []MessageMentionEvent
 	Historical          bool
+	Recovered           bool
 }
 
 type MessageMentionEvent struct {
@@ -1631,12 +1657,19 @@ type HistoryEvent struct {
 type OfflineSyncEvent struct {
 	Active         bool
 	Completed      bool
+	Progress       bool
 	Total          int
 	Processed      int
 	AppDataChanges int
 	Messages       int
 	Notifications  int
 	Receipts       int
+}
+
+type MessageRecoveryEvent struct {
+	ChatID    string
+	MessageID string
+	Pending   bool
 }
 
 type ReceiptEvent struct {

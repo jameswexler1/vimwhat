@@ -28,6 +28,23 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 		return c.normalizeHistorySyncEvent(ctx, event)
 	case *events.Message:
 		return c.normalizeMessageEvent(ctx, event)
+	case *events.UndecryptableMessage:
+		if event == nil || event.Info.ID == "" || event.UnavailableType == events.UnavailableTypeViewOnce || !supportedChat(event.Info.Chat) {
+			return nil
+		}
+		chatJID, _ := c.canonicalChatIdentity(ctx, event.Info.Chat, directChatAlternateJID(event.Info))
+		if chatJID.IsEmpty() {
+			chatJID = canonicalizableChatJID(event.Info.Chat)
+		}
+		chatID := chatJID.String()
+		return []Event{{
+			Kind: EventMessageRecovery,
+			Recovery: MessageRecoveryEvent{
+				ChatID:    chatID,
+				MessageID: localMessageID(chatID, string(event.Info.ID)),
+				Pending:   true,
+			},
+		}}
 	case *events.Receipt:
 		return c.normalizeReceiptEvent(ctx, event)
 	case *events.Picture:
@@ -101,10 +118,23 @@ func normalizeWhatsmeowEvent(evt any) []Event {
 				Processed: event.Count,
 			},
 		}}
+	case *events.UndecryptableMessage:
+		if event.Info.ID == "" || event.UnavailableType == events.UnavailableTypeViewOnce || !supportedChat(event.Info.Chat) {
+			return nil
+		}
+		chatID := canonicalizableChatJID(event.Info.Chat).String()
+		return []Event{{
+			Kind: EventMessageRecovery,
+			Recovery: MessageRecoveryEvent{
+				ChatID:    chatID,
+				MessageID: localMessageID(chatID, string(event.Info.ID)),
+				Pending:   true,
+			},
+		}}
 	case *events.AppState:
 		return normalizeAppStateEvent(event)
 	case *events.Message:
-		return normalizeMessageEvent(event)
+		return markRecoveredMessageEvents(normalizeMessageEvent(event), event)
 	case *events.Receipt:
 		return normalizeReceiptEvent(event)
 	case *events.Picture:
@@ -139,7 +169,38 @@ func (c *Client) normalizeMessageEvent(ctx context.Context, event *events.Messag
 			return c.normalizeParsedMessageEvent(ctx, &clone)
 		}
 	}
-	return c.normalizeParsedMessageEvent(ctx, event)
+	normalized := c.normalizeParsedMessageEvent(ctx, event)
+	return markRecoveredMessageEvents(normalized, event)
+}
+
+func markRecoveredMessageEvents(normalized []Event, event *events.Message) []Event {
+	if event == nil || event.Info.ID == "" {
+		return normalized
+	}
+	recovered := event.UnavailableRequestID != "" || event.RetryCount > 0 || event.SourceWebMsg != nil
+	if !recovered {
+		return normalized
+	}
+	for i := range normalized {
+		normalized[i].Replayed = true
+		if normalized[i].Kind == EventMessageUpsert {
+			normalized[i].Message.Recovered = true
+		}
+	}
+	chatID := canonicalizableChatJID(event.Info.Chat).String()
+	for _, normalizedEvent := range normalized {
+		if normalizedEvent.Kind == EventChatUpsert && strings.TrimSpace(normalizedEvent.Chat.ID) != "" {
+			chatID = normalizedEvent.Chat.ID
+			break
+		}
+	}
+	return append(normalized, Event{
+		Kind: EventMessageRecovery,
+		Recovery: MessageRecoveryEvent{
+			ChatID:    chatID,
+			MessageID: localMessageID(chatID, string(event.Info.ID)),
+		},
+	})
 }
 
 func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.HistorySync) []Event {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime"
 	"net/http"
 	neturl "net/url"
@@ -184,7 +185,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
 		RequireOnlineForSend: liveEnabled,
-		BlockLiveStartup:     liveEnabled && initialConnection == ui.ConnectionPaired,
+		BlockLiveStartup:     false,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			if liveEnabled {
 				if len(outgoing.Attachments) > 0 {
@@ -573,8 +574,11 @@ var (
 	offlineSyncProgressEvery = 150 * time.Millisecond
 	offlineSyncInactivity    = 15 * time.Second
 	offlineSyncMaxDuration   = 60 * time.Second
+	offlineSyncSettle        = 2 * time.Second
+	lateReplaySettle         = 5 * time.Second
+	lateReplayMaxDuration    = 30 * time.Second
 	databaseImportInactivity = 750 * time.Millisecond
-	liveStartupSyncSettle    = 300 * time.Millisecond
+	liveStartupSyncSettle    = 1 * time.Second
 )
 
 type textSendRequest struct {
@@ -963,7 +967,12 @@ func runLiveWhatsApp(
 		return
 	}
 	markLivePresenceAvailable(ctx, live, updates)
-	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionOnline})
+	protocolReady := false
+	readyValue := func(value bool) *bool { return &value }
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+		ConnectionState: ui.ConnectionOnline,
+		ProtocolReady:   readyValue(false),
+	})
 
 	var protocolWG sync.WaitGroup
 	defer protocolWG.Wait()
@@ -1070,10 +1079,16 @@ func runLiveWhatsApp(
 	offlineSync := offlineSyncState{}
 	startupAppStateUpdates := startStartupAppStateSync(ctx, env.Store, live, env.Paths, &protocolWG, online)
 	notifications := notificationGate{Pending: startupAppStateUpdates != nil}
+	var pendingCatchUpSummary map[string]int
 	var offlineSyncIdleTimer *time.Timer
 	var offlineSyncIdleTimerC <-chan time.Time
 	var offlineSyncMaxTimer *time.Timer
 	var offlineSyncMaxTimerC <-chan time.Time
+	var lateReplayTimer *time.Timer
+	var lateReplayTimerC <-chan time.Time
+	var lateReplayMaxTimer *time.Timer
+	var lateReplayMaxTimerC <-chan time.Time
+	lateReplayDirty := false
 	resetOfflineSyncIdleTimer := func(duration time.Duration) {
 		if duration <= 0 {
 			duration = offlineSyncInactivity
@@ -1090,6 +1105,17 @@ func runLiveWhatsApp(
 			offlineSyncIdleTimer.Reset(duration)
 		}
 		offlineSyncIdleTimerC = offlineSyncIdleTimer.C
+	}
+	stopOfflineSyncIdleTimer := func() {
+		if offlineSyncIdleTimer != nil {
+			if !offlineSyncIdleTimer.Stop() {
+				select {
+				case <-offlineSyncIdleTimer.C:
+				default:
+				}
+			}
+		}
+		offlineSyncIdleTimerC = nil
 	}
 	startOfflineSyncMaxTimer := func() {
 		if offlineSyncMaxTimer == nil {
@@ -1125,22 +1151,91 @@ func runLiveWhatsApp(
 		offlineSyncIdleTimerC = nil
 		offlineSyncMaxTimerC = nil
 	}
+	resetLateReplayTimer := func() {
+		if lateReplayTimer == nil {
+			lateReplayTimer = time.NewTimer(lateReplaySettle)
+		} else {
+			if !lateReplayTimer.Stop() {
+				select {
+				case <-lateReplayTimer.C:
+				default:
+				}
+			}
+			lateReplayTimer.Reset(lateReplaySettle)
+		}
+		lateReplayTimerC = lateReplayTimer.C
+		if lateReplayMaxTimerC == nil {
+			if lateReplayMaxTimer == nil {
+				lateReplayMaxTimer = time.NewTimer(lateReplayMaxDuration)
+			} else {
+				lateReplayMaxTimer.Reset(lateReplayMaxDuration)
+			}
+			lateReplayMaxTimerC = lateReplayMaxTimer.C
+		}
+	}
+	stopLateReplayTimer := func() {
+		if lateReplayTimer != nil {
+			if !lateReplayTimer.Stop() {
+				select {
+				case <-lateReplayTimer.C:
+				default:
+				}
+			}
+		}
+		lateReplayTimerC = nil
+		if lateReplayMaxTimer != nil {
+			if !lateReplayMaxTimer.Stop() {
+				select {
+				case <-lateReplayMaxTimer.C:
+				default:
+				}
+			}
+		}
+		lateReplayMaxTimerC = nil
+	}
+	flushLateReplay := func() {
+		stopLateReplayTimer()
+		if lateReplayDirty {
+			lateReplayDirty = false
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+				Refresh: true,
+				Status:  "recovered messages applied",
+			})
+		}
+	}
 	finishOfflineSync := func(status string, event whatsapp.OfflineSyncEvent) {
 		if !offlineSync.active {
 			clearOfflineSyncTimers()
 			return
 		}
+		summary := maps.Clone(offlineSync.summaryChats)
 		syncUpdate, dirty := offlineSync.finish(event)
+		syncUpdate.Finalizing = dirty
 		clearOfflineSyncTimers()
+		protocolReady = true
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh:         dirty,
 			Status:          status,
 			PreferredChatID: pendingPreferredChatID,
 			Sync:            &syncUpdate,
+			ProtocolReady:   readyValue(true),
 		})
+		if len(summary) > 0 {
+			if startupAppStateUpdates != nil {
+				if pendingCatchUpSummary == nil {
+					pendingCatchUpSummary = map[string]int{}
+				}
+				for chatID, count := range summary {
+					pendingCatchUpSummary[chatID] += count
+				}
+			} else {
+				queueCatchUpSummary(context.Background(), env.Store, notificationJobs, viewState, summary)
+			}
+		}
 		pendingPreferredChatID = ""
 	}
 	defer clearOfflineSyncTimers()
+	defer stopLateReplayTimer()
 	defer stopStartupSyncTimer()
 	for {
 		select {
@@ -1175,8 +1270,23 @@ func runLiveWhatsApp(
 			if event.Kind == whatsapp.EventConnectionState {
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				if online {
+					protocolReady = false
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{ProtocolReady: readyValue(false)})
+					startStartupSyncTimer()
 					markLivePresenceAvailable(ctx, live, updates)
 				} else {
+					protocolReady = false
+					if offlineSync.active {
+						dirty := offlineSync.dirty
+						offlineSync = offlineSyncState{}
+						clearOfflineSyncTimers()
+						sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+							Refresh:       dirty,
+							ProtocolReady: readyValue(false),
+							Sync:          &ui.SyncProgressUpdate{},
+						})
+					}
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{ProtocolReady: readyValue(false)})
 					clearStartupSyncOverlay()
 				}
 				sendLiveUpdate(ctx, updates, liveUpdateForConnectionEvent(event.Connection))
@@ -1186,19 +1296,63 @@ func runLiveWhatsApp(
 				now := time.Now()
 				if event.Offline.Active {
 					resolveStartupSyncOverlay()
+					protocolReady = false
 					syncUpdate := offlineSync.start(event.Offline, now)
 					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 					startOfflineSyncMaxTimer()
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-						Status: "syncing WhatsApp updates",
-						Sync:   &syncUpdate,
+						Status:        "syncing WhatsApp updates",
+						Sync:          &syncUpdate,
+						ProtocolReady: readyValue(false),
 					})
 					continue
 				}
-				if event.Offline.Completed {
-					finishOfflineSync("sync complete", event.Offline)
+				if event.Offline.Progress {
+					if !offlineSync.active {
+						continue
+					}
+					if syncUpdate, ok := offlineSync.markProgress(max(1, event.Offline.Processed), now); ok {
+						sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+					}
+					if !offlineSync.serverComplete {
+						resetOfflineSyncIdleTimer(offlineSync.idleDuration())
+					}
 					continue
 				}
+				if event.Offline.Completed {
+					if !offlineSync.active {
+						continue
+					}
+					syncUpdate := offlineSync.markServerComplete(event.Offline)
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						Status: "recovering WhatsApp messages",
+						Sync:   &syncUpdate,
+					})
+					if offlineSync.canSettle() {
+						resetOfflineSyncIdleTimer(offlineSyncSettle)
+					} else {
+						stopOfflineSyncIdleTimer()
+					}
+					continue
+				}
+			}
+			if event.Kind == whatsapp.EventMessageRecovery {
+				if offlineSync.active {
+					offlineSync.updateRecovery(event.Recovery)
+					offlineSync.dirty = true
+					syncUpdate := offlineSync.liveUpdate(true, false)
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+					if offlineSync.serverComplete {
+						if offlineSync.canSettle() {
+							resetOfflineSyncIdleTimer(offlineSyncSettle)
+						} else {
+							stopOfflineSyncIdleTimer()
+						}
+					} else {
+						resetOfflineSyncIdleTimer(offlineSync.idleDuration())
+					}
+				}
+				continue
 			}
 			manualHistoryImport := isManualHistoryImportEvent(event, historyInflight)
 			if isImplicitDatabaseImportEvent(event, manualHistoryImport) && !offlineSync.active {
@@ -1271,11 +1425,16 @@ func runLiveWhatsApp(
 				})
 				continue
 			}
+			offlineSync.addSummary(result)
 			if event.Kind == whatsapp.EventHistoryStatus {
 				delete(historyInflight, event.History.ChatID)
 				if offlineSync.active {
-					if syncUpdate, ok := offlineSync.markProcessed(time.Now()); ok {
-						sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+					if offlineSync.implicit {
+						if syncUpdate, ok := offlineSync.markProcessed(time.Now()); ok {
+							sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
+						}
+					} else {
+						offlineSync.dirty = true
 					}
 					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
 					continue
@@ -1291,14 +1450,35 @@ func runLiveWhatsApp(
 				continue
 			}
 			if offlineSync.active {
-				syncUpdate, shouldSend := offlineSync.markProcessed(time.Now())
-				resetOfflineSyncIdleTimer(offlineSync.idleDuration())
+				var (
+					syncUpdate ui.SyncProgressUpdate
+					shouldSend bool
+				)
+				if offlineSync.implicit {
+					syncUpdate, shouldSend = offlineSync.markProcessed(time.Now())
+				} else {
+					offlineSync.dirty = true
+				}
+				if offlineSync.serverComplete {
+					if offlineSync.canSettle() {
+						resetOfflineSyncIdleTimer(offlineSyncSettle)
+					} else {
+						stopOfflineSyncIdleTimer()
+					}
+				} else {
+					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
+				}
 				if shouldSend {
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 				}
 				continue
 			}
 			if isHistoricalImportEvent(event) {
+				continue
+			}
+			if event.Replayed || event.Message.Recovered {
+				lateReplayDirty = true
+				resetLateReplayTimer()
 				continue
 			}
 			notifications.QueueOrSend(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight, viewState, result)
@@ -1311,52 +1491,52 @@ func runLiveWhatsApp(
 			if !ok {
 				return
 			}
-			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online, chatID)
+			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online && protocolReady, chatID)
 		case request, ok := <-textSendRequests:
 			if !ok {
 				return
 			}
-			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-mediaSendRequests:
 			if !ok {
 				return
 			}
-			handleMediaSendRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleMediaSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-readReceiptRequests:
 			if !ok {
 				return
 			}
-			handleReadReceiptRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleReadReceiptRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-reactionRequests:
 			if !ok {
 				return
 			}
-			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-deleteEveryoneRequests:
 			if !ok {
 				return
 			}
-			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-editMessageRequests:
 			if !ok {
 				return
 			}
-			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-forwardRequests:
 			if !ok {
 				return
 			}
-			handleForwardMessagesRequest(ctx, env.Store, live, updates, &protocolWG, online, request)
+			handleForwardMessagesRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
 		case request, ok := <-presenceRequests:
 			if !ok {
 				return
 			}
-			handlePresenceRequest(ctx, live, online, request)
+			handlePresenceRequest(ctx, live, online && protocolReady, request)
 		case request, ok := <-presenceSubscribeRequests:
 			if !ok {
 				return
 			}
-			handlePresenceSubscribeRequest(ctx, live, online, request)
+			handlePresenceSubscribeRequest(ctx, live, online && protocolReady, request)
 		case result, ok := <-metadataResults:
 			if ok {
 				ingested := 0
@@ -1388,10 +1568,18 @@ func runLiveWhatsApp(
 				if notifications.Pending {
 					notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
 				}
+				if len(pendingCatchUpSummary) > 0 {
+					queueCatchUpSummary(context.Background(), env.Store, notificationJobs, viewState, pendingCatchUpSummary)
+					pendingCatchUpSummary = nil
+				}
 				continue
 			}
 			if startupUpdate.Done {
 				notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
+				if len(pendingCatchUpSummary) > 0 {
+					queueCatchUpSummary(context.Background(), env.Store, notificationJobs, viewState, pendingCatchUpSummary)
+					pendingCatchUpSummary = nil
+				}
 			}
 			update := startupUpdate.Update
 			if offlineSync.active && update.Refresh {
@@ -1405,12 +1593,12 @@ func runLiveWhatsApp(
 			if !ok {
 				return
 			}
-			enqueueMediaDownload(ctx, downloadJobs, online, request)
+			enqueueMediaDownload(ctx, downloadJobs, online && protocolReady, request)
 		case request, ok := <-stickerSyncRequests:
 			if !ok {
 				return
 			}
-			handleStickerSyncRequest(ctx, env.Store, live, env.Paths, updates, &protocolWG, online, request)
+			handleStickerSyncRequest(ctx, env.Store, live, env.Paths, updates, &protocolWG, online && protocolReady, request)
 		case chatID, ok := <-activeChatUpdates:
 			if !ok {
 				activeChatUpdates = nil
@@ -1455,7 +1643,10 @@ func runLiveWhatsApp(
 				})
 			}
 		case <-offlineSyncIdleTimerC:
-			status := "sync stalled; refreshed latest data"
+			status := "sync complete"
+			if !offlineSync.serverComplete {
+				status = "sync stalled; refreshed latest data"
+			}
 			if offlineSync.implicit {
 				status = "database update complete"
 			}
@@ -1469,17 +1660,27 @@ func runLiveWhatsApp(
 			if offlineSync.implicit {
 				status = "database update timed out; refreshed latest data"
 			}
+			offlineSync.degraded = true
 			finishOfflineSync(status, whatsapp.OfflineSyncEvent{
 				Completed: true,
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
 			})
+		case <-lateReplayTimerC:
+			flushLateReplay()
+		case <-lateReplayMaxTimerC:
+			flushLateReplay()
 		case <-startupSyncTimerC:
 			if offlineSync.active {
 				resolveStartupSyncOverlay()
 				continue
 			}
-			clearStartupSyncOverlay()
+			resolveStartupSyncOverlay()
+			protocolReady = true
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+				ProtocolReady: readyValue(true),
+				Sync:          &ui.SyncProgressUpdate{},
+			})
 		case <-ctx.Done():
 			return
 		}
@@ -1487,16 +1688,20 @@ func runLiveWhatsApp(
 }
 
 type offlineSyncState struct {
-	active         bool
-	implicit       bool
-	dirty          bool
-	total          int
-	processed      int
-	appDataChanges int
-	messages       int
-	notifications  int
-	receipts       int
-	lastProgress   time.Time
+	active          bool
+	implicit        bool
+	dirty           bool
+	serverComplete  bool
+	degraded        bool
+	total           int
+	processed       int
+	appDataChanges  int
+	messages        int
+	notifications   int
+	receipts        int
+	lastProgress    time.Time
+	pendingRecovery map[string]struct{}
+	summaryChats    map[string]int
 }
 
 func (s *offlineSyncState) start(event whatsapp.OfflineSyncEvent, now time.Time) ui.SyncProgressUpdate {
@@ -1511,24 +1716,28 @@ func (s *offlineSyncState) start(event whatsapp.OfflineSyncEvent, now time.Time)
 		total = processed
 	}
 	*s = offlineSyncState{
-		active:         true,
-		dirty:          dirty,
-		total:          total,
-		processed:      processed,
-		appDataChanges: max(0, event.AppDataChanges),
-		messages:       max(0, event.Messages),
-		notifications:  max(0, event.Notifications),
-		receipts:       max(0, event.Receipts),
-		lastProgress:   now,
+		active:          true,
+		dirty:           dirty,
+		total:           total,
+		processed:       processed,
+		appDataChanges:  max(0, event.AppDataChanges),
+		messages:        max(0, event.Messages),
+		notifications:   max(0, event.Notifications),
+		receipts:        max(0, event.Receipts),
+		lastProgress:    now,
+		pendingRecovery: map[string]struct{}{},
+		summaryChats:    map[string]int{},
 	}
 	return s.liveUpdate(true, false)
 }
 
 func (s *offlineSyncState) startImplicit(now time.Time) ui.SyncProgressUpdate {
 	*s = offlineSyncState{
-		active:       true,
-		implicit:     true,
-		lastProgress: now,
+		active:          true,
+		implicit:        true,
+		lastProgress:    now,
+		pendingRecovery: map[string]struct{}{},
+		summaryChats:    map[string]int{},
 	}
 	return s.liveUpdate(true, false)
 }
@@ -1556,6 +1765,75 @@ func (s *offlineSyncState) markProcessed(now time.Time) (ui.SyncProgressUpdate, 
 	return s.liveUpdate(true, false), true
 }
 
+func (s *offlineSyncState) markProgress(count int, now time.Time) (ui.SyncProgressUpdate, bool) {
+	if !s.active || count <= 0 {
+		return ui.SyncProgressUpdate{}, false
+	}
+	s.processed += count
+	if s.total > 0 && s.processed > s.total {
+		s.processed = s.total
+	}
+	if !s.lastProgress.IsZero() && now.Sub(s.lastProgress) < offlineSyncProgressEvery && (s.total == 0 || s.processed < s.total) {
+		return ui.SyncProgressUpdate{}, false
+	}
+	s.lastProgress = now
+	return s.liveUpdate(true, false), true
+}
+
+func recoveryKey(event whatsapp.MessageRecoveryEvent) string {
+	return strings.TrimSpace(event.ChatID) + "\x00" + strings.TrimSpace(event.MessageID)
+}
+
+func (s *offlineSyncState) updateRecovery(event whatsapp.MessageRecoveryEvent) {
+	if !s.active {
+		return
+	}
+	if s.pendingRecovery == nil {
+		s.pendingRecovery = map[string]struct{}{}
+	}
+	key := recoveryKey(event)
+	if key == "\x00" {
+		return
+	}
+	if event.Pending {
+		s.pendingRecovery[key] = struct{}{}
+	} else {
+		delete(s.pendingRecovery, key)
+	}
+}
+
+func (s *offlineSyncState) addSummary(result whatsapp.ApplyResult) {
+	if !s.active || !result.MessageInserted || result.Message.IsOutgoing || result.Message.Historical {
+		return
+	}
+	chatID := strings.TrimSpace(result.Message.ChatID)
+	if chatID == "" {
+		return
+	}
+	if s.summaryChats == nil {
+		s.summaryChats = map[string]int{}
+	}
+	s.summaryChats[chatID]++
+}
+
+func (s offlineSyncState) canSettle() bool {
+	return s.active && s.serverComplete && len(s.pendingRecovery) == 0
+}
+
+func (s *offlineSyncState) markServerComplete(event whatsapp.OfflineSyncEvent) ui.SyncProgressUpdate {
+	s.serverComplete = true
+	if event.Total > s.total {
+		s.total = event.Total
+	}
+	if event.Processed > s.processed {
+		s.processed = event.Processed
+	}
+	if s.total > 0 && s.processed > s.total {
+		s.processed = s.total
+	}
+	return s.liveUpdate(true, false)
+}
+
 func (s *offlineSyncState) finish(event whatsapp.OfflineSyncEvent) (ui.SyncProgressUpdate, bool) {
 	if event.Total > s.total {
 		s.total = event.Total
@@ -1568,20 +1846,23 @@ func (s *offlineSyncState) finish(event whatsapp.OfflineSyncEvent) (ui.SyncProgr
 	}
 	dirty := s.dirty
 	update := s.liveUpdate(false, true)
+	update.Finalizing = true
+	update.Degraded = s.degraded
 	*s = offlineSyncState{}
 	return update, dirty
 }
 
 func (s offlineSyncState) liveUpdate(active, completed bool) ui.SyncProgressUpdate {
 	update := ui.SyncProgressUpdate{
-		Active:         active,
-		Completed:      completed,
-		Total:          s.total,
-		Processed:      s.processed,
-		AppDataChanges: s.appDataChanges,
-		Messages:       s.messages,
-		Notifications:  s.notifications,
-		Receipts:       s.receipts,
+		Active:          active,
+		Completed:       completed,
+		Total:           s.total,
+		Processed:       s.processed,
+		AppDataChanges:  s.appDataChanges,
+		Messages:        s.messages,
+		Notifications:   s.notifications,
+		Receipts:        s.receipts,
+		PendingRecovery: len(s.pendingRecovery),
 	}
 	if s.implicit {
 		if completed {

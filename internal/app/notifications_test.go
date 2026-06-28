@@ -170,3 +170,35 @@ func TestBuildNotificationSuppressesGlobalLocalMute(t *testing.T) {
 		t.Fatal("buildNotification() ok = true, want false when globally muted")
 	}
 }
+
+func TestQueueCatchUpSummaryFiltersMutedChatsAndFocus(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+	for _, chat := range []store.Chat{
+		{ID: "chat-1", JID: "chat-1@s.whatsapp.net", Title: "Alice", Kind: "direct"},
+		{ID: "chat-2", JID: "chat-2@s.whatsapp.net", Title: "Muted", Kind: "direct", Muted: true},
+	} {
+		if err := db.UpsertChat(ctx, chat); err != nil {
+			t.Fatalf("UpsertChat(%s) error = %v", chat.ID, err)
+		}
+	}
+
+	jobs := make(chan notify.Notification, 2)
+	counts := map[string]int{"chat-1": 3, "chat-2": 7}
+	if !queueCatchUpSummary(ctx, db, jobs, notificationContext{}, counts) {
+		t.Fatal("queueCatchUpSummary() = false, want one summary")
+	}
+	note := <-jobs
+	if note.Title != "vimwhat" || note.Body != "3 new messages in 1 chat" {
+		t.Fatalf("summary notification = %+v", note)
+	}
+	if queueCatchUpSummary(ctx, db, jobs, notificationContext{appFocusKnown: true, appFocused: true}, counts) {
+		t.Fatal("queueCatchUpSummary() = true while focused")
+	}
+}

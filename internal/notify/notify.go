@@ -114,6 +114,21 @@ func FormatChatMessage(payload MessagePayload) Notification {
 	}
 }
 
+func FormatCatchUpSummary(messages, chats int) Notification {
+	messageLabel := "messages"
+	if messages == 1 {
+		messageLabel = "message"
+	}
+	chatLabel := "chats"
+	if chats == 1 {
+		chatLabel = "chat"
+	}
+	return Notification{
+		Title: "vimwhat",
+		Body:  fmt.Sprintf("%d new %s in %d %s", messages, messageLabel, chats, chatLabel),
+	}
+}
+
 func (n notifier) Notify(ctx context.Context, note Notification) error {
 	switch n.report.Selected {
 	case BackendCommand:

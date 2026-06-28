@@ -115,6 +115,48 @@ func TestNormalizeOfflineSyncEvents(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageRecoveryLifecycle(t *testing.T) {
+	chat := types.NewJID("12345", types.DefaultUserServer)
+	info := types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:   chat,
+			Sender: chat,
+		},
+		ID:        "RECOVER1",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+
+	pending := normalizeWhatsmeowEvent(&events.UndecryptableMessage{Info: info, IsUnavailable: true})
+	if len(pending) != 1 || pending[0].Kind != EventMessageRecovery || !pending[0].Recovery.Pending {
+		t.Fatalf("pending recovery = %+v", pending)
+	}
+
+	recovered := normalizeWhatsmeowEvent(&events.Message{
+		Info:                 info,
+		Message:              &waE2E.Message{Conversation: proto.String("recovered")},
+		UnavailableRequestID: "request-1",
+	})
+	if len(recovered) < 3 {
+		t.Fatalf("recovered events = %+v, want chat, message, and recovery resolution", recovered)
+	}
+	for _, event := range recovered[:len(recovered)-1] {
+		if !event.Replayed {
+			t.Fatalf("recovered event was not marked replayed: %+v", event)
+		}
+	}
+	message := recovered[1]
+	if message.Kind != EventMessageUpsert || !message.Message.Recovered {
+		t.Fatalf("recovered message = %+v", message)
+	}
+	resolved := recovered[len(recovered)-1]
+	if resolved.Kind != EventMessageRecovery || resolved.Recovery.Pending {
+		t.Fatalf("resolved recovery = %+v", resolved)
+	}
+	if pending[0].Recovery.MessageID != resolved.Recovery.MessageID {
+		t.Fatalf("recovery keys differ: pending=%q resolved=%q", pending[0].Recovery.MessageID, resolved.Recovery.MessageID)
+	}
+}
+
 func TestNormalizeMessageEventUsesJIDTitleForOutgoingDirectMessages(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	chat := types.NewJID("12345", types.DefaultUserServer)
