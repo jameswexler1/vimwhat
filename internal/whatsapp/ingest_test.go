@@ -196,6 +196,46 @@ func TestIngestorAppliesHistoricalMessageWithoutUnreadIncrement(t *testing.T) {
 	}
 }
 
+func TestIngestorStoresForwardPayloadWithMessage(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	ingestor := Ingestor{Store: db}
+	when := time.Unix(1_700_000_000, 0)
+	if _, err := ingestor.Apply(ctx, Event{
+		Kind: EventChatUpsert,
+		Chat: ChatEvent{ID: "chat-1", JID: "chat-1", Title: "Alice", Kind: "direct"},
+	}); err != nil {
+		t.Fatalf("Apply(chat) error = %v", err)
+	}
+	result, err := ingestor.Apply(ctx, Event{
+		Kind: EventMessageUpsert,
+		Message: MessageEvent{
+			ID:             "msg-1",
+			ChatID:         "chat-1",
+			ChatJID:        "chat-1",
+			Sender:         "Alice",
+			SenderJID:      "Alice",
+			Body:           "forwardable",
+			Timestamp:      when,
+			ForwardPayload: []byte{1, 2, 3},
+		},
+	})
+	if err != nil || !result.MessageInserted {
+		t.Fatalf("Apply(message) result=%+v error=%v", result, err)
+	}
+	payload, ok, err := db.MessagePayload(ctx, "msg-1")
+	if err != nil || !ok || string(payload.Payload) != string([]byte{1, 2, 3}) {
+		t.Fatalf("MessagePayload() = %+v ok=%v error=%v", payload, ok, err)
+	}
+}
+
 func TestIngestorPreservesUnknownChatSettings(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))

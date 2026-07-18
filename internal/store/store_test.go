@@ -1327,6 +1327,44 @@ func TestMessagePayloadRoundTripAndCascadeDelete(t *testing.T) {
 	}
 }
 
+func TestAddIncomingMessageWithPayloadCommitsMessageAndPayload(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "state.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	if err := db.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
+		t.Fatalf("UpsertChat() error = %v", err)
+	}
+	when := time.Unix(1_700_000_000, 0)
+	inserted, err := db.AddIncomingMessageWithPayload(ctx, Message{
+		ID:        "m-1",
+		ChatID:    "chat-1",
+		Sender:    "Alice",
+		Body:      "forwardable",
+		Timestamp: when,
+	}, MessagePayload{
+		MessageID: "m-1",
+		Payload:   []byte{1, 2, 3},
+		UpdatedAt: when,
+	})
+	if err != nil || !inserted {
+		t.Fatalf("AddIncomingMessageWithPayload() inserted=%v error=%v", inserted, err)
+	}
+	payload, ok, err := db.MessagePayload(ctx, "m-1")
+	if err != nil || !ok || string(payload.Payload) != string([]byte{1, 2, 3}) {
+		t.Fatalf("MessagePayload() = %+v ok=%v error=%v", payload, ok, err)
+	}
+	chats, err := db.ListChats(ctx)
+	if err != nil || len(chats) != 1 || chats[0].Unread != 1 {
+		t.Fatalf("ListChats() = %+v error=%v, want one unread", chats, err)
+	}
+}
+
 func TestDeleteMessageForEveryoneMarksReasonAndIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state.sqlite3")

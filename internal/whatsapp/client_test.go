@@ -45,6 +45,20 @@ func TestSessionURIUsesModernCSQLitePragmas(t *testing.T) {
 	}
 }
 
+func TestMarkEventsReplayedMarksEveryNormalizedEvent(t *testing.T) {
+	events := []Event{
+		{Kind: EventChatUpsert},
+		{Kind: EventMessageUpsert},
+		{Kind: EventMediaMetadata},
+	}
+	markEventsReplayed(events)
+	for index, event := range events {
+		if !event.Replayed {
+			t.Fatalf("events[%d].Replayed = false", index)
+		}
+	}
+}
+
 func TestHistoryAnchorMessageInfo(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0)
 	info, err := historyAnchorMessageInfo(HistoryAnchor{

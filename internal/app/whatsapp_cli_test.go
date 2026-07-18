@@ -942,6 +942,7 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 	}
 	assertNotificationCount(t, notifier.notifications, 0)
 
+	liveWhen := time.Now().Add(time.Minute)
 	session.events <- whatsapp.Event{
 		Kind: whatsapp.EventChatUpsert,
 		Chat: whatsapp.ChatEvent{
@@ -949,7 +950,7 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 			JID:           "chat-2@s.whatsapp.net",
 			Title:         "Bob",
 			Kind:          "direct",
-			LastMessageAt: when.Add(time.Minute),
+			LastMessageAt: liveWhen,
 		},
 	}
 	session.events <- whatsapp.Event{
@@ -963,7 +964,7 @@ func TestRunLiveWhatsAppBatchesOfflineSyncRefreshAndNotifications(t *testing.T) 
 			SenderJID:           "bob@s.whatsapp.net",
 			Body:                "normal live message",
 			NotificationPreview: "normal live message",
-			Timestamp:           when.Add(time.Minute),
+			Timestamp:           liveWhen,
 			Status:              "received",
 		},
 	}
@@ -1138,17 +1139,20 @@ func TestRunLiveWhatsAppMergesImplicitImportIntoOfflineSyncPreview(t *testing.T)
 	}
 }
 
-func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T) {
+func TestRunLiveWhatsAppWaitsForOfflineSyncMarkerAfterStall(t *testing.T) {
 	prevInactivity := offlineSyncInactivity
-	prevMaxDuration := offlineSyncMaxDuration
+	prevSettle := offlineSyncSettle
 	prevProgressEvery := offlineSyncProgressEvery
-	offlineSyncInactivity = time.Hour
-	offlineSyncMaxDuration = 250 * time.Millisecond
+	prevLateReplaySettle := lateReplaySettle
+	offlineSyncInactivity = 50 * time.Millisecond
+	offlineSyncSettle = 20 * time.Millisecond
 	offlineSyncProgressEvery = time.Hour
+	lateReplaySettle = 20 * time.Millisecond
 	t.Cleanup(func() {
 		offlineSyncInactivity = prevInactivity
-		offlineSyncMaxDuration = prevMaxDuration
+		offlineSyncSettle = prevSettle
 		offlineSyncProgressEvery = prevProgressEvery
+		lateReplaySettle = prevLateReplaySettle
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1234,14 +1238,67 @@ func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T
 		},
 	}
 	_ = waitForStoredMessages(t, db, "chat-1", 1)
-	timedOut := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
-		return update.Sync != nil && update.Sync.Completed && strings.Contains(update.Status, "timed out")
+	stalled := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && strings.Contains(update.Status, "taking longer")
 	})
-	if !timedOut.Refresh {
-		t.Fatalf("timeout update = %+v, want refresh", timedOut)
+	if !stalled.Sync.Active || stalled.Sync.Completed || !stalled.Sync.Degraded || stalled.Refresh {
+		t.Fatalf("stalled update = %+v, want active degraded sync without refresh", stalled)
+	}
+	assertNotificationCount(t, notifier.notifications, 0)
+	assertNoLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Completed
+	})
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventOfflineSync,
+		Offline: whatsapp.OfflineSyncEvent{
+			Completed: true,
+			Total:     10,
+			Processed: 10,
+		},
+	}
+	completed := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Completed
+	})
+	if !completed.Refresh {
+		t.Fatalf("completed update = %+v, want one final refresh", completed)
+	}
+
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventChatUpsert,
+		Chat: whatsapp.ChatEvent{
+			ID:            "chat-late",
+			JID:           "chat-late@s.whatsapp.net",
+			Title:         "Late replay",
+			Kind:          "direct",
+			LastMessageAt: when.Add(time.Minute),
+		},
+	}
+	session.events <- whatsapp.Event{
+		Kind: whatsapp.EventMessageUpsert,
+		Message: whatsapp.MessageEvent{
+			ID:                  "chat-late/msg-1",
+			RemoteID:            "msg-late",
+			ChatID:              "chat-late",
+			ChatJID:             "chat-late@s.whatsapp.net",
+			Sender:              "Late replay",
+			SenderJID:           "chat-late@s.whatsapp.net",
+			Body:                "old message after marker",
+			NotificationPreview: "old message after marker",
+			Timestamp:           when.Add(time.Minute),
+			Status:              "received",
+		},
+	}
+	_ = waitForStoredMessages(t, db, "chat-late", 1)
+	lateRefresh := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Refresh && update.Status == "recovered messages applied"
+	})
+	if !lateRefresh.Refresh {
+		t.Fatalf("late replay update = %+v", lateRefresh)
 	}
 	assertNotificationCount(t, notifier.notifications, 0)
 
+	liveWhen := time.Now().Add(time.Minute)
 	session.events <- whatsapp.Event{
 		Kind: whatsapp.EventChatUpsert,
 		Chat: whatsapp.ChatEvent{
@@ -1249,7 +1306,7 @@ func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T
 			JID:           "chat-2@s.whatsapp.net",
 			Title:         "Bob",
 			Kind:          "direct",
-			LastMessageAt: when.Add(time.Minute),
+			LastMessageAt: liveWhen,
 		},
 	}
 	session.events <- whatsapp.Event{
@@ -1261,15 +1318,15 @@ func TestRunLiveWhatsAppResumesNotificationsAfterOfflineSyncTimeout(t *testing.T
 			ChatJID:             "chat-2@s.whatsapp.net",
 			Sender:              "Bob",
 			SenderJID:           "bob@s.whatsapp.net",
-			Body:                "notify after timeout",
-			NotificationPreview: "notify after timeout",
-			Timestamp:           when.Add(time.Minute),
+			Body:                "notify after marker",
+			NotificationPreview: "notify after marker",
+			Timestamp:           liveWhen,
 			Status:              "received",
 		},
 	}
 	note := waitForNotification(t, notifier.notifications)
-	if note.Title != "Bob" || note.Body != "notify after timeout" {
-		t.Fatalf("notification after timeout = %+v, want Bob/notify after timeout", note)
+	if note.Title != "Bob" || note.Body != "notify after marker" {
+		t.Fatalf("notification after marker = %+v, want Bob/notify after marker", note)
 	}
 
 	cancel()

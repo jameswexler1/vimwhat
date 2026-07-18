@@ -42,6 +42,10 @@ type Environment struct {
 }
 
 func Main(args []string) int {
+	if isVersionCommand(args) {
+		printVersion(os.Stdout)
+		return 0
+	}
 	env, err := Bootstrap()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "vimwhat: %v\n", err)
@@ -106,6 +110,9 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "help", "-h", "--help":
 		printUsage(stdout)
+		return 0
+	case "version", "-v", "--version":
+		printVersion(stdout)
 		return 0
 	case "doctor":
 		printDoctor(env, stdout)
@@ -571,14 +578,15 @@ func backgroundStoreWriteContext(parent context.Context) (context.Context, conte
 }
 
 var (
-	offlineSyncProgressEvery = 150 * time.Millisecond
-	offlineSyncInactivity    = 15 * time.Second
-	offlineSyncMaxDuration   = 60 * time.Second
-	offlineSyncSettle        = 2 * time.Second
-	lateReplaySettle         = 5 * time.Second
-	lateReplayMaxDuration    = 30 * time.Second
-	databaseImportInactivity = 750 * time.Millisecond
-	liveStartupSyncSettle    = 1 * time.Second
+	offlineSyncProgressEvery   = 150 * time.Millisecond
+	offlineSyncInactivity      = 15 * time.Second
+	offlineSyncSettle          = 2 * time.Second
+	offlineSyncRecoveryTimeout = 30 * time.Second
+	lateReplaySettle           = 5 * time.Second
+	lateReplayMaxDuration      = 30 * time.Second
+	databaseImportInactivity   = 750 * time.Millisecond
+	databaseImportMaxDuration  = 60 * time.Second
+	liveStartupSyncSettle      = 1 * time.Second
 )
 
 type textSendRequest struct {
@@ -968,6 +976,8 @@ func runLiveWhatsApp(
 	}
 	markLivePresenceAvailable(ctx, live, updates)
 	protocolReady := false
+	connectionCatchUpStartedAt := time.Now()
+	connectionReplayGuard := false
 	readyValue := func(value bool) *bool { return &value }
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		ConnectionState: ui.ConnectionOnline,
@@ -1117,9 +1127,12 @@ func runLiveWhatsApp(
 		}
 		offlineSyncIdleTimerC = nil
 	}
-	startOfflineSyncMaxTimer := func() {
+	startOfflineSyncMaxTimer := func(duration time.Duration) {
+		if duration <= 0 {
+			duration = time.Millisecond
+		}
 		if offlineSyncMaxTimer == nil {
-			offlineSyncMaxTimer = time.NewTimer(offlineSyncMaxDuration)
+			offlineSyncMaxTimer = time.NewTimer(duration)
 		} else {
 			if !offlineSyncMaxTimer.Stop() {
 				select {
@@ -1127,9 +1140,20 @@ func runLiveWhatsApp(
 				default:
 				}
 			}
-			offlineSyncMaxTimer.Reset(offlineSyncMaxDuration)
+			offlineSyncMaxTimer.Reset(duration)
 		}
 		offlineSyncMaxTimerC = offlineSyncMaxTimer.C
+	}
+	stopOfflineSyncMaxTimer := func() {
+		if offlineSyncMaxTimer != nil {
+			if !offlineSyncMaxTimer.Stop() {
+				select {
+				case <-offlineSyncMaxTimer.C:
+				default:
+				}
+			}
+		}
+		offlineSyncMaxTimerC = nil
 	}
 	clearOfflineSyncTimers := func() {
 		if offlineSyncIdleTimer != nil {
@@ -1140,16 +1164,8 @@ func runLiveWhatsApp(
 				}
 			}
 		}
-		if offlineSyncMaxTimer != nil {
-			if !offlineSyncMaxTimer.Stop() {
-				select {
-				case <-offlineSyncMaxTimer.C:
-				default:
-				}
-			}
-		}
+		stopOfflineSyncMaxTimer()
 		offlineSyncIdleTimerC = nil
-		offlineSyncMaxTimerC = nil
 	}
 	resetLateReplayTimer := func() {
 		if lateReplayTimer == nil {
@@ -1208,11 +1224,15 @@ func runLiveWhatsApp(
 			clearOfflineSyncTimers()
 			return
 		}
+		explicitCatchUp := !offlineSync.implicit
 		summary := maps.Clone(offlineSync.summaryChats)
 		syncUpdate, dirty := offlineSync.finish(event)
 		syncUpdate.Finalizing = dirty
 		clearOfflineSyncTimers()
 		protocolReady = true
+		if explicitCatchUp {
+			connectionReplayGuard = true
+		}
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh:         dirty,
 			Status:          status,
@@ -1259,6 +1279,10 @@ func runLiveWhatsApp(
 				})
 				continue
 			}
+			if offlineSync.active {
+				offlineSync.dirty = true
+				continue
+			}
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true})
 		case event, ok := <-events:
 			if !ok {
@@ -1268,8 +1292,13 @@ func runLiveWhatsApp(
 			}
 			viewState = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, appFocusUpdates, visibleChatUpdates, viewState)
 			if event.Kind == whatsapp.EventConnectionState {
+				wasOnline := online
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				if online {
+					if !wasOnline {
+						connectionCatchUpStartedAt = time.Now()
+					}
+					connectionReplayGuard = false
 					protocolReady = false
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{ProtocolReady: readyValue(false)})
 					startStartupSyncTimer()
@@ -1297,9 +1326,10 @@ func runLiveWhatsApp(
 				if event.Offline.Active {
 					resolveStartupSyncOverlay()
 					protocolReady = false
+					connectionReplayGuard = false
 					syncUpdate := offlineSync.start(event.Offline, now)
 					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
-					startOfflineSyncMaxTimer()
+					stopOfflineSyncMaxTimer()
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 						Status:        "syncing WhatsApp updates",
 						Sync:          &syncUpdate,
@@ -1329,9 +1359,11 @@ func runLiveWhatsApp(
 						Sync:   &syncUpdate,
 					})
 					if offlineSync.canSettle() {
+						stopOfflineSyncMaxTimer()
 						resetOfflineSyncIdleTimer(offlineSyncSettle)
 					} else {
 						stopOfflineSyncIdleTimer()
+						startOfflineSyncMaxTimer(offlineSyncRecoveryTimeout)
 					}
 					continue
 				}
@@ -1344,9 +1376,11 @@ func runLiveWhatsApp(
 					sendLiveUpdate(ctx, updates, ui.LiveUpdate{Sync: &syncUpdate})
 					if offlineSync.serverComplete {
 						if offlineSync.canSettle() {
+							stopOfflineSyncMaxTimer()
 							resetOfflineSyncIdleTimer(offlineSyncSettle)
 						} else {
 							stopOfflineSyncIdleTimer()
+							startOfflineSyncMaxTimer(offlineSyncRecoveryTimeout)
 						}
 					} else {
 						resetOfflineSyncIdleTimer(offlineSync.idleDuration())
@@ -1354,12 +1388,13 @@ func runLiveWhatsApp(
 				}
 				continue
 			}
+			event, connectionReplayGuard = classifyConnectionReplay(event, connectionCatchUpStartedAt, connectionReplayGuard)
 			manualHistoryImport := isManualHistoryImportEvent(event, historyInflight)
 			if isImplicitDatabaseImportEvent(event, manualHistoryImport) && !offlineSync.active {
 				resolveStartupSyncOverlay()
 				syncUpdate := offlineSync.startImplicit(time.Now())
 				resetOfflineSyncIdleTimer(offlineSync.idleDuration())
-				startOfflineSyncMaxTimer()
+				startOfflineSyncMaxTimer(databaseImportMaxDuration)
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 					Status: "updating local database",
 					Sync:   &syncUpdate,
@@ -1383,7 +1418,16 @@ func runLiveWhatsApp(
 				continue
 			}
 			if event.Kind == whatsapp.EventChatAvatarUpdate {
-				handleAvatarEvent(ctx, env.Store, env.Paths, avatarJobs, avatarInflight, updates, event.Avatar)
+				if handleAvatarEvent(ctx, env.Store, env.Paths, avatarJobs, avatarInflight, updates, event.Avatar) {
+					if offlineSync.active {
+						offlineSync.dirty = true
+					} else {
+						sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+							Refresh: true,
+							Status:  "chat avatar removed",
+						})
+					}
+				}
 				continue
 			}
 			if event.Kind == whatsapp.EventMediaMetadata {
@@ -1454,6 +1498,7 @@ func runLiveWhatsApp(
 					syncUpdate ui.SyncProgressUpdate
 					shouldSend bool
 				)
+				offlineSync.degraded = false
 				if offlineSync.implicit {
 					syncUpdate, shouldSend = offlineSync.markProcessed(time.Now())
 				} else {
@@ -1461,9 +1506,11 @@ func runLiveWhatsApp(
 				}
 				if offlineSync.serverComplete {
 					if offlineSync.canSettle() {
+						stopOfflineSyncMaxTimer()
 						resetOfflineSyncIdleTimer(offlineSyncSettle)
 					} else {
 						stopOfflineSyncIdleTimer()
+						startOfflineSyncMaxTimer(offlineSyncRecoveryTimeout)
 					}
 				} else {
 					resetOfflineSyncIdleTimer(offlineSync.idleDuration())
@@ -1636,32 +1683,58 @@ func runLiveWhatsApp(
 				})
 				continue
 			}
-			if result.Refresh || strings.TrimSpace(result.Status) != "" {
+			refresh := result.Refresh
+			if offlineSync.active && refresh {
+				offlineSync.dirty = true
+				refresh = false
+			}
+			if refresh || strings.TrimSpace(result.Status) != "" {
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-					Refresh: result.Refresh,
+					Refresh: refresh,
 					Status:  result.Status,
 				})
 			}
 		case <-offlineSyncIdleTimerC:
-			status := "sync complete"
-			if !offlineSync.serverComplete {
-				status = "sync stalled; refreshed latest data"
-			}
 			if offlineSync.implicit {
-				status = "database update complete"
+				finishOfflineSync("database update complete", whatsapp.OfflineSyncEvent{
+					Completed: true,
+					Total:     offlineSync.total,
+					Processed: offlineSync.processed,
+				})
+				continue
 			}
-			finishOfflineSync(status, whatsapp.OfflineSyncEvent{
+			if !offlineSync.serverComplete {
+				offlineSync.degraded = true
+				offlineSyncIdleTimerC = nil
+				syncUpdate := offlineSync.liveUpdate(true, false)
+				syncUpdate.Subtitle = "No recent progress; still waiting for WhatsApp to finish the reconnect stream."
+				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+					Status: "WhatsApp sync is taking longer than expected; still waiting",
+					Sync:   &syncUpdate,
+				})
+				continue
+			}
+			finishOfflineSync("sync complete", whatsapp.OfflineSyncEvent{
 				Completed: true,
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
 			})
 		case <-offlineSyncMaxTimerC:
-			status := "sync timed out; refreshed latest data"
 			if offlineSync.implicit {
-				status = "database update timed out; refreshed latest data"
+				offlineSync.degraded = true
+				finishOfflineSync("database update timed out; refreshed latest data", whatsapp.OfflineSyncEvent{
+					Completed: true,
+					Total:     offlineSync.total,
+					Processed: offlineSync.processed,
+				})
+				continue
+			}
+			if !offlineSync.serverComplete {
+				offlineSyncMaxTimerC = nil
+				continue
 			}
 			offlineSync.degraded = true
-			finishOfflineSync(status, whatsapp.OfflineSyncEvent{
+			finishOfflineSync("sync complete; some message recoveries are still pending", whatsapp.OfflineSyncEvent{
 				Completed: true,
 				Total:     offlineSync.total,
 				Processed: offlineSync.processed,
@@ -1754,6 +1827,7 @@ func (s *offlineSyncState) markProcessed(now time.Time) (ui.SyncProgressUpdate, 
 		return ui.SyncProgressUpdate{}, false
 	}
 	s.dirty = true
+	s.degraded = false
 	s.processed++
 	if s.total > 0 && s.processed > s.total {
 		s.processed = s.total
@@ -1769,6 +1843,7 @@ func (s *offlineSyncState) markProgress(count int, now time.Time) (ui.SyncProgre
 	if !s.active || count <= 0 {
 		return ui.SyncProgressUpdate{}, false
 	}
+	s.degraded = false
 	s.processed += count
 	if s.total > 0 && s.processed > s.total {
 		s.processed = s.total
@@ -1856,6 +1931,7 @@ func (s offlineSyncState) liveUpdate(active, completed bool) ui.SyncProgressUpda
 	update := ui.SyncProgressUpdate{
 		Active:          active,
 		Completed:       completed,
+		Degraded:        s.degraded,
 		Total:           s.total,
 		Processed:       s.processed,
 		AppDataChanges:  s.appDataChanges,
@@ -3720,13 +3796,13 @@ func handleAvatarEvent(
 	inflight map[string]bool,
 	updates chan<- ui.LiveUpdate,
 	event whatsapp.AvatarEvent,
-) {
+) bool {
 	chatID := strings.TrimSpace(event.ChatID)
 	if chatID == "" {
 		chatID = strings.TrimSpace(event.ChatJID)
 	}
 	if chatID == "" {
-		return
+		return false
 	}
 	if event.Remove {
 		changed, err := clearStoredChatAvatar(ctx, db, paths, chatID, event.UpdatedAt)
@@ -3734,17 +3810,12 @@ func handleAvatarEvent(
 			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 				Status: fmt.Sprintf("avatar cleanup failed: %s", shortStatusError(err)),
 			})
-			return
+			return false
 		}
-		if changed {
-			sendLiveUpdate(ctx, updates, ui.LiveUpdate{
-				Refresh: true,
-				Status:  "chat avatar removed",
-			})
-		}
-		return
+		return changed
 	}
 	enqueueAvatarRefresh(ctx, jobs, inflight, chatID)
+	return false
 }
 
 func avatarRefreshWorker(
@@ -4427,6 +4498,47 @@ func isHistoricalImportEvent(event whatsapp.Event) bool {
 	}
 }
 
+func classifyConnectionReplay(event whatsapp.Event, connectedAt time.Time, enabled bool) (whatsapp.Event, bool) {
+	if !enabled || connectedAt.IsZero() || event.Replayed {
+		return event, enabled
+	}
+
+	eventTime, ok := replayEventTime(event)
+	if !ok || eventTime.IsZero() {
+		return event, enabled
+	}
+	if !eventTime.After(connectedAt) {
+		event.Replayed = true
+		return event, enabled
+	}
+
+	// WhatsApp emits a chat upsert immediately before a new message. Once that
+	// pair is newer than this connection, subsequent events are live traffic.
+	if event.Kind == whatsapp.EventChatUpsert || event.Kind == whatsapp.EventMessageUpsert {
+		return event, false
+	}
+	return event, enabled
+}
+
+func replayEventTime(event whatsapp.Event) (time.Time, bool) {
+	switch event.Kind {
+	case whatsapp.EventChatUpsert:
+		return event.Chat.LastMessageAt, true
+	case whatsapp.EventMessageUpsert:
+		return event.Message.Timestamp, true
+	case whatsapp.EventMessageEdit:
+		return event.Edit.EditedAt, true
+	case whatsapp.EventMessageDelete:
+		return event.Delete.Timestamp, true
+	case whatsapp.EventMediaMetadata:
+		return event.Media.UpdatedAt, true
+	case whatsapp.EventReactionUpdate:
+		return event.Reaction.Timestamp, true
+	default:
+		return time.Time{}, false
+	}
+}
+
 func isImplicitDatabaseImportEvent(event whatsapp.Event, manualHistoryImport bool) bool {
 	if manualHistoryImport {
 		return false
@@ -4878,6 +4990,7 @@ func printDoctor(env Environment, w io.Writer) {
 		"vimwhat doctor",
 		"",
 		"app: vimwhat",
+		fmt.Sprintf("build: %s", formatBuildInfo(currentBuildInfo())),
 		fmt.Sprintf("config file: %s", env.Paths.ConfigFile),
 		fmt.Sprintf("data dir: %s", env.Paths.DataDir),
 		fmt.Sprintf("cache dir: %s", env.Paths.CacheDir),
@@ -5015,6 +5128,7 @@ usage:
   vimwhat demo clear
   vimwhat login
   vimwhat logout
+  vimwhat version
   vimwhat doctor
   vimwhat media open <message-id>
   vimwhat export chat <jid>

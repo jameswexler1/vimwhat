@@ -57,21 +57,25 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			inserted bool
 			err      error
 		)
-		if event.Message.Historical {
-			inserted, err = i.Store.AddHistoricalMessage(ctx, message)
-		} else {
-			inserted, err = i.Store.AddIncomingMessage(ctx, message)
-		}
-		if err == nil && len(event.Message.ForwardPayload) > 0 {
+		if len(event.Message.ForwardPayload) > 0 {
 			payloadTime := event.Message.Timestamp
 			if payloadTime.IsZero() {
 				payloadTime = time.Now()
 			}
-			err = i.Store.UpsertMessagePayload(ctx, store.MessagePayload{
+			payload := store.MessagePayload{
 				MessageID: event.Message.ID,
 				Payload:   event.Message.ForwardPayload,
 				UpdatedAt: payloadTime,
-			})
+			}
+			if event.Message.Historical {
+				inserted, err = i.Store.AddHistoricalMessageWithPayload(ctx, message, payload)
+			} else {
+				inserted, err = i.Store.AddIncomingMessageWithPayload(ctx, message, payload)
+			}
+		} else if event.Message.Historical {
+			inserted, err = i.Store.AddHistoricalMessage(ctx, message)
+		} else {
+			inserted, err = i.Store.AddIncomingMessage(ctx, message)
 		}
 		return ApplyResult{
 			MessageInserted: inserted,

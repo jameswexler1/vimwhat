@@ -1068,6 +1068,9 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 			select {
 			case evt := <-raw:
 				normalizedEvents := c.normalizeWhatsmeowEvent(ctx, evt)
+				if offlineActive {
+					markEventsReplayed(normalizedEvents)
+				}
 				for _, normalized := range normalizedEvents {
 					select {
 					case out <- normalized:
@@ -1102,6 +1105,12 @@ func (c *Client) SubscribeEvents(ctx context.Context) (<-chan Event, error) {
 	}()
 
 	return out, nil
+}
+
+func markEventsReplayed(events []Event) {
+	for i := range events {
+		events[i].Replayed = true
+	}
 }
 
 func (c *Client) RequestHistoryBefore(ctx context.Context, anchor HistoryAnchor, limit int) error {

@@ -748,7 +748,7 @@ func refreshChatPreviewForMessage(ctx context.Context, execer chatPreviewExecer,
 }
 
 func (s *Store) AddMessage(ctx context.Context, message Message) error {
-	_, err := s.addMessage(ctx, message, false)
+	_, err := s.addMessage(ctx, message, false, nil)
 	return err
 }
 
@@ -756,19 +756,27 @@ func (s *Store) AddMessageWithMedia(ctx context.Context, message Message, mediaI
 	if len(mediaItems) > 0 {
 		message.Media = slices.Clone(mediaItems)
 	}
-	_, err := s.addMessage(ctx, message, false)
+	_, err := s.addMessage(ctx, message, false, nil)
 	return err
 }
 
 func (s *Store) AddIncomingMessage(ctx context.Context, message Message) (bool, error) {
-	return s.addMessage(ctx, message, !message.IsOutgoing)
+	return s.addMessage(ctx, message, !message.IsOutgoing, nil)
 }
 
 func (s *Store) AddHistoricalMessage(ctx context.Context, message Message) (bool, error) {
-	return s.addMessage(ctx, message, false)
+	return s.addMessage(ctx, message, false, nil)
 }
 
-func (s *Store) addMessage(ctx context.Context, message Message, incrementUnreadOnNew bool) (bool, error) {
+func (s *Store) AddIncomingMessageWithPayload(ctx context.Context, message Message, payload MessagePayload) (bool, error) {
+	return s.addMessage(ctx, message, !message.IsOutgoing, &payload)
+}
+
+func (s *Store) AddHistoricalMessageWithPayload(ctx context.Context, message Message, payload MessagePayload) (bool, error) {
+	return s.addMessage(ctx, message, false, &payload)
+}
+
+func (s *Store) addMessage(ctx context.Context, message Message, incrementUnreadOnNew bool, payload *MessagePayload) (bool, error) {
 	if strings.TrimSpace(message.ID) == "" {
 		return false, fmt.Errorf("message id is required")
 	}
@@ -792,6 +800,12 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	}
 	if len(message.Media) > 1 {
 		return false, fmt.Errorf("only one media attachment per message is supported")
+	}
+	if payload != nil {
+		payloadMessageID := strings.TrimSpace(payload.MessageID)
+		if payloadMessageID != "" && payloadMessageID != message.ID {
+			return false, fmt.Errorf("message payload id %s does not match message %s", payloadMessageID, message.ID)
+		}
 	}
 	deletedAt := int64(0)
 	if !message.DeletedAt.IsZero() {
@@ -878,9 +892,11 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 		return false, fmt.Errorf("insert message %s: %w", message.ID, err)
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, message.ID); err != nil {
-		_ = tx.Rollback()
-		return false, fmt.Errorf("clear fts for message %s: %w", message.ID, err)
+	if !isNew {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM message_fts WHERE message_id = ?`, message.ID); err != nil {
+			_ = tx.Rollback()
+			return false, fmt.Errorf("clear fts for message %s: %w", message.ID, err)
+		}
 	}
 
 	if _, err := tx.ExecContext(
@@ -903,6 +919,15 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	}
 	if message.Mentions != nil {
 		if err := replaceMessageMentions(ctx, tx, message.ID, message.Mentions); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
+	}
+	if payload != nil {
+		if strings.TrimSpace(payload.MessageID) == "" {
+			payload.MessageID = message.ID
+		}
+		if err := upsertMessagePayload(ctx, tx, *payload); err != nil {
 			_ = tx.Rollback()
 			return false, err
 		}
@@ -2114,6 +2139,14 @@ func (s *Store) MediaDownloadDescriptor(ctx context.Context, messageID string) (
 }
 
 func (s *Store) UpsertMessagePayload(ctx context.Context, payload MessagePayload) error {
+	return upsertMessagePayload(ctx, s.db, payload)
+}
+
+type messagePayloadExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func upsertMessagePayload(ctx context.Context, execer messagePayloadExecer, payload MessagePayload) error {
 	payload.MessageID = strings.TrimSpace(payload.MessageID)
 	if payload.MessageID == "" {
 		return fmt.Errorf("message id is required")
@@ -2124,7 +2157,7 @@ func (s *Store) UpsertMessagePayload(ctx context.Context, payload MessagePayload
 	if payload.UpdatedAt.IsZero() {
 		payload.UpdatedAt = time.Now()
 	}
-	if _, err := s.db.ExecContext(ctx, `
+	if _, err := execer.ExecContext(ctx, `
 		INSERT INTO message_payloads (message_id, payload, updated_at)
 		VALUES (?, ?, ?)
 		ON CONFLICT(message_id) DO UPDATE SET
