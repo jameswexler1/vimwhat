@@ -2276,8 +2276,21 @@ func (m Model) renderStatus() string {
 	if m.messageFilter != "" {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
+	centerLimit := max(8, width/3)
 	centerStatus := m.sanitizeDisplayLine(m.status)
-	center := " " + truncateDisplay(centerStatus, max(8, width/3)) + " "
+	syncStatus := m.syncStatusText(centerLimit - 2)
+	if syncStatus != "" {
+		centerStatus = syncStatus
+	}
+	centerText := " " + truncateDisplay(centerStatus, centerLimit-2) + " "
+	center := centerText
+	if syncStatus != "" {
+		color := accentFG
+		if m.syncOverlay.Degraded || m.syncOverlay.PendingRecovery > 0 {
+			color = warnFG
+		}
+		center = lipgloss.NewStyle().Foreground(color).Bold(true).Render(centerText)
+	}
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -2312,7 +2325,16 @@ func (m Model) renderStatus() string {
 		used = lipgloss.Width(left) + lipgloss.Width(center) + lipgloss.Width(right)
 	}
 	if used > width {
-		return truncateDisplay(" "+mode+" "+focus+" "+m.sanitizeDisplayLine(m.status)+" "+rightText+rightCount+m.notificationMuteStatusText(), width)
+		compactStatus := centerStatus
+		parts := []string{mode, focus}
+		if connection := m.connectionStatusText(); connection != "" {
+			parts = append(parts, connection)
+		}
+		if compactStatus != "" {
+			parts = append(parts, compactStatus)
+		}
+		parts = append(parts, strings.TrimSpace(rightText+rightCount+m.notificationMuteStatusText()))
+		return truncateDisplay(" "+strings.Join(parts, " ")+" ", width)
 	}
 	spacer := spacerStyle.Render(strings.Repeat(" ", max(0, width-used)))
 	return left + center + spacer + right
@@ -2426,11 +2448,83 @@ func (m Model) searchStatusSegment(queryWidth int) string {
 }
 
 func (m Model) renderConnectionStatus() string {
+	text := m.connectionStatusText()
+	if text == "" {
+		return ""
+	}
+	color := connectionStatusColor(m.connectionState)
+	if m.connectionState == ConnectionOnline && m.requireOnlineForSend && !m.whatsAppReadyForStatus() {
+		color = warnFG
+	}
+	return statusSegment(" "+text+" ", color, borderColor, false)
+}
+
+func (m Model) connectionStatusText() string {
 	if m.connectionState == "" {
 		return ""
 	}
 	label := strings.ToUpper(strings.ReplaceAll(string(m.connectionState), "_", " "))
-	return statusSegment(" WA:"+label+" ", connectionStatusColor(m.connectionState), borderColor, false)
+	if m.connectionState == ConnectionOnline && m.requireOnlineForSend {
+		if m.whatsAppReadyForStatus() {
+			label = "READY"
+		} else {
+			label = "SYNCING"
+		}
+	}
+	return "WA:" + label
+}
+
+func (m Model) whatsAppReadyForStatus() bool {
+	return m.protocolReady && !m.syncOverlay.Active && !m.syncFinalizePending
+}
+
+func (m Model) syncStatusText(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	active := m.syncOverlay.Active || m.syncFinalizePending ||
+		(m.connectionState == ConnectionOnline && m.requireOnlineForSend && !m.protocolReady)
+	if !active {
+		return ""
+	}
+
+	label := "SYNC"
+	switch {
+	case m.syncFinalizePending:
+		label = "FINALIZING"
+	case m.syncOverlay.Degraded:
+		label = "SYNC STALLED"
+	case m.syncOverlay.PendingRecovery > 0:
+		label = fmt.Sprintf("RECOVERING %d", m.syncOverlay.PendingRecovery)
+	}
+
+	processed := max(0, m.syncOverlay.Processed)
+	total := max(0, m.syncOverlay.Total)
+	suffix := ""
+	if total > 0 {
+		suffix = fmt.Sprintf(" %d/%d", min(processed, total), total)
+	} else if processed > 0 {
+		suffix = fmt.Sprintf(" %d", processed)
+	}
+
+	barWidth := min(10, width-lipgloss.Width(label)-lipgloss.Width(suffix)-3)
+	if barWidth < 4 {
+		return truncateDisplay(label+suffix, width)
+	}
+
+	filled := 0
+	if m.syncFinalizePending {
+		filled = barWidth
+	} else if total > 0 {
+		filled = min(processed, total) * barWidth / total
+		if processed > 0 && filled == 0 {
+			filled = 1
+		}
+	} else {
+		filled = min(3, barWidth)
+	}
+	filled = clamp(filled, 0, barWidth)
+	return fmt.Sprintf("%s [%s%s]%s", label, strings.Repeat("#", filled), strings.Repeat("-", barWidth-filled), suffix)
 }
 
 func (m Model) renderNotificationMuteStatus() string {

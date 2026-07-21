@@ -588,18 +588,20 @@ const sixelPaintDelay = 40 * time.Millisecond
 const terminalSizePollInterval = 250 * time.Millisecond
 
 type syncOverlayState struct {
-	Visible        bool
-	Active         bool
-	Completed      bool
-	Generation     int
-	Title          string
-	Subtitle       string
-	Total          int
-	Processed      int
-	AppDataChanges int
-	Messages       int
-	Notifications  int
-	Receipts       int
+	Visible         bool
+	Active          bool
+	Completed       bool
+	Degraded        bool
+	Generation      int
+	Title           string
+	Subtitle        string
+	Total           int
+	Processed       int
+	AppDataChanges  int
+	Messages        int
+	Notifications   int
+	Receipts        int
+	PendingRecovery int
 }
 
 func initialSyncOverlay(blockLiveStartup bool) syncOverlayState {
@@ -940,6 +942,7 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	m.syncOverlay.Visible = false
 	m.syncOverlay.Active = update.Active
 	m.syncOverlay.Completed = update.Completed
+	m.syncOverlay.Degraded = update.Degraded
 	m.syncOverlay.Title = strings.TrimSpace(update.Title)
 	m.syncOverlay.Subtitle = strings.TrimSpace(update.Subtitle)
 	m.syncOverlay.Total = max(0, update.Total)
@@ -948,6 +951,7 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	m.syncOverlay.Messages = max(0, update.Messages)
 	m.syncOverlay.Notifications = max(0, update.Notifications)
 	m.syncOverlay.Receipts = max(0, update.Receipts)
+	m.syncOverlay.PendingRecovery = max(0, update.PendingRecovery)
 	if m.syncOverlay.Total > 0 && m.syncOverlay.Processed > m.syncOverlay.Total {
 		m.syncOverlay.Processed = m.syncOverlay.Total
 	}

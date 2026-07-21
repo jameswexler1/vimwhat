@@ -1575,6 +1575,8 @@ func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
 
 func TestSyncProgressIsNonBlocking(t *testing.T) {
 	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{
 				{ID: "chat-1", Title: "Alice"},
@@ -1596,7 +1598,7 @@ func TestSyncProgressIsNonBlocking(t *testing.T) {
 		Receipts:  1,
 	}})
 	view := stripANSI(updated.View())
-	for _, want := range []string{"syncing WhatsApp updates 2/4"} {
+	for _, want := range []string{"WA:SYNCING", "SYNC [#####-----] 2/4"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sync progress missing %q\n%s", want, view)
 		}
@@ -1608,6 +1610,90 @@ func TestSyncProgressIsNonBlocking(t *testing.T) {
 	navigated, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	if navigated.(Model).activeChat != 1 {
 		t.Fatalf("activeChat = %d, want cached navigation to move to 1", navigated.(Model).activeChat)
+	}
+}
+
+func TestSyncStatusShowsStalledAndRecoveryStates(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+	})
+	model.width = 120
+	model.height = 20
+
+	ready := false
+	stalled, _ := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Sync: &SyncProgressUpdate{
+			Active:    true,
+			Degraded:  true,
+			Total:     8,
+			Processed: 2,
+		},
+	})
+	if status := stripANSI(stalled.renderStatus()); !strings.Contains(status, "SYNC STALLED") || !strings.Contains(status, "2/8") {
+		t.Fatalf("stalled sync status = %q", status)
+	}
+
+	recovering, _ := stalled.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
+		Active:          true,
+		Total:           8,
+		Processed:       8,
+		PendingRecovery: 3,
+	}})
+	if status := stripANSI(recovering.renderStatus()); !strings.Contains(status, "RECOVERING 3") || !strings.Contains(status, "8/8") {
+		t.Fatalf("recovery sync status = %q", status)
+	}
+}
+
+func TestConnectionStatusDistinguishesSyncingFromReady(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+	})
+	model.width = 80
+	model.height = 20
+
+	ready := false
+	syncing, _ := model.handleLiveUpdate(LiveUpdate{ProtocolReady: &ready})
+	if status := stripANSI(syncing.renderStatus()); !strings.Contains(status, "WA:SYNCING") || !strings.Contains(status, "SYNC [###") {
+		t.Fatalf("syncing status = %q", status)
+	}
+
+	ready = true
+	readyModel, _ := syncing.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Sync:          &SyncProgressUpdate{},
+	})
+	status := stripANSI(readyModel.renderStatus())
+	if !strings.Contains(status, "WA:READY") || strings.Contains(status, "SYNC [") {
+		t.Fatalf("ready status = %q", status)
+	}
+}
+
+func TestSyncStatusRemainsVisibleAtNarrowWidth(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+	})
+	model.width = 40
+	model.height = 12
+
+	ready := false
+	syncing, _ := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Sync: &SyncProgressUpdate{
+			Active:    true,
+			Total:     4,
+			Processed: 2,
+		},
+	})
+	status := stripANSI(syncing.renderStatus())
+	if !strings.Contains(status, "WA:SYNCING") || !strings.Contains(status, "SYNC 2/4") {
+		t.Fatalf("narrow sync status = %q", status)
+	}
+	if got := lipgloss.Width(status); got > model.layoutWidth() {
+		t.Fatalf("narrow sync status width = %d, want <= %d: %q", got, model.layoutWidth(), status)
 	}
 }
 
