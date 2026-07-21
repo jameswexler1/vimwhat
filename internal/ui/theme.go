@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -133,28 +134,65 @@ func contrastingTextColor(background, first, second lipgloss.Color) lipgloss.Col
 }
 
 func colorLuminance(color lipgloss.Color) (float64, bool) {
-	value := strings.TrimPrefix(strings.TrimSpace(string(color)), "#")
-	if len(value) == 3 {
-		value = strings.Repeat(value[0:1], 2) + strings.Repeat(value[1:2], 2) + strings.Repeat(value[2:3], 2)
-	}
-	if len(value) != 6 {
+	rgb, ok := parseHexColor(color)
+	if !ok {
 		return 0, false
 	}
-	rgb, err := strconv.ParseUint(value, 16, 32)
-	if err != nil {
-		return 0, false
-	}
-	component := func(channel uint64) float64 {
+	component := func(channel uint8) float64 {
 		value := float64(channel) / 255
 		if value <= 0.04045 {
 			return value / 12.92
 		}
 		return math.Pow((value+0.055)/1.055, 2.4)
 	}
-	red := component((rgb >> 16) & 0xff)
-	green := component((rgb >> 8) & 0xff)
-	blue := component(rgb & 0xff)
+	red := component(rgb.red)
+	green := component(rgb.green)
+	blue := component(rgb.blue)
 	return 0.2126*red + 0.7152*green + 0.0722*blue, true
+}
+
+type themeRGB struct {
+	red   uint8
+	green uint8
+	blue  uint8
+}
+
+func parseHexColor(color lipgloss.Color) (themeRGB, bool) {
+	value := strings.TrimPrefix(strings.TrimSpace(string(color)), "#")
+	if len(value) == 3 {
+		value = strings.Repeat(value[0:1], 2) + strings.Repeat(value[1:2], 2) + strings.Repeat(value[2:3], 2)
+	}
+	if len(value) != 6 {
+		return themeRGB{}, false
+	}
+	rgb, err := strconv.ParseUint(value, 16, 32)
+	if err != nil {
+		return themeRGB{}, false
+	}
+	return themeRGB{
+		red:   uint8((rgb >> 16) & 0xff),
+		green: uint8((rgb >> 8) & 0xff),
+		blue:  uint8(rgb & 0xff),
+	}, true
+}
+
+func blendColors(base, accent lipgloss.Color, accentWeight float64) lipgloss.Color {
+	baseRGB, baseOK := parseHexColor(base)
+	accentRGB, accentOK := parseHexColor(accent)
+	if !baseOK || !accentOK {
+		return accent
+	}
+	accentWeight = min(1, max(0, accentWeight))
+	baseWeight := 1 - accentWeight
+	blend := func(base, accent uint8) uint8 {
+		return uint8(math.Round(float64(base)*baseWeight + float64(accent)*accentWeight))
+	}
+	return lipgloss.Color(fmt.Sprintf(
+		"#%02X%02X%02X",
+		blend(baseRGB.red, accentRGB.red),
+		blend(baseRGB.green, accentRGB.green),
+		blend(baseRGB.blue, accentRGB.blue),
+	))
 }
 
 func contrastRatio(first, second float64) float64 {

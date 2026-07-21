@@ -38,6 +38,7 @@ const (
 	chatCellHeight        = 4
 	lastColumnGuardMargin = 2
 	maxComposerHeight     = 12
+	visualSelectionTint   = 0.28
 )
 
 func (m Model) View() string {
@@ -1612,15 +1613,15 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	border := incomingLine
 	fg := primaryFG
 	metaFG := softFG
-	selectionBG, selectionFG := m.visualSelectionColors()
+	selection := m.visualSelectionPalette()
 	if message.IsOutgoing {
 		border = outgoingLine
 		fg = outgoingFG
 	}
 	if selected {
-		border = selectionBG
-		fg = selectionFG
-		metaFG = selectionFG
+		border = selection.Accent
+		fg = selection.Foreground
+		metaFG = selection.Foreground
 	}
 	if active {
 		border = focusedLine
@@ -1648,7 +1649,7 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 		Border(messageBubbleBorder(active, selected)).
 		Padding(0, 1)
 	if selected {
-		boxStyle = boxStyle.Background(selectionBG)
+		boxStyle = boxStyle.Background(selection.Background)
 	}
 	boxStyle = highlightedItemBorderStyle(boxStyle, border, active, selected)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
@@ -1667,17 +1668,17 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	if deleted {
 		bodyStyle = lipgloss.NewStyle().Foreground(softFG).Italic(true)
 	}
-	bodyStyle = visualSelectionContentStyle(bodyStyle, selected, selectionBG, selectionFG)
+	bodyStyle = visualSelectionContentStyle(bodyStyle, selected, selection)
 	messageSearchQuery := m.messageSearchQuery()
 
 	var lines []string
 	if sender != "" {
-		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Bold(true), selected, selectionBG, selectionFG)
+		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Bold(true), selected, selection)
 		lines = append(lines, style.Render(truncateDisplay(sender, contentWidth)))
 	}
 	if !deleted {
 		if quote := m.messageQuoteLine(message, contentWidth); quote != "" {
-			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Italic(true), selected, selectionBG, selectionFG)
+			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Italic(true), selected, selection)
 			lines = append(lines, style.Render(quote))
 		}
 	}
@@ -1699,42 +1700,59 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 	if !deleted {
 		if reactions := m.messageReactionLine(message, contentWidth); reactions != "" {
-			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selectionBG, selectionFG)
+			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selection)
 			lines = append(lines, style.Render(reactions))
 		}
 	}
 	if meta != "" {
 		meta = truncateDisplay(meta, contentWidth)
-		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selectionBG, selectionFG)
+		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selection)
 		lines = append(lines, style.Render(alignDisplay(meta, contentWidth, true)))
 	}
 
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
 }
 
-func (m Model) visualSelectionColors() (lipgloss.Color, lipgloss.Color) {
-	background := m.modeStatusColor(ModeVisual)
-	foreground := contrastingTextColor(background, uiTheme.BarBG, primaryFG)
-	return background, foreground
+type visualSelectionPalette struct {
+	Accent     lipgloss.Color
+	Background lipgloss.Color
+	Foreground lipgloss.Color
 }
 
-func visualSelectionContentStyle(style lipgloss.Style, selected bool, background, foreground lipgloss.Color) lipgloss.Style {
+func (m Model) visualSelectionPalette() visualSelectionPalette {
+	accent := m.modeStatusColor(ModeVisual)
+	background := blendColors(uiTheme.BarBG, accent, visualSelectionTint)
+	return visualSelectionPalette{
+		Accent:     accent,
+		Background: background,
+		Foreground: contrastingTextColor(background, uiTheme.BarBG, primaryFG),
+	}
+}
+
+func visualSelectionContentStyle(style lipgloss.Style, selected bool, palette visualSelectionPalette) lipgloss.Style {
 	if !selected {
 		return style
 	}
-	return style.Foreground(foreground).Background(background)
+	return style.Foreground(palette.Foreground).Background(palette.Background)
 }
 
 func messageBubbleBorder(active, selected bool) lipgloss.Border {
-	if active || selected {
+	if active {
 		return lipgloss.ThickBorder()
 	}
-	return lipgloss.RoundedBorder()
+	border := lipgloss.RoundedBorder()
+	if selected {
+		border.Left = "┃"
+	}
+	return border
 }
 
 func highlightedItemBorderStyle(style lipgloss.Style, border lipgloss.Color, active, selected bool) lipgloss.Style {
 	style = style.BorderForeground(border)
 	if active {
+		if selected {
+			return style.BorderForeground(focusedLine)
+		}
 		return style.
 			BorderTopForeground(focusedLine).
 			BorderLeftForeground(focusedLine).
@@ -1743,7 +1761,7 @@ func highlightedItemBorderStyle(style lipgloss.Style, border lipgloss.Color, act
 	}
 	if selected {
 		return style.
-			BorderTopForeground(border).
+			BorderTopForeground(borderColor).
 			BorderLeftForeground(border).
 			BorderRightForeground(borderColor).
 			BorderBottomForeground(borderColor)
@@ -2064,8 +2082,7 @@ func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active
 		style = style.Foreground(primaryFG)
 	}
 	if selected {
-		background, foreground := m.visualSelectionColors()
-		style = visualSelectionContentStyle(style, true, background, foreground)
+		style = visualSelectionContentStyle(style, true, m.visualSelectionPalette())
 	}
 	return style.Render(truncateDisplay(label, width))
 }

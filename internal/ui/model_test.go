@@ -4487,8 +4487,8 @@ func TestActiveMessageBubbleUsesStrongerCursorBorder(t *testing.T) {
 	}
 
 	selectedBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, false, true, nil))
-	if !strings.Contains(selectedBubble, "┏") || !strings.Contains(selectedBubble, "┗") {
-		t.Fatalf("selected message bubble did not use thick visual border\n%s", selectedBubble)
+	if !strings.Contains(selectedBubble, "╭") || !strings.Contains(selectedBubble, "╰") || !strings.Contains(selectedBubble, "┃") || strings.Contains(selectedBubble, "┏") {
+		t.Fatalf("selected message bubble did not keep a clean rounded frame\n%s", selectedBubble)
 	}
 
 	activeSelectedBubble := stripANSI(model.renderMessageBubbleForViewport(message, 70, true, true, nil))
@@ -4520,10 +4520,14 @@ func TestSelectedMessageBubbleUsesHighContrastFill(t *testing.T) {
 	if !hasSGRCode(selectedCodes, "38") || !hasSGRCode(selectedCodes, "48") {
 		t.Fatalf("selected message body codes = %v, want foreground and background fill", selectedCodes)
 	}
-	background, foreground := model.visualSelectionColors()
-	wantForeground := contrastingTextColor(background, uiTheme.BarBG, primaryFG)
-	if background != lipgloss.Color("#F4D35E") || foreground != wantForeground {
-		t.Fatalf("selection colors = %q/%q, want #F4D35E/%q", background, foreground, wantForeground)
+	palette := model.visualSelectionPalette()
+	wantBackground := blendColors(uiTheme.BarBG, lipgloss.Color("#F4D35E"), visualSelectionTint)
+	wantForeground := contrastingTextColor(wantBackground, uiTheme.BarBG, primaryFG)
+	if palette.Accent != lipgloss.Color("#F4D35E") || palette.Background != wantBackground || palette.Foreground != wantForeground {
+		t.Fatalf("selection palette = %+v, want accent #F4D35E background %q foreground %q", palette, wantBackground, wantForeground)
+	}
+	if palette.Background == palette.Accent {
+		t.Fatalf("selection background = raw accent %q, want a quieter tint", palette.Background)
 	}
 
 	activeSelected := model.renderMessageBubbleForViewport(message, 70, true, true, nil)
@@ -5576,7 +5580,7 @@ func TestVisualFooterIsMinimal(t *testing.T) {
 	}
 }
 
-func TestVisualSelectionRangeUsesStrongerBorders(t *testing.T) {
+func TestVisualSelectionRangeUsesTintedFillAndEndpointBorder(t *testing.T) {
 	withANSIStyles(t)
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
@@ -5600,11 +5604,11 @@ func TestVisualSelectionRangeUsesStrongerBorders(t *testing.T) {
 
 	rendered := model.renderMessages(70, 14)
 	view := stripANSI(rendered)
-	if got := strings.Count(view, "┏"); got != 3 {
-		t.Fatalf("visual selected thick border count = %d, want 3\n%s", got, view)
+	if got := strings.Count(view, "┏"); got != 1 {
+		t.Fatalf("visual selected thick endpoint count = %d, want 1\n%s", got, view)
 	}
-	if strings.Contains(view, "╭") || strings.Contains(view, "╰") {
-		t.Fatalf("visual selected range kept rounded borders\n%s", view)
+	if got := strings.Count(view, "╭"); got != 2 {
+		t.Fatalf("visual selected rounded range count = %d, want 2\n%s", got, view)
 	}
 	for _, body := range []string{"first", "second", "third"} {
 		if codes := sgrCodesBeforeNth(rendered, body, 0); !hasSGRCode(codes, "48") {
@@ -10789,6 +10793,9 @@ func TestContrastingTextColorChoosesReadableThemeColor(t *testing.T) {
 	}
 	if got := contrastingTextColor(lipgloss.Color("#203040"), dark, light); got != light {
 		t.Fatalf("dark selection foreground = %q, want %q", got, light)
+	}
+	if got := blendColors(lipgloss.Color("#101418"), lipgloss.Color("#F4D35E"), 0.28); got != lipgloss.Color("#50492C") {
+		t.Fatalf("selection tint = %q, want #50492C", got)
 	}
 }
 
