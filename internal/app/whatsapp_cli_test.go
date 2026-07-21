@@ -505,6 +505,12 @@ func TestRunLiveWhatsAppIngestsEventsAndRequestsRefresh(t *testing.T) {
 		Kind:       whatsapp.EventConnectionState,
 		Connection: whatsapp.ConnectionEvent{State: whatsapp.ConnectionOnline},
 	}
+	reconnecting := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
+		return update.Sync != nil && update.Sync.Active && update.Sync.Title == "Checking for WhatsApp updates"
+	})
+	if reconnecting.ProtocolReady == nil || *reconnecting.ProtocolReady {
+		t.Fatalf("reconnect sync update = %+v, want protocol not ready", reconnecting)
+	}
 	select {
 	case available := <-session.presenceAvailable:
 		if !available {

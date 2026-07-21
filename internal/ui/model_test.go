@@ -1573,7 +1573,7 @@ func TestLiveUpdateRefreshesAreDebounced(t *testing.T) {
 	}
 }
 
-func TestSyncProgressIsNonBlocking(t *testing.T) {
+func TestSyncProgressBlocksUntilReady(t *testing.T) {
 	model := NewModel(Options{
 		ConnectionState:      ConnectionOnline,
 		RequireOnlineForSend: true,
@@ -1598,22 +1598,24 @@ func TestSyncProgressIsNonBlocking(t *testing.T) {
 		Receipts:  1,
 	}})
 	view := stripANSI(updated.View())
-	for _, want := range []string{"WA:SYNCING", "SYNC [#####-----] 2/4"} {
+	for _, want := range []string{"Syncing WhatsApp updates", "2/4 events (50%)", "3 messages", "1 receipts", "Input is paused"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sync progress missing %q\n%s", want, view)
 		}
 	}
-	if strings.Contains(view, "Input is paused") {
-		t.Fatalf("sync progress blocked the interface\n%s", view)
+	for _, hidden := range []string{"Alice", "Bob"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("sync overlay exposed cached chat %q\n%s", hidden, view)
+		}
 	}
 
-	navigated, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	if navigated.(Model).activeChat != 1 {
-		t.Fatalf("activeChat = %d, want cached navigation to move to 1", navigated.(Model).activeChat)
+	blocked, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if blocked.(Model).activeChat != 0 {
+		t.Fatalf("activeChat = %d, want sync overlay to block navigation", blocked.(Model).activeChat)
 	}
 }
 
-func TestSyncStatusShowsStalledAndRecoveryStates(t *testing.T) {
+func TestSyncOverlayShowsStalledAndRecoveryStates(t *testing.T) {
 	model := NewModel(Options{
 		ConnectionState:      ConnectionOnline,
 		RequireOnlineForSend: true,
@@ -1631,8 +1633,11 @@ func TestSyncStatusShowsStalledAndRecoveryStates(t *testing.T) {
 			Processed: 2,
 		},
 	})
-	if status := stripANSI(stalled.renderStatus()); !strings.Contains(status, "SYNC STALLED") || !strings.Contains(status, "2/8") {
-		t.Fatalf("stalled sync status = %q", status)
+	stalledView := stripANSI(stalled.View())
+	for _, want := range []string{"Still syncing WhatsApp updates", "2/8 events (25%)", "Input is paused"} {
+		if !strings.Contains(stalledView, want) {
+			t.Fatalf("stalled sync overlay missing %q\n%s", want, stalledView)
+		}
 	}
 
 	recovering, _ := stalled.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
@@ -1641,8 +1646,11 @@ func TestSyncStatusShowsStalledAndRecoveryStates(t *testing.T) {
 		Processed:       8,
 		PendingRecovery: 3,
 	}})
-	if status := stripANSI(recovering.renderStatus()); !strings.Contains(status, "RECOVERING 3") || !strings.Contains(status, "8/8") {
-		t.Fatalf("recovery sync status = %q", status)
+	recoveringView := stripANSI(recovering.View())
+	for _, want := range []string{"8/8 events (100%)", "3 recoveries pending", "Input is paused"} {
+		if !strings.Contains(recoveringView, want) {
+			t.Fatalf("recovery sync overlay missing %q\n%s", want, recoveringView)
+		}
 	}
 }
 
@@ -1656,7 +1664,7 @@ func TestConnectionStatusDistinguishesSyncingFromReady(t *testing.T) {
 
 	ready := false
 	syncing, _ := model.handleLiveUpdate(LiveUpdate{ProtocolReady: &ready})
-	if status := stripANSI(syncing.renderStatus()); !strings.Contains(status, "WA:SYNCING") || !strings.Contains(status, "SYNC [###") {
+	if status := stripANSI(syncing.renderStatus()); !strings.Contains(status, "WA:SYNCING") {
 		t.Fatalf("syncing status = %q", status)
 	}
 
@@ -1666,12 +1674,12 @@ func TestConnectionStatusDistinguishesSyncingFromReady(t *testing.T) {
 		Sync:          &SyncProgressUpdate{},
 	})
 	status := stripANSI(readyModel.renderStatus())
-	if !strings.Contains(status, "WA:READY") || strings.Contains(status, "SYNC [") {
+	if !strings.Contains(status, "WA:READY") {
 		t.Fatalf("ready status = %q", status)
 	}
 }
 
-func TestSyncStatusRemainsVisibleAtNarrowWidth(t *testing.T) {
+func TestSyncOverlayFitsNarrowWidth(t *testing.T) {
 	model := NewModel(Options{
 		ConnectionState:      ConnectionOnline,
 		RequireOnlineForSend: true,
@@ -1688,12 +1696,14 @@ func TestSyncStatusRemainsVisibleAtNarrowWidth(t *testing.T) {
 			Processed: 2,
 		},
 	})
-	status := stripANSI(syncing.renderStatus())
-	if !strings.Contains(status, "WA:SYNCING") || !strings.Contains(status, "SYNC 2/4") {
-		t.Fatalf("narrow sync status = %q", status)
+	view := stripANSI(syncing.View())
+	if !strings.Contains(view, "2/4 events (50%)") || !strings.Contains(view, "Input is paused") {
+		t.Fatalf("narrow sync overlay = %q", view)
 	}
-	if got := lipgloss.Width(status); got > model.layoutWidth() {
-		t.Fatalf("narrow sync status width = %d, want <= %d: %q", got, model.layoutWidth(), status)
+	for _, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > model.layoutWidth() {
+			t.Fatalf("narrow sync line width = %d, want <= %d: %q", got, model.layoutWidth(), line)
+		}
 	}
 }
 
@@ -1719,6 +1729,11 @@ func TestLiveStartupOverlayRendersAndBlocksInput(t *testing.T) {
 			t.Fatalf("startup overlay missing %q\n%s", want, view)
 		}
 	}
+	for _, hidden := range []string{"Alice", "Bob"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("startup overlay exposed cached chat %q\n%s", hidden, view)
+		}
+	}
 
 	blocked, _ := model.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	if blocked.(Model).activeChat != 0 {
@@ -1740,21 +1755,26 @@ func TestLiveStartupOverlayClearsOnEmptySyncUpdate(t *testing.T) {
 	}
 }
 
-func TestSyncCompletionUsesStatusWithoutOverlay(t *testing.T) {
+func TestSyncCompletionOverlayClearsAfterCompletionFrame(t *testing.T) {
 	model := NewModel(Options{})
 	model.width = 80
 	model.height = 20
 
-	updated, _ := model.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
+	updated, cmd := model.handleLiveUpdate(LiveUpdate{Sync: &SyncProgressUpdate{
 		Completed: true,
 		Total:     8,
 		Processed: 8,
 	}})
-	if updated.syncOverlay.Visible {
-		t.Fatal("sync completion unexpectedly displayed a blocking overlay")
+	if !updated.syncOverlay.Visible || cmd == nil {
+		t.Fatalf("sync completion overlay = visible:%v cmd:%v", updated.syncOverlay.Visible, cmd != nil)
 	}
-	if view := stripANSI(updated.View()); !strings.Contains(view, "sync complete") {
-		t.Fatalf("sync completion status missing\n%s", view)
+	if view := stripANSI(updated.View()); !strings.Contains(view, "Sync complete") {
+		t.Fatalf("sync completion frame missing\n%s", view)
+	}
+
+	cleared, _ := updated.Update(syncOverlayDoneMsg{Generation: updated.syncOverlay.Generation})
+	if cleared.(Model).syncOverlay.Visible {
+		t.Fatal("sync completion overlay remained visible after completion frame")
 	}
 }
 
@@ -1779,6 +1799,8 @@ func TestSyncFinalizationWaitsForSnapshotApplication(t *testing.T) {
 			}, nil
 		},
 	})
+	model.width = 96
+	model.height = 24
 	ready := true
 	updated, cmd := model.handleLiveUpdate(LiveUpdate{
 		ProtocolReady: &ready,
@@ -1791,14 +1813,102 @@ func TestSyncFinalizationWaitsForSnapshotApplication(t *testing.T) {
 	if updated.protocolReady || !updated.syncFinalizePending || cmd == nil {
 		t.Fatalf("finalizing state = ready:%v pending:%v cmd:%v", updated.protocolReady, updated.syncFinalizePending, cmd != nil)
 	}
+	if !updated.syncOverlay.Visible || !strings.Contains(stripANSI(updated.View()), "Finalizing WhatsApp updates") {
+		t.Fatalf("finalizing overlay missing\n%s", stripANSI(updated.View()))
+	}
+	blocked, _ := updated.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if blocked.(Model).activeChat != 0 {
+		t.Fatalf("activeChat = %d, want final snapshot to remain blocking", blocked.(Model).activeChat)
+	}
 
 	msg := cmd()
-	reloaded, _ := updated.handleSnapshotReloaded(msg.(snapshotReloadedMsg))
+	reloaded, doneCmd := updated.handleSnapshotReloaded(msg.(snapshotReloadedMsg))
 	if !reloaded.protocolReady || reloaded.syncFinalizePending {
 		t.Fatalf("reloaded state = ready:%v pending:%v", reloaded.protocolReady, reloaded.syncFinalizePending)
 	}
+	if !reloaded.syncOverlay.Visible || !reloaded.syncOverlay.Completed || doneCmd == nil {
+		t.Fatalf("completion frame = visible:%v completed:%v cmd:%v", reloaded.syncOverlay.Visible, reloaded.syncOverlay.Completed, doneCmd != nil)
+	}
 	if got := reloaded.currentMessages(); len(got) != 1 || got[0].Body != "latest" {
 		t.Fatalf("current messages = %+v", got)
+	}
+
+	cleared, _ := reloaded.Update(syncOverlayDoneMsg{Generation: reloaded.syncOverlay.Generation})
+	if cleared.(Model).syncOverlay.Visible {
+		t.Fatal("final sync overlay remained visible after completion frame")
+	}
+}
+
+func TestSyncFinalizationUnblocksAfterRefreshRetriesAreExhausted(t *testing.T) {
+	reloads := 0
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+		ReloadSnapshot: func(string, int) (store.Snapshot, error) {
+			reloads++
+			return store.Snapshot{}, errors.New("snapshot unavailable")
+		},
+	})
+	model.width = 96
+	model.height = 24
+	ready := true
+	current, cmd := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Refresh:       true,
+		Sync:          &SyncProgressUpdate{Completed: true, Finalizing: true},
+	})
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if cmd == nil {
+			t.Fatalf("reload attempt %d command = nil", attempt+1)
+		}
+		msg, ok := cmd().(snapshotReloadedMsg)
+		if !ok {
+			t.Fatalf("reload attempt %d returned unexpected message", attempt+1)
+		}
+		current, cmd = current.handleSnapshotReloaded(msg)
+		if attempt < 2 && (!current.syncFinalizePending || current.protocolReady || !current.syncOverlay.Visible) {
+			t.Fatalf("reload attempt %d state = pending:%v ready:%v visible:%v", attempt+1, current.syncFinalizePending, current.protocolReady, current.syncOverlay.Visible)
+		}
+	}
+
+	if reloads != 3 {
+		t.Fatalf("reload attempts = %d, want 3", reloads)
+	}
+	if current.syncFinalizePending || !current.protocolReady || !current.syncOverlay.Visible || !current.syncOverlay.Completed {
+		t.Fatalf("exhausted state = pending:%v ready:%v visible:%v completed:%v", current.syncFinalizePending, current.protocolReady, current.syncOverlay.Visible, current.syncOverlay.Completed)
+	}
+	if view := stripANSI(current.View()); !strings.Contains(view, "Sync completed with a refresh error") {
+		t.Fatalf("refresh failure completion frame missing\n%s", view)
+	}
+
+	cleared, _ := current.Update(syncOverlayDoneMsg{Generation: current.syncOverlay.Generation})
+	if cleared.(Model).syncOverlay.Visible {
+		t.Fatal("refresh failure completion frame remained visible")
+	}
+}
+
+func TestSyncFinalizationWithoutSnapshotLoaderDoesNotStayBlocked(t *testing.T) {
+	model := NewModel(Options{
+		ConnectionState:      ConnectionOnline,
+		RequireOnlineForSend: true,
+	})
+	model.width = 80
+	model.height = 20
+	ready := true
+
+	completed, cmd := model.handleLiveUpdate(LiveUpdate{
+		ProtocolReady: &ready,
+		Refresh:       true,
+		Sync:          &SyncProgressUpdate{Completed: true, Finalizing: true},
+	})
+	if !completed.protocolReady || completed.syncFinalizePending || completed.syncOverlay.Finalizing || !completed.syncOverlay.Completed || cmd == nil {
+		t.Fatalf("finalization state = ready:%v pending:%v finalizing:%v completed:%v cmd:%v", completed.protocolReady, completed.syncFinalizePending, completed.syncOverlay.Finalizing, completed.syncOverlay.Completed, cmd != nil)
+	}
+
+	cleared, _ := completed.Update(syncOverlayDoneMsg{Generation: completed.syncOverlay.Generation})
+	if cleared.(Model).syncOverlay.Visible {
+		t.Fatal("completion frame remained visible without a snapshot loader")
 	}
 }
 

@@ -192,7 +192,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
 		RequireOnlineForSend: liveEnabled,
-		BlockLiveStartup:     false,
+		BlockLiveStartup:     liveEnabled,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			if liveEnabled {
 				if len(outgoing.Attachments) > 0 {
@@ -979,9 +979,17 @@ func runLiveWhatsApp(
 	connectionCatchUpStartedAt := time.Now()
 	connectionReplayGuard := false
 	readyValue := func(value bool) *bool { return &value }
+	waitingForCatchUp := func() *ui.SyncProgressUpdate {
+		return &ui.SyncProgressUpdate{
+			Active:   true,
+			Title:    "Checking for WhatsApp updates",
+			Subtitle: "Waiting for WhatsApp to report reconnect history.",
+		}
+	}
 	sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 		ConnectionState: ui.ConnectionOnline,
 		ProtocolReady:   readyValue(false),
+		Sync:            waitingForCatchUp(),
 	})
 
 	var protocolWG sync.WaitGroup
@@ -1039,7 +1047,7 @@ func runLiveWhatsApp(
 	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
-	startupSyncPending := true
+	startupSyncPending := false
 	var startupSyncTimer *time.Timer
 	var startupSyncTimerC <-chan time.Time
 	stopStartupSyncTimer := func() {
@@ -1054,6 +1062,7 @@ func runLiveWhatsApp(
 		startupSyncTimerC = nil
 	}
 	startStartupSyncTimer := func() {
+		startupSyncPending = true
 		duration := liveStartupSyncSettle
 		if duration <= 0 {
 			duration = 1 * time.Millisecond
@@ -1300,7 +1309,10 @@ func runLiveWhatsApp(
 					}
 					connectionReplayGuard = false
 					protocolReady = false
-					sendLiveUpdate(ctx, updates, ui.LiveUpdate{ProtocolReady: readyValue(false)})
+					sendLiveUpdate(ctx, updates, ui.LiveUpdate{
+						ProtocolReady: readyValue(false),
+						Sync:          waitingForCatchUp(),
+					})
 					startStartupSyncTimer()
 					markLivePresenceAvailable(ctx, live, updates)
 				} else {

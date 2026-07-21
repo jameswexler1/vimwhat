@@ -591,6 +591,7 @@ type syncOverlayState struct {
 	Visible         bool
 	Active          bool
 	Completed       bool
+	Finalizing      bool
 	Degraded        bool
 	Generation      int
 	Title           string
@@ -881,16 +882,25 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 		}
 	}
 
-	if update.Sync != nil && update.Sync.Finalizing && update.Refresh && m.reloadSnapshot != nil {
-		m.syncFinalizePending = true
-		m.syncFinalizeRetries = 0
-		m.protocolReady = false
-		if m.reloadInFlight {
-			m.syncFinalizeNeedsReload = true
+	if update.Sync != nil && update.Sync.Finalizing && update.Refresh {
+		if m.reloadSnapshot == nil {
+			m.protocolReady = true
+			m.status = "sync complete"
+			cmds = append(cmds, m.completeSyncOverlay(
+				"Sync complete",
+				"Latest WhatsApp data was applied.",
+			))
 		} else {
-			m.refreshDebouncePending = false
-			m.reloadInFlight = true
-			cmds = append(cmds, m.reloadSnapshotCmd())
+			m.syncFinalizePending = true
+			m.syncFinalizeRetries = 0
+			m.protocolReady = false
+			if m.reloadInFlight {
+				m.syncFinalizeNeedsReload = true
+			} else {
+				m.refreshDebouncePending = false
+				m.reloadInFlight = true
+				cmds = append(cmds, m.reloadSnapshotCmd())
+			}
 		}
 	} else if update.Refresh && m.reloadSnapshot != nil {
 		if m.reloadInFlight {
@@ -939,9 +949,10 @@ func presenceEmpty(presence PresenceUpdate) bool {
 
 func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 	m.syncOverlay.Generation++
-	m.syncOverlay.Visible = false
+	m.syncOverlay.Visible = update.Active || update.Finalizing || update.Completed
 	m.syncOverlay.Active = update.Active
 	m.syncOverlay.Completed = update.Completed
+	m.syncOverlay.Finalizing = update.Finalizing
 	m.syncOverlay.Degraded = update.Degraded
 	m.syncOverlay.Title = strings.TrimSpace(update.Title)
 	m.syncOverlay.Subtitle = strings.TrimSpace(update.Subtitle)
@@ -964,15 +975,50 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if update.Finalizing {
+		m.syncOverlay.Title = "Finalizing WhatsApp updates"
+		m.syncOverlay.Subtitle = "Applying the latest local snapshot before opening chats."
 		m.status = syncProgressStatus(update, "finalizing WhatsApp updates")
 		return m, nil
 	}
 	if update.Completed {
 		m.status = syncProgressStatus(update, "sync complete")
-		return m, nil
+		return m, syncOverlayDoneCmd(m.syncOverlay.Generation)
 	}
 	m.syncOverlay = syncOverlayState{}
 	return m, nil
+}
+
+func (m *Model) completeSyncOverlay(title, subtitle string) tea.Cmd {
+	m.syncOverlay.Generation++
+	m.syncOverlay.Visible = true
+	m.syncOverlay.Active = false
+	m.syncOverlay.Completed = true
+	m.syncOverlay.Finalizing = false
+	m.syncOverlay.Title = strings.TrimSpace(title)
+	m.syncOverlay.Subtitle = strings.TrimSpace(subtitle)
+	return syncOverlayDoneCmd(m.syncOverlay.Generation)
+}
+
+func (m Model) handleSyncFinalizeReloadFailure(err error) (Model, tea.Cmd) {
+	if m.syncFinalizeRetries < 2 && m.reloadSnapshot != nil {
+		m.syncFinalizeRetries++
+		m.reloadInFlight = true
+		m.status = fmt.Sprintf("final refresh failed; retrying (%d/2)", m.syncFinalizeRetries)
+		m.syncOverlay.Degraded = true
+		m.syncOverlay.Subtitle = fmt.Sprintf("Final snapshot refresh failed; retrying (%d/2).", m.syncFinalizeRetries)
+		return m, m.reloadSnapshotCmd()
+	}
+
+	m.syncFinalizePending = false
+	m.syncFinalizeNeedsReload = false
+	m.syncFinalizeRetries = 0
+	m.protocolReady = true
+	m.status = fmt.Sprintf("sync applied; final refresh failed: %v", err)
+	doneCmd := m.completeSyncOverlay(
+		"Sync completed with a refresh error",
+		"WhatsApp updates were stored, but the final chat view could not be refreshed.",
+	)
+	return m, batchCmds(doneCmd, m.nextQueuedRefreshCmd())
 }
 
 func syncProgressStatus(update SyncProgressUpdate, fallback string) string {
@@ -1082,18 +1128,7 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 	}
 	if msg.Err != nil {
 		if m.syncFinalizePending {
-			if m.syncFinalizeRetries < 2 && m.reloadSnapshot != nil {
-				m.syncFinalizeRetries++
-				m.reloadInFlight = true
-				m.status = fmt.Sprintf("final refresh failed; retrying (%d/2)", m.syncFinalizeRetries)
-				return m, m.reloadSnapshotCmd()
-			}
-			m.syncFinalizePending = false
-			m.syncFinalizeNeedsReload = false
-			m.syncFinalizeRetries = 0
-			m.protocolReady = true
-			m.status = fmt.Sprintf("sync applied; final refresh failed: %v", msg.Err)
-			return m, m.nextQueuedRefreshCmd()
+			return m.handleSyncFinalizeReloadFailure(msg.Err)
 		}
 		m.status = fmt.Sprintf("refresh failed: %v", msg.Err)
 		return m, m.nextQueuedRefreshCmd()
@@ -1108,15 +1143,23 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 		preferredChatID = msg.ActiveChatID
 	}
 	if err := m.applySnapshot(msg.Snapshot, preferredChatID, m.messageFilter); err != nil {
+		if m.syncFinalizePending {
+			return m.handleSyncFinalizeReloadFailure(err)
+		}
 		m.status = fmt.Sprintf("refresh failed: %v", err)
 		return m, m.nextQueuedRefreshCmd()
 	}
+	var syncDoneCmd tea.Cmd
 	if m.syncFinalizePending {
 		m.syncFinalizePending = false
 		m.syncFinalizeNeedsReload = false
 		m.syncFinalizeRetries = 0
 		m.protocolReady = true
 		m.status = "sync complete"
+		syncDoneCmd = m.completeSyncOverlay(
+			"Sync complete",
+			"Latest WhatsApp data was applied.",
+		)
 	}
 	if m.terminalOverlayBackendActive() {
 		m.pauseOverlays(true, previousAvatarSignature != m.visibleChatAvatarSignature())
@@ -1126,7 +1169,7 @@ func (m Model) handleSnapshotReloaded(msg snapshotReloadedMsg) (Model, tea.Cmd) 
 	if m.focus == FocusMessages {
 		activateCmd = m.handleCurrentChatActivated()
 	}
-	return m, batchCmds(activateCmd, m.nextQueuedRefreshCmd())
+	return m, batchCmds(activateCmd, syncDoneCmd, m.nextQueuedRefreshCmd())
 }
 
 func (m *Model) nextQueuedRefreshCmd() tea.Cmd {

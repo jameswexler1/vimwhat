@@ -45,6 +45,9 @@ func (m Model) View() string {
 		return "loading..."
 	}
 	m = m.withLayoutWidth()
+	if m.syncOverlay.Visible {
+		return clampFrame(m.renderSyncOverlay(m.width, m.height), m.width, m.height)
+	}
 
 	inputHeight := m.inputHeight()
 	bodyHeight := m.height - 1 - inputHeight
@@ -145,9 +148,16 @@ func (m Model) renderSyncOverlay(width, height int) string {
 	contentWidth := max(1, panelWidth-style.GetHorizontalPadding()-style.GetHorizontalBorderSize())
 	title := firstNonEmpty(m.syncOverlay.Title, "Syncing WhatsApp updates")
 	subtitle := firstNonEmpty(m.syncOverlay.Subtitle, "New chats and messages are being applied locally.")
-	if m.syncOverlay.Completed {
+	switch {
+	case m.syncOverlay.Finalizing:
+		title = firstNonEmpty(m.syncOverlay.Title, "Finalizing WhatsApp updates")
+		subtitle = firstNonEmpty(m.syncOverlay.Subtitle, "Applying the latest local snapshot before opening chats.")
+	case m.syncOverlay.Completed:
 		title = firstNonEmpty(m.syncOverlay.Title, "Sync complete")
 		subtitle = firstNonEmpty(m.syncOverlay.Subtitle, "Latest WhatsApp data was applied.")
+	case m.syncOverlay.Degraded:
+		title = firstNonEmpty(m.syncOverlay.Title, "Still syncing WhatsApp updates")
+		subtitle = firstNonEmpty(m.syncOverlay.Subtitle, "No recent progress; still waiting for WhatsApp to finish.")
 	}
 
 	lines := []string{
@@ -160,7 +170,7 @@ func (m Model) renderSyncOverlay(width, height int) string {
 	if counts := m.renderSyncCounts(contentWidth); counts != "" {
 		lines = append(lines, "", counts)
 	}
-	if m.syncOverlay.Active {
+	if m.syncOverlay.Active || m.syncOverlay.Finalizing {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(warnFG).Render(truncateDisplay("Input is paused while sync finishes.", contentWidth)))
 	}
 
@@ -189,6 +199,8 @@ func (m Model) renderSyncProgressBar(width int) string {
 		filled = clamp(filled, 0, barWidth)
 	} else if m.syncOverlay.Active {
 		filled = min(3, barWidth)
+	} else if m.syncOverlay.Finalizing || m.syncOverlay.Completed {
+		filled = barWidth
 	}
 	bar := "[" + strings.Repeat("#", filled) + strings.Repeat("-", max(0, barWidth-filled)) + "]"
 	return lipgloss.NewStyle().Foreground(accentFG).Render(truncateDisplay(bar, width))
@@ -220,6 +232,9 @@ func (m Model) renderSyncCounts(width int) string {
 	}
 	if m.syncOverlay.AppDataChanges > 0 {
 		parts = append(parts, fmt.Sprintf("%d app updates", m.syncOverlay.AppDataChanges))
+	}
+	if m.syncOverlay.PendingRecovery > 0 {
+		parts = append(parts, fmt.Sprintf("%d recoveries pending", m.syncOverlay.PendingRecovery))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -2276,21 +2291,8 @@ func (m Model) renderStatus() string {
 	if m.messageFilter != "" {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
-	centerLimit := max(8, width/3)
 	centerStatus := m.sanitizeDisplayLine(m.status)
-	syncStatus := m.syncStatusText(centerLimit - 2)
-	if syncStatus != "" {
-		centerStatus = syncStatus
-	}
-	centerText := " " + truncateDisplay(centerStatus, centerLimit-2) + " "
-	center := centerText
-	if syncStatus != "" {
-		color := accentFG
-		if m.syncOverlay.Degraded || m.syncOverlay.PendingRecovery > 0 {
-			color = warnFG
-		}
-		center = lipgloss.NewStyle().Foreground(color).Bold(true).Render(centerText)
-	}
+	center := " " + truncateDisplay(centerStatus, max(8, width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
 	if len(m.chats) > 0 {
@@ -2476,55 +2478,6 @@ func (m Model) connectionStatusText() string {
 
 func (m Model) whatsAppReadyForStatus() bool {
 	return m.protocolReady && !m.syncOverlay.Active && !m.syncFinalizePending
-}
-
-func (m Model) syncStatusText(width int) string {
-	if width <= 0 {
-		return ""
-	}
-	active := m.syncOverlay.Active || m.syncFinalizePending ||
-		(m.connectionState == ConnectionOnline && m.requireOnlineForSend && !m.protocolReady)
-	if !active {
-		return ""
-	}
-
-	label := "SYNC"
-	switch {
-	case m.syncFinalizePending:
-		label = "FINALIZING"
-	case m.syncOverlay.Degraded:
-		label = "SYNC STALLED"
-	case m.syncOverlay.PendingRecovery > 0:
-		label = fmt.Sprintf("RECOVERING %d", m.syncOverlay.PendingRecovery)
-	}
-
-	processed := max(0, m.syncOverlay.Processed)
-	total := max(0, m.syncOverlay.Total)
-	suffix := ""
-	if total > 0 {
-		suffix = fmt.Sprintf(" %d/%d", min(processed, total), total)
-	} else if processed > 0 {
-		suffix = fmt.Sprintf(" %d", processed)
-	}
-
-	barWidth := min(10, width-lipgloss.Width(label)-lipgloss.Width(suffix)-3)
-	if barWidth < 4 {
-		return truncateDisplay(label+suffix, width)
-	}
-
-	filled := 0
-	if m.syncFinalizePending {
-		filled = barWidth
-	} else if total > 0 {
-		filled = min(processed, total) * barWidth / total
-		if processed > 0 && filled == 0 {
-			filled = 1
-		}
-	} else {
-		filled = min(3, barWidth)
-	}
-	filled = clamp(filled, 0, barWidth)
-	return fmt.Sprintf("%s [%s%s]%s", label, strings.Repeat("#", filled), strings.Repeat("-", barWidth-filled), suffix)
 }
 
 func (m Model) renderNotificationMuteStatus() string {
