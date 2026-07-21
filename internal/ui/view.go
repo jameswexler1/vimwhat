@@ -1612,18 +1612,21 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	border := incomingLine
 	fg := primaryFG
 	metaFG := softFG
+	selectionBG, selectionFG := m.visualSelectionColors()
 	if message.IsOutgoing {
 		border = outgoingLine
 		fg = outgoingFG
 	}
 	if selected {
-		border = selectedLine
-		fg = primaryFG
-		metaFG = warnFG
+		border = selectionBG
+		fg = selectionFG
+		metaFG = selectionFG
 	}
 	if active {
 		border = focusedLine
-		metaFG = primaryFG
+		if !selected {
+			metaFG = primaryFG
+		}
 	}
 
 	body := strings.TrimSpace(m.sanitizeDisplayBody(message.Body))
@@ -1644,6 +1647,9 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	boxStyle := lipgloss.NewStyle().
 		Border(messageBubbleBorder(active, selected)).
 		Padding(0, 1)
+	if selected {
+		boxStyle = boxStyle.Background(selectionBG)
+	}
 	boxStyle = highlightedItemBorderStyle(boxStyle, border, active, selected)
 	maxBubbleWidth := max(6, bubbleWidth(availableWidth))
 	if !deleted && m.messageUsesMediaBubbleWidth(message, active) {
@@ -1661,15 +1667,18 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	if deleted {
 		bodyStyle = lipgloss.NewStyle().Foreground(softFG).Italic(true)
 	}
+	bodyStyle = visualSelectionContentStyle(bodyStyle, selected, selectionBG, selectionFG)
 	messageSearchQuery := m.messageSearchQuery()
 
 	var lines []string
 	if sender != "" {
-		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Bold(true).Render(truncateDisplay(sender, contentWidth)))
+		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Bold(true), selected, selectionBG, selectionFG)
+		lines = append(lines, style.Render(truncateDisplay(sender, contentWidth)))
 	}
 	if !deleted {
 		if quote := m.messageQuoteLine(message, contentWidth); quote != "" {
-			lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Italic(true).Render(quote))
+			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG).Italic(true), selected, selectionBG, selectionFG)
+			lines = append(lines, style.Render(quote))
 		}
 	}
 	if !deleted {
@@ -1678,7 +1687,7 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 				lines = append(lines, renderPreviewLines(preview, contentWidth, overlayPreviewVisible(preview, visibleOverlays))...)
 			} else {
 				state := m.mediaAttachmentState(message, item)
-				lines = append(lines, m.renderAttachmentLine(item, contentWidth, active || selected, state))
+				lines = append(lines, m.renderAttachmentLine(item, contentWidth, active || selected, selected, state))
 			}
 		}
 	}
@@ -1690,15 +1699,30 @@ func (m Model) renderMessageBubbleForViewport(message store.Message, availableWi
 	}
 	if !deleted {
 		if reactions := m.messageReactionLine(message, contentWidth); reactions != "" {
-			lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(reactions))
+			style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selectionBG, selectionFG)
+			lines = append(lines, style.Render(reactions))
 		}
 	}
 	if meta != "" {
 		meta = truncateDisplay(meta, contentWidth)
-		lines = append(lines, lipgloss.NewStyle().Foreground(metaFG).Render(alignDisplay(meta, contentWidth, true)))
+		style := visualSelectionContentStyle(lipgloss.NewStyle().Foreground(metaFG), selected, selectionBG, selectionFG)
+		lines = append(lines, style.Render(alignDisplay(meta, contentWidth, true)))
 	}
 
 	return boxStyle.Width(bubbleBoxWidth(boxStyle, contentWidth)).Render(strings.Join(lines, "\n"))
+}
+
+func (m Model) visualSelectionColors() (lipgloss.Color, lipgloss.Color) {
+	background := m.modeStatusColor(ModeVisual)
+	foreground := contrastingTextColor(background, uiTheme.BarBG, primaryFG)
+	return background, foreground
+}
+
+func visualSelectionContentStyle(style lipgloss.Style, selected bool, background, foreground lipgloss.Color) lipgloss.Style {
+	if !selected {
+		return style
+	}
+	return style.Foreground(foreground).Background(background)
 }
 
 func messageBubbleBorder(active, selected bool) lipgloss.Border {
@@ -1719,8 +1743,8 @@ func highlightedItemBorderStyle(style lipgloss.Style, border lipgloss.Color, act
 	}
 	if selected {
 		return style.
-			BorderTopForeground(selectedLine).
-			BorderLeftForeground(selectedLine).
+			BorderTopForeground(border).
+			BorderLeftForeground(border).
 			BorderRightForeground(borderColor).
 			BorderBottomForeground(borderColor)
 	}
@@ -2030,7 +2054,7 @@ func (m Model) audioAttachmentState(message store.Message, item store.MediaMetad
 	return displayBinding(m.config.Keymap.NormalOpen, m.config.LeaderKey) + " play"
 }
 
-func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active bool, state string) string {
+func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active, selected bool, state string) string {
 	label := m.attachmentLabel(media)
 	if state != "" {
 		label += " - " + state
@@ -2038,6 +2062,10 @@ func (m Model) renderAttachmentLine(media store.MediaMetadata, width int, active
 	style := lipgloss.NewStyle().Foreground(softFG)
 	if active {
 		style = style.Foreground(primaryFG)
+	}
+	if selected {
+		background, foreground := m.visualSelectionColors()
+		style = visualSelectionContentStyle(style, true, background, foreground)
 	}
 	return style.Render(truncateDisplay(label, width))
 }
@@ -2736,7 +2764,7 @@ func (m Model) composerAttachmentLines(width int) []string {
 			LocalPath:     attachment.LocalPath,
 			DownloadState: attachment.DownloadState,
 		}
-		lines = append(lines, m.renderAttachmentLine(media, width, true, ""))
+		lines = append(lines, m.renderAttachmentLine(media, width, true, false, ""))
 	}
 	return lines
 }

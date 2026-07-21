@@ -2,8 +2,11 @@ package ui
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -106,4 +109,57 @@ func barsTransparent() bool {
 	default:
 		return true
 	}
+}
+
+func contrastingTextColor(background, first, second lipgloss.Color) lipgloss.Color {
+	backgroundLuminance, ok := colorLuminance(background)
+	if !ok {
+		return first
+	}
+	firstLuminance, firstOK := colorLuminance(first)
+	secondLuminance, secondOK := colorLuminance(second)
+	switch {
+	case !firstOK && !secondOK:
+		return first
+	case !firstOK:
+		return second
+	case !secondOK:
+		return first
+	case contrastRatio(backgroundLuminance, secondLuminance) > contrastRatio(backgroundLuminance, firstLuminance):
+		return second
+	default:
+		return first
+	}
+}
+
+func colorLuminance(color lipgloss.Color) (float64, bool) {
+	value := strings.TrimPrefix(strings.TrimSpace(string(color)), "#")
+	if len(value) == 3 {
+		value = strings.Repeat(value[0:1], 2) + strings.Repeat(value[1:2], 2) + strings.Repeat(value[2:3], 2)
+	}
+	if len(value) != 6 {
+		return 0, false
+	}
+	rgb, err := strconv.ParseUint(value, 16, 32)
+	if err != nil {
+		return 0, false
+	}
+	component := func(channel uint64) float64 {
+		value := float64(channel) / 255
+		if value <= 0.04045 {
+			return value / 12.92
+		}
+		return math.Pow((value+0.055)/1.055, 2.4)
+	}
+	red := component((rgb >> 16) & 0xff)
+	green := component((rgb >> 8) & 0xff)
+	blue := component(rgb & 0xff)
+	return 0.2126*red + 0.7152*green + 0.0722*blue, true
+}
+
+func contrastRatio(first, second float64) float64 {
+	if first < second {
+		first, second = second, first
+	}
+	return (first + 0.05) / (second + 0.05)
 }

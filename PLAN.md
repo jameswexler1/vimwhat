@@ -247,7 +247,7 @@ The TUI stability and modal polish milestone is implemented:
 - Emoji rendering is configurable through `emoji_mode`; `auto` preserves full emoji on capable UTF-8 terminals and falls back to compatibility rendering for terminals such as `st`.
 - The status bar has a single authoritative mode indicator, keeps pywal colors by default, and supports per-mode hex overrides.
 - `/` search shows match counts in the status bar and `Esc` clears active search state without requiring a blank search.
-- The current chat/message cursor items and visual-mode selected message ranges use stronger terminal-safe border/shadow treatments so the hovered row, bubble, or range is easier to spot.
+- The current chat/message cursor items use stronger terminal-safe border/shadow treatments, while visual-mode message ranges use a high-contrast fill derived from the configurable visual indicator color plus distinct endpoint cursor borders so every selected bubble is immediately recognizable.
 - Normal mode can yank the focused message body directly, while visual mode continues to yank selected message ranges through the same register/clipboard path.
 - Active-chat refreshes auto-follow newly appended messages only when the cursor was already on the previous latest message; otherwise the viewport stays anchored, a persistent `Mensagens novas: X` divider is inserted into the chat flow until the user reaches the tail, and the footer/composer shows a compact down-arrow count for messages still below the viewport.
 - Unread chat counters render as compact highlighted badges capped at `99+`, while thick borders remain reserved for cursor/focus state.

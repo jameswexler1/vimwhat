@@ -4497,6 +4497,41 @@ func TestActiveMessageBubbleUsesStrongerCursorBorder(t *testing.T) {
 	}
 }
 
+func TestSelectedMessageBubbleUsesHighContrastFill(t *testing.T) {
+	withANSIStyles(t)
+	model := NewModel(Options{
+		Config: config.Config{IndicatorVisual: "#F4D35E"},
+		Snapshot: store.Snapshot{
+			Chats:          []store.Chat{{ID: "chat-1", Title: "Alice"}},
+			MessagesByChat: map[string][]store.Message{"chat-1": nil},
+			DraftsByChat:   map[string]string{},
+			ActiveChatID:   "chat-1",
+		},
+	})
+	message := store.Message{ID: "m-1", ChatID: "chat-1", Body: "selection fill"}
+
+	normal := model.renderMessageBubbleForViewport(message, 70, false, false, nil)
+	if codes := sgrCodesBeforeNth(normal, "selection fill", 0); hasSGRCode(codes, "48") {
+		t.Fatalf("normal message body codes = %v, want no selection background", codes)
+	}
+
+	selected := model.renderMessageBubbleForViewport(message, 70, false, true, nil)
+	selectedCodes := sgrCodesBeforeNth(selected, "selection fill", 0)
+	if !hasSGRCode(selectedCodes, "38") || !hasSGRCode(selectedCodes, "48") {
+		t.Fatalf("selected message body codes = %v, want foreground and background fill", selectedCodes)
+	}
+	background, foreground := model.visualSelectionColors()
+	wantForeground := contrastingTextColor(background, uiTheme.BarBG, primaryFG)
+	if background != lipgloss.Color("#F4D35E") || foreground != wantForeground {
+		t.Fatalf("selection colors = %q/%q, want #F4D35E/%q", background, foreground, wantForeground)
+	}
+
+	activeSelected := model.renderMessageBubbleForViewport(message, 70, true, true, nil)
+	if codes := sgrCodesBeforeNth(activeSelected, "selection fill", 0); !hasSGRCode(codes, "48") {
+		t.Fatalf("active selected message body codes = %v, want selection background", codes)
+	}
+}
+
 func TestChatFilterClampsCellViewport(t *testing.T) {
 	chats := numberedChats(8)
 	chats[7].Unread = 2
@@ -5542,6 +5577,7 @@ func TestVisualFooterIsMinimal(t *testing.T) {
 }
 
 func TestVisualSelectionRangeUsesStrongerBorders(t *testing.T) {
+	withANSIStyles(t)
 	model := NewModel(Options{
 		Snapshot: store.Snapshot{
 			Chats: []store.Chat{{ID: "chat-1", Title: "Alice"}},
@@ -5562,12 +5598,18 @@ func TestVisualSelectionRangeUsesStrongerBorders(t *testing.T) {
 	model.messageCursor = 2
 	model.messageScrollTop = 0
 
-	view := stripANSI(model.renderMessages(70, 14))
+	rendered := model.renderMessages(70, 14)
+	view := stripANSI(rendered)
 	if got := strings.Count(view, "┏"); got != 3 {
 		t.Fatalf("visual selected thick border count = %d, want 3\n%s", got, view)
 	}
 	if strings.Contains(view, "╭") || strings.Contains(view, "╰") {
 		t.Fatalf("visual selected range kept rounded borders\n%s", view)
+	}
+	for _, body := range []string{"first", "second", "third"} {
+		if codes := sgrCodesBeforeNth(rendered, body, 0); !hasSGRCode(codes, "48") {
+			t.Fatalf("visual selected body %q codes = %v, want background fill\n%s", body, codes, view)
+		}
 	}
 }
 
@@ -10736,6 +10778,17 @@ func TestLoadThemeReadsPywalColors(t *testing.T) {
 	}
 	if theme.FocusedLine != lipgloss.Color("#666666") {
 		t.Fatalf("FocusedLine = %q, want #666666", theme.FocusedLine)
+	}
+}
+
+func TestContrastingTextColorChoosesReadableThemeColor(t *testing.T) {
+	dark := lipgloss.Color("#101418")
+	light := lipgloss.Color("#F5F7FA")
+	if got := contrastingTextColor(lipgloss.Color("#F4D35E"), dark, light); got != dark {
+		t.Fatalf("bright selection foreground = %q, want %q", got, dark)
+	}
+	if got := contrastingTextColor(lipgloss.Color("#203040"), dark, light); got != light {
+		t.Fatalf("dark selection foreground = %q, want %q", got, light)
 	}
 }
 
