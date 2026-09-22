@@ -484,6 +484,11 @@ func (s *Store) SearchMessages(ctx context.Context, chatID, query string, limit 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate searched messages: %w", err)
 	}
+	// A result limit can leave unread rows holding the store's sole connection.
+	// Release it before the detail queries, even when the cursor is not exhausted.
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close searched messages: %w", err)
+	}
 
 	return s.attachMessageDetails(ctx, messages)
 }

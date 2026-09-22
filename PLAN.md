@@ -10,7 +10,7 @@ revertible commit, with focused regression tests and final Linux tests/vet/race
 validation. No live account traffic is required for automated validation.
 
 - [ ] Isolate failed-send recovery by chat and preserve newer drafts.
-- [ ] Release search cursors before loading message details.
+- [x] Release search cursors before loading message details (boundary tests cover fewer, exactly, and more than the result limit).
 - [ ] Preserve newer edits and monotonic receipts during replay and send ACKs.
 - [ ] Persist complete composer drafts, order saves, and flush on shutdown.
 - [ ] Recover interrupted outgoing operations and support text/media retries.
