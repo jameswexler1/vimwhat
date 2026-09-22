@@ -2,6 +2,31 @@
 
 ## Current Stage
 
+### Reliability remediation (September 2026)
+
+The supported product is now Linux-only. The earlier Windows stage notes below
+will be reconciled in the platform cleanup. Each item below is a separate,
+revertible commit, with focused regression tests and final Linux tests/vet/race
+validation. No live account traffic is required for automated validation.
+
+- [ ] Isolate failed-send recovery by chat and preserve newer drafts.
+- [ ] Release search cursors before loading message details.
+- [ ] Preserve newer edits and monotonic receipts during replay and send ACKs.
+- [ ] Persist complete composer drafts, order saves, and flush on shutdown.
+- [ ] Recover interrupted outgoing operations and support text/media retries.
+- [ ] Keep forwarding payloads consistent for local sends and edits.
+- [ ] Preserve unread arrivals outside acknowledged read-receipt targets.
+- [ ] Persist explicit invalidation of missing media cache paths.
+- [ ] Make Linux opener defaults use automatic capability fallback.
+- [ ] Bound history retention and finish quote jumps after asynchronous loads.
+- [ ] Retry initial connections and keep local history usable during recovery.
+- [ ] Extract composer, outgoing-operation, sync, and history responsibilities.
+- [ ] Remove Windows support obligations and publish Linux build artifacts.
+
+Schema changes are additive; reverting code must not delete user messages or
+drafts. Delivery with an uncertain ACK must remain visibly uncertain until
+reconciled or explicitly retried, never silently resent on startup.
+
 Implementation is past the local-shell phase and currently sits at a DB-first, live WhatsApp client with remote history/media support, outbound text, single-attachment media send, recent-sticker send, external-editor draft composition, normal-mode text clipboard paste into the composer, protocol-backed read receipts, reactions with a quick picker, own-message text editing, own-message delete-for-everybody with in-chat tombstones, replies, quote-jump, a right-edge reply gesture in the message pane, typing presence, hybrid fuzzy group-member mention autocomplete, accent-aware search, visible-first chat-avatar sync/rendering with full profile images, first-class sticker receive/render/download behavior, app-state-backed muted/pinned chat settings, stable pending/paused/resumed pixel overlays for media/avatar/sticker rendering, direct-chat PN/LID canonicalization plus split-thread repair, desktop notifications with cached chat-avatar icons where supported plus a local global mute key/right-side configurable status-bar indicator, recovery-aware blocking startup/reconnect catch-up with summarized replay notifications, async store/protocol-backed TUI actions for sends, lazy loads, filters, read receipts, reactions, retries, stickers, drafts, and mentions, denormalized chat-list previews, media retry UX, first-use-state logout reset, temp-backed non-exported chat media caches, clipboard attachment paste with Windows file-drop support, a persistent in-chat new-message divider, hardened Windows inline preview defaults, composer tail-follow scrolling, detached Shift+Enter external media launch, and the planned media/export CLI helpers. The next major gaps are live validation/polish of the notification and media-send paths on real chats, especially desktop delivery on fresh Linux and Windows installs, notification backend default resolution on a fresh config, audio/document fallback behavior, the new avatar/sticker behavior under daily use, plus attachment draft persistence and follow-on resend polish for failed rows.
 
 ### Implemented now
