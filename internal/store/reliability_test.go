@@ -44,3 +44,54 @@ func TestSearchReleasesConnectionAtLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestReplayPreservesNewerContentAndReceipts(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	m := Message{ID: "m", ChatID: "chat", Sender: "me", Body: "original", IsOutgoing: true, Status: "sent"}
+	if err := s.AddMessage(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	newer := time.Unix(1700000100, 0)
+	if _, err := s.UpdateMessageBody(ctx, "m", "corrected", newer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateMessageReceiptStatusIfExists(ctx, "m", "read"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddHistoricalMessage(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateMessageBody(ctx, "m", "older edit", newer.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"sent", "delivered", "failed"} {
+		if err := s.UpdateMessageStatus(ctx, "m", status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _, err := s.MessageByID(ctx, "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "corrected" || got.Status != "read" || !got.EditedAt.Equal(newer) {
+		t.Fatalf("newer state lost: %+v", got)
+	}
+	matches, err := s.SearchMessages(ctx, "chat", "corrected", 10)
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("search index disagrees with body: %+v, %v", matches, err)
+	}
+}
+
+func TestSendingCanFailBeforeAcknowledgement(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	if err := s.AddMessage(ctx, Message{ID: "m", ChatID: "chat", Sender: "me", Body: "text", Status: "sending", IsOutgoing: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateMessageStatus(ctx, "m", "failed"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.MessageByID(ctx, "m")
+	if err != nil || got.Status != "failed" {
+		t.Fatalf("status=%q error=%v", got.Status, err)
+	}
+}

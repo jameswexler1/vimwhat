@@ -837,12 +837,32 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	}
 
 	var previousMessageTimestamp sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT timestamp_unix FROM messages WHERE id = ?`, message.ID).Scan(&previousMessageTimestamp)
+	var previousBody, previousStatus string
+	var previousEditedAt, previousDeletedAt int64
+	err = tx.QueryRowContext(ctx, `SELECT timestamp_unix, body, status, edited_at, deleted_at FROM messages WHERE id = ?`, message.ID).
+		Scan(&previousMessageTimestamp, &previousBody, &previousStatus, &previousEditedAt, &previousDeletedAt)
 	if err != nil && err != sql.ErrNoRows {
 		_ = tx.Rollback()
 		return false, fmt.Errorf("load existing message %s: %w", message.ID, err)
 	}
 	isNew := !previousMessageTimestamp.Valid
+	if !isNew {
+		if messageStatusRank(previousStatus) > messageStatusRank(message.Status) {
+			message.Status = previousStatus
+		}
+		if previousEditedAt > editedAt {
+			message.Body = previousBody
+			editedAt = previousEditedAt
+			message.Mentions = nil
+			payload = nil
+		}
+		if previousDeletedAt > 0 {
+			message.Body = ""
+			message.Media = nil
+			message.Mentions = nil
+			payload = nil
+		}
+	}
 	refreshPreview := !isNew ||
 		message.Timestamp.Unix() >= previousLastMessageAt ||
 		(strings.TrimSpace(previousLastPreview) == "" && messageRenderableForPreview(message))
@@ -1009,21 +1029,26 @@ func (s *Store) updateMessageStatusIfExists(ctx context.Context, messageID, stat
 		return false, fmt.Errorf("message status is required")
 	}
 
-	if monotonic {
-		var current string
-		err := s.db.QueryRowContext(ctx, `SELECT status FROM messages WHERE id = ?`, messageID).Scan(&current)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return false, nil
-			}
-			return false, fmt.Errorf("load message status %s: %w", messageID, err)
-		}
-		if messageStatusRank(current) > messageStatusRank(status) {
-			return true, nil
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin message status update: %w", err)
+	}
+	defer tx.Rollback()
+	var current string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM messages WHERE id = ?`, messageID).Scan(&current)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load message status %s: %w", messageID, err)
+	}
+	// A failed attempt can replace 'sending', but cannot undo a server ACK,
+	// delivery or read receipt that arrived before the attempt completed.
+	if (monotonic || messageStatusRank(current) >= 3) && messageStatusRank(current) > messageStatusRank(status) {
+		return true, nil
 	}
 
-	result, err := s.db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE messages
 		SET status = ?
 		WHERE id = ?
@@ -1033,7 +1058,7 @@ func (s *Store) updateMessageStatusIfExists(ctx context.Context, messageID, stat
 	}
 
 	rows, _ := result.RowsAffected()
-	return rows > 0, nil
+	return rows > 0, tx.Commit()
 }
 
 func (s *Store) UpdateMessageBody(ctx context.Context, messageID, body string, editedAt time.Time) (bool, error) {
@@ -1053,18 +1078,23 @@ func (s *Store) UpdateMessageBody(ctx context.Context, messageID, body string, e
 		return false, fmt.Errorf("begin edit message: %w", err)
 	}
 	var chatID string
+	var currentEditedAt int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT chat_id
+		SELECT chat_id, edited_at
 		FROM messages
 		WHERE id = ?
 			AND deleted_at = 0
-	`, messageID).Scan(&chatID)
+	`, messageID).Scan(&chatID, &currentEditedAt)
 	if err != nil {
 		_ = tx.Rollback()
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
 		return false, fmt.Errorf("load message %s for edit: %w", messageID, err)
+	}
+	if currentEditedAt > editedAt.Unix() {
+		_ = tx.Rollback()
+		return true, nil
 	}
 
 	result, err := tx.ExecContext(ctx, `

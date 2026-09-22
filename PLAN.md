@@ -11,7 +11,7 @@ validation. No live account traffic is required for automated validation.
 
 - [ ] Isolate failed-send recovery by chat and preserve newer drafts.
 - [x] Release search cursors before loading message details (boundary tests cover fewer, exactly, and more than the result limit).
-- [ ] Preserve newer edits and monotonic receipts during replay and send ACKs.
+- [x] Preserve newer edits and monotonic receipts during replay, alias merges, and send ACKs; serialize receipt comparisons with writes.
 - [ ] Persist complete composer drafts, order saves, and flush on shutdown.
 - [ ] Recover interrupted outgoing operations and support text/media retries.
 - [ ] Keep forwarding payloads consistent for local sends and edits.

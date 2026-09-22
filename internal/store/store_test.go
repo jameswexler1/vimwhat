@@ -358,7 +358,7 @@ func TestReceiptStatusUpdatesAreMonotonic(t *testing.T) {
 	if err := db.UpdateMessageStatus(ctx, "m-1", "failed"); err != nil {
 		t.Fatalf("UpdateMessageStatus(failed) error = %v", err)
 	}
-	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "failed")
+	assertMessageStatus(t, db, ctx, "chat-1", "m-1", "played")
 }
 
 func assertMessageStatus(t *testing.T, db *Store, ctx context.Context, chatID, messageID, want string) {

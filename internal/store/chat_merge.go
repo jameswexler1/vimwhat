@@ -607,8 +607,9 @@ func mergeMessageRows(target, alias Message, canonicalID string) Message {
 	if strings.TrimSpace(merged.SenderJID) != "me" {
 		merged.SenderJID = canonicalID
 	}
-	if strings.TrimSpace(merged.Body) == "" && strings.TrimSpace(alias.Body) != "" {
+	if alias.EditedAt.After(merged.EditedAt) || (strings.TrimSpace(merged.Body) == "" && strings.TrimSpace(alias.Body) != "") {
 		merged.Body = alias.Body
+		merged.EditedAt = alias.EditedAt
 	}
 	if merged.Timestamp.IsZero() {
 		merged.Timestamp = alias.Timestamp
@@ -626,6 +627,9 @@ func mergeMessageRows(target, alias Message, canonicalID string) Message {
 	if merged.DeletedAt.IsZero() && !alias.DeletedAt.IsZero() {
 		merged.DeletedAt = alias.DeletedAt
 		merged.DeletedReason = alias.DeletedReason
+	}
+	if !merged.DeletedAt.IsZero() {
+		merged.Body = ""
 	}
 	return merged
 }
