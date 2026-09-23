@@ -12,7 +12,7 @@ func messageStatusRank(status string) int {
 		return 3
 	case "pending", "queued", "sending":
 		return 2
-	case "failed", "error":
+	case "failed", "error", "uncertain":
 		return 1
 	default:
 		return 0

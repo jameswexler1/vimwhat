@@ -126,6 +126,33 @@ func TestSendingCanFailBeforeAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestInterruptedOutboxRecoveryAndRetryClaim(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	for _, status := range []string{"sending", "sent", "read"} {
+		if err := s.AddMessage(ctx, Message{ID: status, ChatID: "chat", Sender: "me", Body: "text", Status: status, IsOutgoing: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.RecoverInterruptedSends(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("recovered %d: %v", n, err)
+	}
+	m, _, _ := s.MessageByID(ctx, "sending")
+	if m.Status != "uncertain" {
+		t.Fatalf("status=%s", m.Status)
+	}
+	for i := 0; i < 2; i++ {
+		claimed, err := s.ClaimOutgoingRetry(ctx, "sending")
+		if err != nil || claimed != (i == 0) {
+			t.Fatalf("claim %d=%v %v", i, claimed, err)
+		}
+	}
+	claimed, err := s.ClaimOutgoingRetry(ctx, "read")
+	if err != nil || claimed {
+		t.Fatalf("retried acknowledged message: %v %v", claimed, err)
+	}
+}
+
 func TestMediaInvalidationClearsOnlyMatchingPaths(t *testing.T) {
 	s, ctx := reliabilityStore(t)
 	if err := s.AddMessage(ctx, Message{ID: "m", ChatID: "chat", Sender: "Alice", Body: "photo"}); err != nil {

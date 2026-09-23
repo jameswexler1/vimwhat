@@ -135,6 +135,13 @@ func run(env Environment, args []string, stdout, stderr io.Writer) int {
 }
 
 func runTUI(env Environment, stderr io.Writer) int {
+	recoveryCtx, cancelRecovery := storeStartupContext()
+	_, recoveryErr := env.Store.RecoverInterruptedSends(recoveryCtx)
+	cancelRecovery()
+	if recoveryErr != nil {
+		fmt.Fprintf(stderr, "vimwhat: recover outgoing messages: %v\n", recoveryErr)
+		return 1
+	}
 	repairCtx, cancelRepair := storeStartupContext()
 	if err := runPreStartCanonicalRepair(repairCtx, env); err != nil {
 		fmt.Fprintf(stderr, "vimwhat: direct chat repair: %v\n", err)
@@ -194,6 +201,15 @@ func runTUI(env Environment, stderr io.Writer) int {
 		RequireOnlineForSend: liveEnabled,
 		BlockLiveStartup:     liveEnabled,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
+			for i, attachment := range outgoing.Attachments {
+				if env.Paths.IsManagedCachePath(attachment.LocalPath) {
+					path, err := retainDraftAttachment(env.Paths.DataDir, attachment.LocalPath)
+					if err != nil {
+						return store.Message{}, err
+					}
+					outgoing.Attachments[i].LocalPath = path
+				}
+			}
 			if liveEnabled {
 				if len(outgoing.Attachments) > 0 {
 					waitCtx, cancel := context.WithTimeout(context.Background(), mediaSendQueueTimeout)
@@ -253,10 +269,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 			waitCtx, cancel := context.WithTimeout(context.Background(), mediaSendQueueTimeout)
 			defer cancel()
 			result := make(chan mediaSendQueuedResult, 1)
-			request, err := retryMediaSendRequest(waitCtx, env.Store, message, result)
-			if err != nil {
-				return store.Message{}, err
-			}
+			request := mediaSendRequest{Context: waitCtx, RetryID: message.ID, Result: result}
 			return queueMediaSendRequest(waitCtx, mediaSendRequests, request)
 		},
 		SendSticker: func(chatID string, sticker store.RecentSticker) (store.Message, error) {
@@ -577,7 +590,7 @@ func backgroundStoreWriteContext(parent context.Context) (context.Context, conte
 	if parent == nil {
 		parent = context.Background()
 	}
-	return context.WithTimeout(parent, backgroundStoreWriteTimeout)
+	return context.WithTimeout(context.WithoutCancel(parent), backgroundStoreWriteTimeout)
 }
 
 var (
@@ -607,6 +620,7 @@ type textSendQueuedResult struct {
 }
 
 type mediaSendRequest struct {
+	RetryID     string
 	Context     context.Context
 	ChatID      string
 	Body        string
@@ -2147,7 +2161,7 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 	result, err := live.SendText(sendCtx, request)
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
-		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
@@ -2205,6 +2219,10 @@ func handleMediaSendRequest(
 	}
 	if !online {
 		sendMediaQueuedResult(ctx, request, store.Message{}, fmt.Errorf("media send needs WhatsApp online"))
+		return
+	}
+	if request.RetryID != "" {
+		handleOutgoingRetry(ctx, db, live, updates, wg, request)
 		return
 	}
 	if request.Sticker != nil {
@@ -2365,7 +2383,7 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	result, err := live.SendMedia(sendCtx, request)
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
-		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
@@ -2416,7 +2434,7 @@ func completeQueuedStickerSend(ctx context.Context, db *store.Store, live WhatsA
 	result, err := live.SendSticker(sendCtx, request)
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
-		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
@@ -2546,8 +2564,8 @@ func retryMediaItemForMessage(message store.Message) (store.MediaMetadata, error
 	if !message.IsOutgoing {
 		return store.MediaMetadata{}, fmt.Errorf("retry needs an outgoing message")
 	}
-	if strings.TrimSpace(message.Status) != "failed" {
-		return store.MediaMetadata{}, fmt.Errorf("retry needs a failed message")
+	if message.Status != "failed" && message.Status != "uncertain" {
+		return store.MediaMetadata{}, fmt.Errorf("retry needs a failed or uncertain message")
 	}
 	if len(message.Media) == 0 {
 		return store.MediaMetadata{}, fmt.Errorf("retry needs a media attachment")
@@ -3283,7 +3301,7 @@ func completeQueuedForwardSend(ctx context.Context, db *store.Store, live WhatsA
 	})
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
-		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
+		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,

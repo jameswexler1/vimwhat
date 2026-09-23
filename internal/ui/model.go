@@ -1449,12 +1449,11 @@ func (m Model) handleRetryMessageFinished(msg retryMessageFinishedMsg) Model {
 		retried.Media = []store.MediaMetadata{msg.Original.Media[0]}
 		retried.Media[0].MessageID = retried.ID
 	}
-	chatID := m.currentChat().ID
-	if chatID == "" {
-		chatID = retried.ChatID
-	}
+	chatID := retried.ChatID
 	if chatID != "" && retried.ID != "" {
-		m.appendMessageToChat(chatID, retried)
+		if !m.replaceMessageByID(chatID, retried.ID, retried) {
+			m.appendMessageToChat(chatID, retried)
+		}
 		if chatID == m.currentChat().ID {
 			m.messageCursor = len(m.messagesByChat[chatID]) - 1
 			m.messageScrollTop = m.messageCursor
@@ -6107,17 +6106,17 @@ func (m Model) validateRetryMessage(message store.Message) error {
 	if !message.IsOutgoing {
 		return fmt.Errorf("retry needs an outgoing message")
 	}
-	if strings.TrimSpace(message.Status) != "failed" {
-		return fmt.Errorf("retry needs a failed message")
-	}
-	if len(message.Media) == 0 {
-		return fmt.Errorf("retry needs a media attachment")
+	if message.Status != "failed" && message.Status != "uncertain" {
+		return fmt.Errorf("retry needs a failed or uncertain message")
 	}
 	if len(message.Media) > 1 {
 		return fmt.Errorf("only one attachment per message is supported")
 	}
 	if m.requireOnlineForSend && !m.whatsAppReady() {
 		return fmt.Errorf("retry needs WhatsApp online")
+	}
+	if len(message.Media) == 0 {
+		return nil
 	}
 	item := message.Media[0]
 	if strings.TrimSpace(item.LocalPath) == "" {

@@ -2212,6 +2212,8 @@ func messageStatusTicks(status string) string {
 		return "[✓✓]"
 	case "failed", "error":
 		return "!"
+	case "uncertain":
+		return "?"
 	default:
 		return "✓"
 	}
