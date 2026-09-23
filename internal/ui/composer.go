@@ -147,6 +147,16 @@ func (m *Model) captureComposerDraft() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case quoteWindowLoadedMsg:
+		next, cmd := m.handleQuoteWindow(msg)
+		next.boundHistoryCache()
+		return next.withPreviewCmd(cmd)
+	case newerWindowLoadedMsg:
+		next := m.handleNewerWindow(msg)
+		next.boundHistoryCache()
+		return next.withPreviewCmd(nil)
+	}
 	if debounced, ok := msg.(draftDebouncedMsg); ok {
 		return m, m.saveDraftTicketCmd(debounced.Ticket)
 	}
@@ -154,6 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	wasEditing := m.editTarget != nil
 	updated, cmd := m.update(msg)
 	next := updated.(Model)
+	next.boundHistoryCache()
 	if oldChat != next.currentChat().ID {
 		// Switching panes/chats must never carry attachments or reply context.
 		next.restoreComposerDraft(next.currentChat().ID)

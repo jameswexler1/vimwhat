@@ -385,6 +385,8 @@ type Options struct {
 	SendPresence                 func(chatID string, composing bool) error
 	SubscribePresence            func(chatID string) error
 	LoadMessages                 func(chatID string, limit int) ([]store.Message, error)
+	LoadMessagesAround           func(chatID, targetID string, limit int) ([]store.Message, error)
+	LoadNewerMessages            func(chatID string, after store.Message, limit int) ([]store.Message, error)
 	LoadOlderMessages            func(chatID string, before store.Message, limit int) ([]store.Message, error)
 	RequestHistory               func(chatID string) error
 	ReloadSnapshot               func(activeChatID string, limit int) (store.Snapshot, error)
@@ -537,6 +539,12 @@ type Model struct {
 	sendPresence                     func(chatID string, composing bool) error
 	subscribePresence                func(chatID string) error
 	loadMessages                     func(chatID string, limit int) ([]store.Message, error)
+	loadMessagesAround               func(chatID, targetID string, limit int) ([]store.Message, error)
+	loadNewerMessages                func(chatID string, after store.Message, limit int) ([]store.Message, error)
+	pendingQuoteByChat               map[string]string
+	historyDetached                  map[string]bool
+	historyLastUsed                  map[string]uint64
+	historyClock                     uint64
 	loadOlderMessages                func(chatID string, before store.Message, limit int) ([]store.Message, error)
 	requestHistory                   func(chatID string) error
 	reloadSnapshot                   func(activeChatID string, limit int) (store.Snapshot, error)
@@ -687,6 +695,11 @@ func NewModel(opts Options) Model {
 		sendSticker:                  opts.SendSticker,
 		retryMessage:                 opts.RetryMessage,
 		loadMessages:                 opts.LoadMessages,
+		loadMessagesAround:           opts.LoadMessagesAround,
+		loadNewerMessages:            opts.LoadNewerMessages,
+		pendingQuoteByChat:           map[string]string{},
+		historyDetached:              map[string]bool{},
+		historyLastUsed:              map[string]uint64{},
 		loadOlderMessages:            opts.LoadOlderMessages,
 		requestHistory:               opts.RequestHistory,
 		reloadSnapshot:               opts.ReloadSnapshot,
@@ -876,6 +889,9 @@ func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	}
 	if update.HistoryChatID != "" && m.historyRequestedByChat != nil {
 		delete(m.historyRequestedByChat, update.HistoryChatID)
+		if target := m.pendingQuoteByChat[update.HistoryChatID]; target != "" && m.loadMessagesAround != nil && update.HistoryMessages > 0 {
+			cmds = append(cmds, m.quoteWindowCmd(update.HistoryChatID, target))
+		}
 	}
 	if update.ReadChatID != "" && m.readReceiptInflight != nil {
 		delete(m.readReceiptInflight, update.ReadChatID)
@@ -1125,8 +1141,22 @@ func (m Model) reloadSnapshotCmd() tea.Cmd {
 	}
 	reload := m.reloadSnapshot
 	limit := m.messageLimitForChat(activeChatID)
+	around := m.loadMessagesAround
+	anchor := ""
+	if m.historyDetached[activeChatID] {
+		if focused, ok := m.focusedMessage(); ok {
+			anchor = focused.ID
+		}
+	}
 	return func() tea.Msg {
 		snapshot, err := reload(activeChatID, limit)
+		if err == nil && anchor != "" && around != nil {
+			var messages []store.Message
+			messages, err = around(activeChatID, anchor, limit)
+			if err == nil {
+				snapshot.MessagesByChat[activeChatID] = messages
+			}
+		}
 		return snapshotReloadedMsg{
 			Snapshot:     snapshot,
 			ActiveChatID: activeChatID,
@@ -1495,6 +1525,7 @@ func (m Model) handleMessagesLoaded(msg messagesLoadedMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	m.messagesByChat[msg.ChatID] = slices.Clone(msg.Messages)
+	m.historyDetached[msg.ChatID] = false
 	if msg.ChatID == m.currentChat().ID {
 		m.messageCursor = clamp(m.messageCursor, 0, max(0, len(msg.Messages)-1))
 		m.messageScrollTop = clamp(m.messageScrollTop, 0, max(0, len(msg.Messages)-1))
@@ -1524,7 +1555,8 @@ func (m Model) handleOlderMessagesLoaded(msg olderMessagesLoadedMsg) (Model, tea
 		combined := make([]store.Message, 0, len(msg.Messages)+len(messages))
 		combined = append(combined, msg.Messages...)
 		combined = append(combined, messages...)
-		m.messagesByChat[msg.ChatID] = combined
+		m.messagesByChat[msg.ChatID] = slices.Clone(combined[:min(len(combined), maxHistoryWindow)])
+		m.historyDetached[msg.ChatID] = true
 		m.addMessageLimit(msg.ChatID, len(msg.Messages))
 		if msg.ChatID == m.currentChat().ID {
 			m.messageCursor = len(msg.Messages) - 1
@@ -1532,6 +1564,10 @@ func (m Model) handleOlderMessagesLoaded(msg olderMessagesLoadedMsg) (Model, tea
 			m.pauseOverlays(true, false)
 		}
 		m.status = fmt.Sprintf("loaded %d older local message(s)", len(msg.Messages))
+		if target := m.pendingQuoteByChat[msg.ChatID]; target != "" && msg.ChatID == m.currentChat().ID && m.focusMessageByID(target) {
+			delete(m.pendingQuoteByChat, msg.ChatID)
+			m.status = "jumped to quote"
+		}
 		return m, nil
 	}
 	return m.startHistoryRequest(msg.ChatID, "history")
@@ -2187,6 +2223,9 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		}
 		return m, m.moveFocus(1)
 	case normalActionMoveDown:
+		if m.focus == FocusMessages && m.historyDetached[m.currentChat().ID] && m.messageCursor == len(m.currentMessages())-1 {
+			return m, m.loadNewerWindow()
+		}
 		return m, m.moveCursor(count)
 	case normalActionMoveUp:
 		return m, m.moveCursor(-count)
@@ -2208,6 +2247,10 @@ func (m Model) runNormalAction(action string, count int) (tea.Model, tea.Cmd) {
 		}
 	case normalActionGoBottom:
 		if m.focus == FocusMessages {
+			if m.historyDetached[m.currentChat().ID] && m.loadMessages != nil && count == 1 {
+				m.messageLoadInflight[m.currentChat().ID] = true
+				return m, m.loadMessagesCmd(m.currentChat().ID, messageLoadLimit, true, false)
+			}
 			if messageCount := len(m.currentMessages()); messageCount > 0 {
 				target := messageCount - 1
 				if count > 1 {
@@ -3759,6 +3802,11 @@ func (m *Model) jumpToQuotedMessage() tea.Cmd {
 		m.status = "jumped to quote"
 		return nil
 	}
+	m.pendingQuoteByChat[chatID] = targetID
+	if m.loadMessagesAround != nil {
+		m.status = "loading quoted history"
+		return m.quoteWindowCmd(chatID, targetID)
+	}
 	messages := m.currentMessages()
 	if len(messages) > 0 && m.loadOlderMessages != nil {
 		if m.olderMessagesInflight[chatID] {
@@ -3881,7 +3929,7 @@ func (m Model) messageLimitForChat(chatID string) int {
 		return messageLoadLimit
 	}
 	if limit := m.messageLimitsByChat[chatID]; limit > 0 {
-		return limit
+		return min(limit, maxHistoryWindow)
 	}
 	return messageLoadLimit
 }
@@ -3893,7 +3941,7 @@ func (m *Model) addMessageLimit(chatID string, delta int) {
 	if m.messageLimitsByChat == nil {
 		m.messageLimitsByChat = map[string]int{}
 	}
-	m.messageLimitsByChat[chatID] = m.messageLimitForChat(chatID) + delta
+	m.messageLimitsByChat[chatID] = min(maxHistoryWindow, m.messageLimitForChat(chatID)+delta)
 }
 
 func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageFilter string) error {
@@ -3928,6 +3976,9 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 		m.messagesByChat = map[string][]store.Message{}
 	}
 	for chatID, messages := range snapshot.MessagesByChat {
+		if chatID == oldChatID && m.historyDetached[chatID] && oldFocusedID != "" && indexOfMessage(messages, oldFocusedID) < 0 {
+			continue
+		}
 		m.messagesByChat[chatID] = slices.Clone(messages)
 		delete(m.unfilteredByChat, chatID)
 	}

@@ -18,7 +18,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Track local unread messages with an additive migration; acknowledgements idempotently clear only their targets and preserve concurrent/delayed arrivals and unacknowledged counts.
 - [x] Persist explicit invalidation of missing media cache paths, with compare-and-clear protection for concurrent downloads.
 - [x] Default Linux image/video/file openers to auto capability probing; preserve strict explicit command overrides and document the distinction in generated/example config.
-- [ ] Bound history retention and finish quote jumps after asynchronous loads.
+- [x] Bound retained history to eight chats and 400 messages per window, page in both directions, reload around historical focus, and complete pending quote jumps using direct bounded target lookup.
 - [ ] Retry initial connections and keep local history usable during recovery.
 - [ ] Extract composer, outgoing-operation, sync, and history responsibilities.
 - [ ] Remove Windows support obligations and publish Linux build artifacts.

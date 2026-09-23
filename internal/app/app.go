@@ -359,6 +359,16 @@ func runTUI(env Environment, stderr io.Writer) int {
 			defer cancelStore()
 			return env.Store.ListMessages(storeCtx, chatID, limit)
 		},
+		LoadMessagesAround: func(chatID, targetID string, limit int) ([]store.Message, error) {
+			ctx, cancel := uiStoreReadContext()
+			defer cancel()
+			return env.Store.ListMessagesAround(ctx, chatID, targetID, limit)
+		},
+		LoadNewerMessages: func(chatID string, after store.Message, limit int) ([]store.Message, error) {
+			ctx, cancel := uiStoreReadContext()
+			defer cancel()
+			return env.Store.ListMessagesAfter(ctx, chatID, after, limit)
+		},
 		LoadOlderMessages: func(chatID string, before store.Message, limit int) ([]store.Message, error) {
 			storeCtx, cancelStore := uiStoreReadContext()
 			defer cancelStore()
