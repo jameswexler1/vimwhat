@@ -5,7 +5,7 @@
 ### Startup sync correction
 
 - [x] Import contact app-state events and resolve saved names regardless of chat/contact event order, including known identity aliases and concurrent imports.
-- [ ] Import initial/recent history with bounded recent-message retention and observable batch completion.
+- [x] Import initial/recent chat names and up to 50 newest messages per conversation per batch; retain existing history, keep full-archive message bodies out of the automatic import, and emit ordered batch completion.
 - [ ] Use incremental app-state sync and reconcile metadata after startup sync.
 - [ ] Restore explicit loading/readiness stages with honest partial/error states and a final snapshot barrier.
 - [ ] Validate Linux tests, vet, race checks, and document the startup behavior.

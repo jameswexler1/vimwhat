@@ -1527,6 +1527,7 @@ const (
 	EventContactUpsert       EventKind = "contact_upsert"
 	EventChatAvatarUpdate    EventKind = "chat_avatar_update"
 	EventGroupParticipants   EventKind = "group_participants"
+	EventHistoryProgress     EventKind = "history_progress"
 )
 
 type ConnectionState string
@@ -1541,25 +1542,35 @@ const (
 )
 
 type Event struct {
-	Kind          EventKind
-	Replayed      bool
-	Chat          ChatEvent
-	Message       MessageEvent
-	Edit          MessageEditEvent
-	Delete        MessageDeleteEvent
-	Receipt       ReceiptEvent
-	Reaction      ReactionEvent
-	Presence      PresenceEvent
-	Media         MediaEvent
-	Sticker       RecentStickerEvent
-	StickerRemove RecentStickerRemoveEvent
-	Connection    ConnectionEvent
-	History       HistoryEvent
-	Offline       OfflineSyncEvent
-	Recovery      MessageRecoveryEvent
-	Contact       ContactEvent
-	Avatar        AvatarEvent
-	Participants  GroupParticipantsEvent
+	Kind            EventKind
+	Replayed        bool
+	Chat            ChatEvent
+	Message         MessageEvent
+	Edit            MessageEditEvent
+	Delete          MessageDeleteEvent
+	Receipt         ReceiptEvent
+	Reaction        ReactionEvent
+	Presence        PresenceEvent
+	Media           MediaEvent
+	Sticker         RecentStickerEvent
+	StickerRemove   RecentStickerRemoveEvent
+	Connection      ConnectionEvent
+	History         HistoryEvent
+	Offline         OfflineSyncEvent
+	Recovery        MessageRecoveryEvent
+	Contact         ContactEvent
+	Avatar          AvatarEvent
+	Participants    GroupParticipantsEvent
+	HistoryProgress HistoryProgressEvent
+}
+
+// A downloaded batch is complete only after all its normalized events have
+// passed through the ordered ingestion queue.
+type HistoryProgressEvent struct {
+	SyncType string
+	Chunk    int
+	Progress int
+	Pending  bool
 }
 
 type ApplyResult struct {

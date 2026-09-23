@@ -1,6 +1,7 @@
 package whatsapp
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,6 +28,14 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 	case *events.HistorySync:
 		return c.normalizeHistorySyncEvent(ctx, event)
 	case *events.Message:
+		if event != nil && event.Info.IsFromMe {
+			if notice := event.Message.GetProtocolMessage().GetHistorySyncNotification(); notice != nil {
+				return []Event{{Kind: EventHistoryProgress, HistoryProgress: HistoryProgressEvent{
+					SyncType: notice.GetSyncType().String(), Chunk: int(notice.GetChunkOrder()),
+					Progress: int(notice.GetProgress()), Pending: true,
+				}}}
+			}
+		}
 		return c.normalizeMessageEvent(ctx, event)
 	case *events.UndecryptableMessage:
 		if event == nil || event.Info.ID == "" || event.UnavailableType == events.UnavailableTypeViewOnce || !supportedChat(event.Info.Chat) {
@@ -209,8 +218,11 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 	}
 	history := event.Data
 	out := normalizeHistoryRecentStickers(history)
-	if history.GetSyncType() != waHistorySync.HistorySync_ON_DEMAND {
-		return out
+	onDemand := history.GetSyncType() == waHistorySync.HistorySync_ON_DEMAND
+	for _, name := range history.GetPushnames() {
+		if jid, err := types.ParseJID(name.GetID()); err == nil && name.GetPushname() != "-" {
+			out = append(out, c.normalizePushNameEvent(ctx, &events.PushName{JID: jid, NewPushName: name.GetPushname()})...)
+		}
 	}
 
 	for _, conversation := range history.GetConversations() {
@@ -234,10 +246,11 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 				TitleSource:   historyConversationTitleSource(conversation, canonicalChatJID),
 				Kind:          chatKind(canonicalChatJID),
 				UnreadKnown:   false,
+				Unread:        int(conversation.GetUnreadCount()),
 				Pinned:        conversation.GetPinned() > 0,
-				PinnedKnown:   true,
+				PinnedKnown:   onDemand && conversation.Pinned != nil,
 				Muted:         muted,
-				MutedKnown:    true,
+				MutedKnown:    onDemand && conversation.MuteEndTime != nil,
 				MutedUntil:    mutedUntil,
 				LastMessageAt: historyConversationTimestamp(conversation),
 				Historical:    true,
@@ -245,7 +258,7 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 		})
 
 		messages := 0
-		for _, historyMessage := range conversation.GetMessages() {
+		for _, historyMessage := range historyMessagesToImport(history.GetSyncType(), conversation.GetMessages()) {
 			webMessage := historyMessage.GetMessage()
 			if webMessage == nil {
 				continue
@@ -280,19 +293,42 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 			}
 		}
 
-		terminalReason := historyTerminalReason(conversation)
-		out = append(out, Event{
-			Kind: EventHistoryStatus,
-			History: HistoryEvent{
-				ChatID:         chatID,
-				SyncType:       history.GetSyncType().String(),
-				Messages:       messages,
-				Exhausted:      terminalReason != "",
-				TerminalReason: terminalReason,
-			},
-		})
+		if onDemand {
+			terminalReason := historyTerminalReason(conversation)
+			out = append(out, Event{
+				Kind: EventHistoryStatus,
+				History: HistoryEvent{
+					ChatID:         chatID,
+					SyncType:       history.GetSyncType().String(),
+					Messages:       messages,
+					Exhausted:      terminalReason != "",
+					TerminalReason: terminalReason,
+				},
+			})
+		}
 	}
-	return out
+	return append(out, Event{Kind: EventHistoryProgress, HistoryProgress: HistoryProgressEvent{
+		SyncType: history.GetSyncType().String(), Chunk: int(history.GetChunkOrder()),
+		Progress: int(history.GetProgress()),
+	}})
+}
+
+const initialHistoryMessageLimit = 50
+
+// Automatic bootstrap/recent batches seed a recent window, not a full archive.
+// Existing local history is never pruned. Explicit on-demand pages are intact.
+func historyMessagesToImport(kind waHistorySync.HistorySync_HistorySyncType, messages []*waHistorySync.HistorySyncMsg) []*waHistorySync.HistorySyncMsg {
+	if kind == waHistorySync.HistorySync_ON_DEMAND {
+		return messages
+	}
+	if kind != waHistorySync.HistorySync_INITIAL_BOOTSTRAP && kind != waHistorySync.HistorySync_RECENT {
+		return nil
+	}
+	recent := slices.Clone(messages)
+	slices.SortStableFunc(recent, func(a, b *waHistorySync.HistorySyncMsg) int {
+		return cmp.Compare(b.GetMessage().GetMessageTimestamp(), a.GetMessage().GetMessageTimestamp())
+	})
+	return recent[:min(len(recent), initialHistoryMessageLimit)]
 }
 
 func normalizeHistoryRecentStickers(history *waHistorySync.HistorySync) []Event {

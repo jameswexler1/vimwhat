@@ -173,6 +173,8 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			return ApplyResult{}, i.Store.SetSyncCursor(ctx, HistoryExhaustedCursor(event.History.ChatID), value)
 		}
 		return ApplyResult{}, nil
+	case EventHistoryProgress:
+		return ApplyResult{}, nil
 	case EventContactUpsert:
 		contact := store.Contact{
 			JID:         event.Contact.JID,
