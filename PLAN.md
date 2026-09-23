@@ -17,7 +17,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Persist local text/media/sticker forwarding payloads, queue forwarded payloads atomically, and rewrite edited text/captions transactionally without allowing late ACKs to replace newer content.
 - [x] Track local unread messages with an additive migration; acknowledgements idempotently clear only their targets and preserve concurrent/delayed arrivals and unacknowledged counts.
 - [x] Persist explicit invalidation of missing media cache paths, with compare-and-clear protection for concurrent downloads.
-- [ ] Make Linux opener defaults use automatic capability fallback.
+- [x] Default Linux image/video/file openers to auto capability probing; preserve strict explicit command overrides and document the distinction in generated/example config.
 - [ ] Bound history retention and finish quote jumps after asynchronous loads.
 - [ ] Retry initial connections and keep local history usable during recovery.
 - [ ] Extract composer, outgoing-operation, sync, and history responsibilities.

@@ -47,7 +47,7 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 		if !strings.Contains(cfg.StickerPickerCommand, "powershell.exe") || !strings.Contains(cfg.StickerPickerCommand, "{chooser}") || !strings.Contains(cfg.StickerPickerCommand, "{dir}") {
 			t.Fatalf("windows StickerPickerCommand = %q", cfg.StickerPickerCommand)
 		}
-	} else if cfg.ImageViewerCommand != "nsxiv {path}" || cfg.VideoPlayerCommand != "mpv {path}" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "xdg-open {path}" {
+	} else if cfg.ImageViewerCommand != "auto" || cfg.VideoPlayerCommand != "auto" || cfg.AudioPlayerCommand != "mpv --no-video --no-terminal --really-quiet {path}" || cfg.FileOpenerCommand != "auto" {
 		t.Fatalf("media commands = image %q video %q audio %q file %q", cfg.ImageViewerCommand, cfg.VideoPlayerCommand, cfg.AudioPlayerCommand, cfg.FileOpenerCommand)
 	}
 	if runtime.GOOS != "windows" && cfg.StickerPickerCommand != "nsxiv -t -o -p {files}" {

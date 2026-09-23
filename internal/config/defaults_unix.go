@@ -24,11 +24,11 @@ func platformDefaultStickerPickerCommand() string {
 }
 
 func platformDefaultImageViewerCommand() string {
-	return "nsxiv {path}"
+	return "auto"
 }
 
 func platformDefaultVideoPlayerCommand() string {
-	return "mpv {path}"
+	return "auto"
 }
 
 func platformDefaultAudioPlayerCommand() string {
@@ -36,5 +36,5 @@ func platformDefaultAudioPlayerCommand() string {
 }
 
 func platformDefaultFileOpenerCommand() string {
-	return "xdg-open {path}"
+	return "auto"
 }

@@ -1108,7 +1108,7 @@ func mediaOpenCommand(cfg config.Config, item store.MediaMetadata) (*exec.Cmd, s
 	}
 
 	template, configured := mediaOpenTemplate(cfg, item)
-	if !configured {
+	if !configured || strings.EqualFold(template, "auto") {
 		argv, err := autoOpenCommand(item, path)
 		if err != nil {
 			return nil, path, err

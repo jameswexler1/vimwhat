@@ -25,10 +25,11 @@ clipboard_image_paste_command = ""
 clipboard_image_copy_command = ""
 file_picker_command = "yazi --chooser-file {chooser}"
 sticker_picker_command = "nsxiv -t -o -p {files}"
-image_viewer_command = "nsxiv {path}"
-video_player_command = "mpv {path}"
+# auto probes installed viewers; explicit commands fail if unavailable.
+image_viewer_command = "auto"
+video_player_command = "auto"
 audio_player_command = "mpv --no-video --no-terminal --really-quiet {path}"
-file_opener_command = "xdg-open {path}"
+file_opener_command = "auto"
 preview_max_width = 67
 preview_max_height = 18
 preview_delay_ms = 80
