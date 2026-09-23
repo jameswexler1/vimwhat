@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	wastore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 
 	"vimwhat/internal/store"
@@ -24,6 +25,9 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 			continue
 		}
 		out = append(out, c.normalizeFullGroupInfoEvent(ctx, group, true)...)
+		settings, err := c.cachedChatSettings(ctx, group.JID)
+		out = append(out, settings...)
+		groupErr = errors.Join(groupErr, err)
 	}
 
 	return out, errors.Join(contactErr, groupErr)
@@ -38,6 +42,11 @@ func (c *Client) cachedContacts(ctx context.Context) ([]Event, error) {
 				if event, ok := c.cachedContactEvent(ctx, jid, info); ok {
 					out = append(out, event)
 				}
+				settings, err := c.cachedChatSettings(ctx, jid)
+				out = append(out, settings...)
+				if err != nil {
+					return out, err
+				}
 			}
 		} else {
 			return out, err
@@ -45,6 +54,38 @@ func (c *Client) cachedContacts(ctx context.Context) ([]Event, error) {
 	}
 
 	return out, nil
+}
+
+// Incremental protocol sync may have no new pin/mute events (for example
+// after pairing or an interrupted app import). Reconcile its saved settings
+// along with names so cached conversations do not silently lose their mute.
+func (c *Client) cachedChatSettings(ctx context.Context, jid types.JID) ([]Event, error) {
+	if c.client.Store == nil || c.client.Store.ChatSettings == nil || !supportedChat(jid) {
+		return nil, nil
+	}
+	canonical, aliases := c.canonicalChatIdentity(ctx, jid, types.EmptyJID)
+	settings, err := c.client.Store.ChatSettings.GetChatSettings(ctx, canonical)
+	if err != nil {
+		return nil, err
+	}
+	if !settings.Found && canonical != jid {
+		settings, err = c.client.Store.ChatSettings.GetChatSettings(ctx, jid)
+	}
+	if err != nil || !settings.Found {
+		return nil, err
+	}
+	muted := settings.MutedUntil == wastore.MutedForever || settings.MutedUntil.After(time.Now())
+	until := settings.MutedUntil
+	if !muted || until == wastore.MutedForever {
+		until = time.Time{}
+	}
+	return []Event{{Kind: EventChatUpsert, Chat: ChatEvent{
+		ID: canonical.String(), JID: canonical.String(), AliasIDs: aliases,
+		Kind: chatKind(canonical), Title: historyConversationTitle(nil, canonical),
+		TitleSource: historyConversationTitleSource(nil, canonical),
+		Pinned:      settings.Pinned, PinnedKnown: true, Muted: muted, MutedKnown: true,
+		MutedUntil: until, Historical: true,
+	}}}, nil
 }
 
 func (c *Client) cachedContactEvent(ctx context.Context, jid types.JID, info types.ContactInfo) (Event, bool) {

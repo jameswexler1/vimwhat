@@ -196,30 +196,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 				return ApplyResult{}, err
 			}
 		}
-		title := strings.TrimSpace(event.Contact.DisplayName)
-		source := store.ChatTitleSourceContactDisplay
-		if title == "" {
-			title = strings.TrimSpace(event.Contact.NotifyName)
-			source = event.Contact.TitleSource
-			if source == "" {
-				source = store.ChatTitleSourcePushName
-			}
-		}
-		if title == "" {
-			return ApplyResult{}, nil
-		}
-		chatID := strings.TrimSpace(event.Contact.ChatID)
-		if chatID == "" {
-			chatID = event.Contact.JID
-		}
-		_, err := i.Store.UpdateChatTitleIfExists(ctx, store.Chat{
-			ID:          chatID,
-			JID:         chatID,
-			Title:       title,
-			TitleSource: source,
-			Kind:        "direct",
-		})
-		return ApplyResult{}, err
+		return ApplyResult{}, nil
 	case EventGroupParticipants:
 		participants := make([]store.GroupParticipant, 0, len(event.Participants.Participants))
 		updatedAt := timeOrNow(event.Participants.UpdatedAt)
