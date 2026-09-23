@@ -376,6 +376,7 @@ type Options struct {
 	BlockAttachments             bool
 	RequireOnlineForSend         bool
 	BlockLiveStartup             bool
+	BackgroundSync               bool
 	PersistMessage               func(OutgoingMessage) (store.Message, error)
 	SendSticker                  func(chatID string, sticker store.RecentSticker) (store.Message, error)
 	RetryMessage                 func(message store.Message) (store.Message, error)
@@ -586,6 +587,7 @@ type Model struct {
 	messageLimitsByChat              map[string]int
 	historyRequestedByChat           map[string]bool
 	syncOverlay                      syncOverlayState
+	backgroundSync                   bool
 	syncFinalizePending              bool
 	syncFinalizeNeedsReload          bool
 	syncFinalizeRetries              int
@@ -749,6 +751,7 @@ func NewModel(opts Options) Model {
 		messageLimitsByChat:          map[string]int{},
 		historyRequestedByChat:       map[string]bool{},
 		syncOverlay:                  initialSyncOverlay(opts.BlockLiveStartup),
+		backgroundSync:               opts.BackgroundSync,
 		pollTerminalSize:             opts.PollTerminalSize,
 	}
 	if model.pasteAttachmentFromClipboard == nil {
@@ -844,7 +847,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) whatsAppReady() bool {
-	return m.connectionState == ConnectionOnline && (!m.requireOnlineForSend || m.protocolReady)
+	return m.connectionState == ConnectionOnline && (!m.requireOnlineForSend || m.whatsAppReadyForStatus())
 }
 
 func (m Model) waitForLiveUpdateCmd() tea.Cmd {
@@ -999,8 +1002,10 @@ func (m Model) handleSyncProgress(update SyncProgressUpdate) (Model, tea.Cmd) {
 		m.syncOverlay.Processed = m.syncOverlay.Total
 	}
 	if update.Active {
-		m.leaderPending = false
-		m.leaderSequence = ""
+		if !m.backgroundSync {
+			m.leaderPending = false
+			m.leaderSequence = ""
+		}
 		if syncProgressShouldReplaceStatus(m.status) {
 			m.status = syncProgressStatus(update, "syncing WhatsApp updates")
 		}
@@ -1942,7 +1947,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.inlineFallbackPrompt {
 		return m.handleInlineFallbackPrompt(msg)
 	}
-	if m.syncOverlay.Visible {
+	if m.syncBlocksUI() {
 		return m, nil
 	}
 	if m.leaderPending {
@@ -1979,7 +1984,7 @@ func (m Model) handleSpecialKeyToken(token string) (tea.Model, tea.Cmd) {
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
 	}
-	if m.mode == ModeNormal && !m.helpVisible && !m.inlineFallbackPrompt && !m.syncOverlay.Visible && !m.leaderPending {
+	if m.mode == ModeNormal && !m.helpVisible && !m.inlineFallbackPrompt && !m.syncBlocksUI() && !m.leaderPending {
 		action := m.normalActionForToken(token)
 		if action != "" {
 			return m.runNormalAction(action, m.consumeCount())
@@ -4617,7 +4622,7 @@ func (m Model) avatarPreviewBackend() (media.Backend, bool) {
 }
 
 func (m *Model) maybePromptInlineFallback() {
-	if !m.inlineFallbackNeedsPrompt() || m.helpVisible || m.syncOverlay.Visible {
+	if !m.inlineFallbackNeedsPrompt() || m.helpVisible || m.syncBlocksUI() {
 		return
 	}
 	if m.hasVisibleRequestedInlineMedia() || m.hasVisibleAvatarFallbackCandidate() {
@@ -4758,7 +4763,7 @@ func (m *Model) syncOverlayCmd() tea.Cmd {
 	if m.previewReport.Selected != media.BackendUeberzugPP {
 		return m.clearOverlayCmd()
 	}
-	if m.helpVisible || m.syncOverlay.Visible {
+	if m.helpVisible || m.syncBlocksUI() {
 		return m.clearOverlayCmd()
 	}
 	placements := m.syncableOverlayPlacements()
@@ -4877,7 +4882,7 @@ func (m *Model) syncSixelCmd() tea.Cmd {
 	if m.previewReport.Selected != media.BackendSixel {
 		return m.clearSixelCmd()
 	}
-	if m.helpVisible || m.syncOverlay.Visible {
+	if m.helpVisible || m.syncBlocksUI() {
 		return m.clearSixelCmd()
 	}
 	placements := m.syncableSixelPlacements()

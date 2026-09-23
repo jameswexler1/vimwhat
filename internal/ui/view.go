@@ -46,7 +46,7 @@ func (m Model) View() string {
 		return "loading..."
 	}
 	m = m.withLayoutWidth()
-	if m.syncOverlay.Visible {
+	if m.syncBlocksUI() {
 		return clampFrame(m.renderSyncOverlay(m.width, m.height), m.width, m.height)
 	}
 
@@ -89,7 +89,7 @@ func (m Model) layoutWidth() int {
 
 func (m Model) renderBody(height int) string {
 	width := m.layoutWidth()
-	if m.syncOverlay.Visible {
+	if m.syncBlocksUI() {
 		return m.renderSyncOverlay(width, height)
 	}
 	if m.inlineFallbackPrompt {
@@ -2920,7 +2920,7 @@ func (m Model) footerChatTitle() string {
 }
 
 func (m Model) inputHeight() int {
-	if m.syncOverlay.Visible || m.inlineFallbackPrompt {
+	if m.syncBlocksUI() || m.inlineFallbackPrompt {
 		return 0
 	}
 	switch m.mode {

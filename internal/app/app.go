@@ -199,7 +199,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
 		RequireOnlineForSend: liveEnabled,
-		BlockLiveStartup:     liveEnabled,
+		BackgroundSync:       true,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			for i, attachment := range outgoing.Attachments {
 				if env.Paths.IsManagedCachePath(attachment.LocalPath) {
@@ -986,7 +986,9 @@ func runLiveWhatsApp(
 		return
 	}
 
-	if err := live.Connect(liveCtx); err != nil {
+	if err := retryConnection(liveCtx, live.Connect, func(err error, delay time.Duration) {
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionReconnecting, Status: fmt.Sprintf("connection failed; retry in %s: %s", delay, shortStatusError(err))})
+	}, waitReconnect); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
