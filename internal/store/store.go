@@ -257,6 +257,15 @@ var migrations = []migration{
 			SET last_preview = ` + chatPreviewSQL("chats.id"),
 		},
 	},
+	{
+		name: "0014_message_unread_tracking",
+		sql: []string{
+			`ALTER TABLE messages ADD COLUMN local_unread INTEGER NOT NULL DEFAULT 0`,
+			`UPDATE messages SET local_unread=1 WHERE id IN (
+				SELECT id FROM (SELECT m.id,c.unread_count,ROW_NUMBER() OVER (PARTITION BY m.chat_id ORDER BY m.timestamp_unix DESC,m.id DESC) AS ordinal
+				FROM messages m JOIN chats c ON c.id=m.chat_id WHERE m.is_outgoing=0 AND m.deleted_at=0) WHERE ordinal<=unread_count)`,
+		},
+	},
 }
 
 func Open(path string) (*Store, error) {

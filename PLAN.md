@@ -15,7 +15,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Persist complete composer drafts, serialize revisioned saves, retain transient attachments in private durable storage, and flush on shutdown.
 - [x] Recover interrupted outgoing rows as uncertain (never auto-resend); settle cancellation with an independent bounded context and retry text/media using the original delivery ID with atomic duplicate-retry protection.
 - [x] Persist local text/media/sticker forwarding payloads, queue forwarded payloads atomically, and rewrite edited text/captions transactionally without allowing late ACKs to replace newer content.
-- [ ] Preserve unread arrivals outside acknowledged read-receipt targets.
+- [x] Track local unread messages with an additive migration; acknowledgements idempotently clear only their targets and preserve concurrent/delayed arrivals and unacknowledged counts.
 - [x] Persist explicit invalidation of missing media cache paths, with compare-and-clear protection for concurrent downloads.
 - [ ] Make Linux opener defaults use automatic capability fallback.
 - [ ] Bound history retention and finish quote jumps after asynchronous loads.

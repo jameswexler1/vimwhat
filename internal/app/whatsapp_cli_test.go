@@ -3232,8 +3232,8 @@ func TestHandleReadReceiptRequestMarksChatReadAfterProtocolSuccess(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListChats() error = %v", err)
 	}
-	if len(chats) != 1 || chats[0].Unread != 0 {
-		t.Fatalf("chats after mark read = %+v, want unread cleared", chats)
+	if len(chats) != 1 || chats[0].Unread != 2 {
+		t.Fatalf("chats after mark read = %+v, want only acknowledged target cleared", chats)
 	}
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.ReadChatID == chatJID && update.Refresh

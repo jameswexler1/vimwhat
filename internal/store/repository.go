@@ -965,6 +965,10 @@ func (s *Store) addMessage(ctx context.Context, message Message, incrementUnread
 	unreadDelta := 0
 	if isNew && incrementUnreadOnNew {
 		unreadDelta = 1
+		if _, err := tx.ExecContext(ctx, `UPDATE messages SET local_unread=1 WHERE id=?`, message.ID); err != nil {
+			_ = tx.Rollback()
+			return false, err
+		}
 	}
 	result, err := tx.ExecContext(
 		ctx,
@@ -1155,7 +1159,15 @@ func (s *Store) ClearChatUnread(ctx context.Context, chatID string) error {
 		return fmt.Errorf("chat id is required")
 	}
 
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET local_unread=0 WHERE chat_id=?`, chatID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
 		UPDATE chats
 		SET unread_count = 0,
 			updated_at = ?
@@ -1167,7 +1179,7 @@ func (s *Store) ClearChatUnread(ctx context.Context, chatID string) error {
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		return fmt.Errorf("chat %s does not exist", chatID)
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) UpsertReaction(ctx context.Context, reaction Reaction) error {

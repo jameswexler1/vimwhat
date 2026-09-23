@@ -177,3 +177,34 @@ func TestMediaInvalidationClearsOnlyMatchingPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestReadAcknowledgementPreservesConcurrentAndOlderArrivals(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	for i, id := range []string{"target", "newer", "late-old"} {
+		if _, err := s.AddIncomingMessage(ctx, Message{ID: id, RemoteID: id, ChatID: "chat", Sender: "Alice", Body: "hello", Timestamp: time.Unix(int64(100-i), 0)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.AcknowledgeReadTargets(ctx, "chat", []string{"target", "target"}); err != nil {
+			t.Fatal(err)
+		}
+		chats, err := s.ListChats(ctx)
+		if err != nil || chats[0].Unread != 2 {
+			t.Fatalf("iteration %d unread=%+v %v", i, chats, err)
+		}
+	}
+	if err := s.ClearChatUnread(ctx, "chat"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddIncomingMessage(ctx, Message{ID: "latest", RemoteID: "latest", ChatID: "chat", Sender: "Alice", Body: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AcknowledgeReadTargets(ctx, "chat", []string{"newer"}); err != nil {
+		t.Fatal(err)
+	}
+	chats, _ := s.ListChats(ctx)
+	if chats[0].Unread != 1 {
+		t.Fatalf("old receipt consumed new unread: %+v", chats)
+	}
+}

@@ -2762,7 +2762,11 @@ func completeReadReceipt(ctx context.Context, db *store.Store, live WhatsAppLive
 		return
 	}
 	storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
-	err := db.ClearChatUnread(storeCtx, chatID)
+	ids := make([]string, 0, len(targets))
+	for _, target := range targets {
+		ids = append(ids, target.RemoteID)
+	}
+	err := db.AcknowledgeReadTargets(storeCtx, chatID, ids)
 	cancelStore()
 	if err != nil {
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{

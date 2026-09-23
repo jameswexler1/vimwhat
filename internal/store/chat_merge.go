@@ -720,6 +720,9 @@ func reindexMessageFTS(ctx context.Context, tx *sql.Tx, message Message) error {
 }
 
 func mergeMessageChildren(ctx context.Context, tx *sql.Tx, oldID, targetID, canonicalID, aliasID string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE messages SET local_unread=MAX(local_unread,COALESCE((SELECT local_unread FROM messages WHERE id=?),0)) WHERE id=?`, oldID, targetID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO media_metadata (
 			message_id, media_kind, mime_type, file_name, size_bytes, local_path,

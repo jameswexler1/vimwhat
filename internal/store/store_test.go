@@ -97,8 +97,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
-	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != 13 {
-		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 migrations=13", stats)
+	if stats.Chats != 2 || stats.Messages != 2 || stats.Drafts != 1 || stats.Contacts != 1 || stats.Participants != 0 || stats.MediaItems != 1 || stats.Migrations != len(migrations) {
+		t.Fatalf("Stats() = %+v, want chats=2 messages=2 drafts=1 contacts=1 participants=0 media=1 and all migrations", stats)
 	}
 
 	snapshot, err := store.LoadSnapshot(ctx, 50)
@@ -2144,8 +2144,8 @@ func TestOpenMigratesVersionOneDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationStatus() error = %v", err)
 	}
-	if len(applied) != 13 || len(pending) != 0 {
-		t.Fatalf("MigrationStatus() applied=%v pending=%v, want thirteen applied and none pending", applied, pending)
+	if len(applied) != len(migrations) || len(pending) != 0 {
+		t.Fatalf("MigrationStatus() applied=%v pending=%v, want all applied and none pending", applied, pending)
 	}
 
 	if err := store.UpsertChat(ctx, Chat{ID: "chat-1", Title: "Alice"}); err != nil {
