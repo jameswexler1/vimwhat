@@ -1262,6 +1262,7 @@ func runStickerSync(
 	cached := 0
 	metadataSynced := 0
 	settingsSynced := 0
+	contactsSynced := 0
 	cacheFailures := 0
 	var cacheErr error
 	var applyErr error
@@ -1269,6 +1270,8 @@ func runStickerSync(
 	for _, event := range events {
 		cacheUsable := false
 		switch event.Kind {
+		case whatsapp.EventContactUpsert:
+			contactsSynced++
 		case whatsapp.EventRecentSticker:
 			event.Sticker = normalizeRecentStickerMetadata(event.Sticker)
 			if cacheFiles {
@@ -1330,13 +1333,13 @@ func runStickerSync(
 	}
 	if err != nil {
 		completion.Update = ui.LiveUpdate{
-			Refresh: metadataSynced > 0 || settingsSynced > 0,
+			Refresh: metadataSynced > 0 || settingsSynced > 0 || contactsSynced > 0,
 			Status:  fmt.Sprintf("sticker sync failed: %s", shortStatusError(err)),
 		}
 		return completion
 	}
 	completion.Update = ui.LiveUpdate{
-		Refresh: metadataSynced > 0 || settingsSynced > 0,
+		Refresh: metadataSynced > 0 || settingsSynced > 0 || contactsSynced > 0,
 		Status:  stickerSyncStatus(cached, metadataSynced, settingsSynced, cacheFailures, cacheErr, errors.Join(syncErr, applyErr)),
 	}
 	return completion

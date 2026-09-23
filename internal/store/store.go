@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"vimwhat/internal/securefs"
@@ -15,6 +16,9 @@ import (
 type Store struct {
 	db   *sql.DB
 	path string
+	// Serialize title resolution with contact writes so either event order,
+	// including concurrent startup imports, produces the same displayed name.
+	titleMu sync.Mutex
 }
 
 type migration struct {

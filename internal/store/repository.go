@@ -52,6 +52,7 @@ func chatPreviewSQL(chatIDExpr string) string {
 }
 
 type ChatUpsertOptions struct {
+	ContactJIDs            []string
 	PreserveUnreadOnUpdate bool
 	PreservePinnedOnUpdate bool
 	PreserveMutedOnUpdate  bool
@@ -510,6 +511,12 @@ func (s *Store) UpsertChatWithOptions(ctx context.Context, chat Chat, options Ch
 }
 
 func (s *Store) UpdateChatTitleIfExists(ctx context.Context, chat Chat) (bool, error) {
+	s.titleMu.Lock()
+	defer s.titleMu.Unlock()
+	return s.updateChatTitleIfExists(ctx, chat)
+}
+
+func (s *Store) updateChatTitleIfExists(ctx context.Context, chat Chat) (bool, error) {
 	if strings.TrimSpace(chat.ID) == "" {
 		return false, fmt.Errorf("chat id is required")
 	}
@@ -542,6 +549,8 @@ func (s *Store) UpdateChatTitleIfExists(ctx context.Context, chat Chat) (bool, e
 }
 
 func (s *Store) upsertChat(ctx context.Context, chat Chat, options ChatUpsertOptions) error {
+	s.titleMu.Lock()
+	defer s.titleMu.Unlock()
 	if strings.TrimSpace(chat.ID) == "" {
 		return fmt.Errorf("chat id is required")
 	}
@@ -555,6 +564,11 @@ func (s *Store) upsertChat(ctx context.Context, chat Chat, options ChatUpsertOpt
 		chat.JID = chat.ID
 	}
 	chat.TitleSource = NormalizeChatTitleSource(chat.TitleSource)
+	var contactErr error
+	chat, contactErr = s.resolveContactTitle(ctx, chat, options.ContactJIDs)
+	if contactErr != nil {
+		return contactErr
+	}
 	if existing, ok, err := s.chatTitleState(ctx, chat.ID); err != nil {
 		return err
 	} else if ok && !shouldReplaceChatTitle(existing, chat) {
@@ -1430,6 +1444,8 @@ func (s *Store) SyncCursor(ctx context.Context, name string) (string, error) {
 }
 
 func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
+	s.titleMu.Lock()
+	defer s.titleMu.Unlock()
 	if strings.TrimSpace(contact.JID) == "" {
 		return fmt.Errorf("contact jid is required")
 	}
@@ -1467,8 +1483,13 @@ func (s *Store) UpsertContact(ctx context.Context, contact Contact) error {
 	if err != nil {
 		return fmt.Errorf("upsert contact %s: %w", contact.JID, err)
 	}
-
-	return nil
+	// Resolve from the merged contact, not just this event's partial fields.
+	chat, err := s.resolveContactTitle(ctx, Chat{ID: contact.JID, JID: contact.JID, Kind: "direct"}, nil)
+	if err != nil || chat.Title == "" {
+		return err
+	}
+	_, err = s.updateChatTitleIfExists(ctx, chat)
+	return err
 }
 
 func (s *Store) Contact(ctx context.Context, jid string) (Contact, error) {

@@ -53,7 +53,7 @@ func (c *Client) cachedContactEvent(ctx context.Context, jid types.JID, info typ
 	if phone == "" && jid.Server == types.DefaultUserServer {
 		phone = jid.User
 	}
-	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, jid, contactPhoneJID(phone))
+	canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, jid, contactPhoneJID(phone))
 	if canonicalChatJID.IsEmpty() {
 		canonicalChatJID = canonicalizableChatJID(jid)
 	}
@@ -64,6 +64,7 @@ func (c *Client) cachedContactEvent(ctx context.Context, jid types.JID, info typ
 	return Event{
 		Kind: EventContactUpsert,
 		Contact: ContactEvent{
+			AliasIDs:    aliases,
 			JID:         jid.String(),
 			ChatID:      canonicalChatJID.String(),
 			DisplayName: displayName,

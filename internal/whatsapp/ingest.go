@@ -33,6 +33,7 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 			LastMessageAt: event.Chat.LastMessageAt,
 		}
 		return ApplyResult{}, i.Store.UpsertChatWithOptions(ctx, chat, store.ChatUpsertOptions{
+			ContactJIDs:            event.Chat.AliasIDs,
 			PreserveUnreadOnUpdate: !event.Chat.UnreadKnown,
 			PreservePinnedOnUpdate: !event.Chat.PinnedKnown,
 			PreserveMutedOnUpdate:  !event.Chat.MutedKnown,
@@ -182,6 +183,16 @@ func (i Ingestor) Apply(ctx context.Context, event Event) (ApplyResult, error) {
 		}
 		if err := i.Store.UpsertContact(ctx, contact); err != nil {
 			return ApplyResult{}, err
+		}
+		for _, jid := range append([]string{event.Contact.ChatID}, event.Contact.AliasIDs...) {
+			if jid == "" || jid == contact.JID {
+				continue
+			}
+			alias := contact
+			alias.JID = jid
+			if err := i.Store.UpsertContact(ctx, alias); err != nil {
+				return ApplyResult{}, err
+			}
 		}
 		title := strings.TrimSpace(event.Contact.DisplayName)
 		source := store.ChatTitleSourceContactDisplay

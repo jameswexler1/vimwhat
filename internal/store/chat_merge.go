@@ -11,6 +11,8 @@ import (
 )
 
 func (s *Store) MergeChatAlias(ctx context.Context, canonicalID, aliasID string) error {
+	s.titleMu.Lock()
+	defer s.titleMu.Unlock()
 	canonicalID = strings.TrimSpace(canonicalID)
 	aliasID = strings.TrimSpace(aliasID)
 	if canonicalID == "" || aliasID == "" || canonicalID == aliasID {

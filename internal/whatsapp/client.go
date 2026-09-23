@@ -1184,6 +1184,8 @@ func (c *Client) SyncRecentStickers(ctx context.Context) ([]Event, error) {
 
 func syncedAppStateEvent(event Event) bool {
 	switch event.Kind {
+	case EventContactUpsert:
+		return true
 	case EventRecentSticker, EventRecentStickerRemove:
 		return true
 	case EventChatUpsert:
@@ -1589,6 +1591,7 @@ type ChatEvent struct {
 }
 
 type ContactEvent struct {
+	AliasIDs    []string
 	JID         string
 	ChatID      string
 	DisplayName string

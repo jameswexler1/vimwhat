@@ -870,7 +870,7 @@ func (c *Client) normalizeContactEvent(ctx context.Context, event *events.Contac
 	if phone == "" && event.JID.Server == types.DefaultUserServer {
 		phone = event.JID.User
 	}
-	canonicalChatJID, _ := c.canonicalChatIdentity(ctx, event.JID, contactPhoneJID(phone))
+	canonicalChatJID, aliases := c.canonicalChatIdentity(ctx, event.JID, contactPhoneJID(phone))
 	if canonicalChatJID.IsEmpty() {
 		canonicalChatJID = canonicalizableChatJID(event.JID)
 	}
@@ -881,6 +881,7 @@ func (c *Client) normalizeContactEvent(ctx context.Context, event *events.Contac
 			ChatID:      canonicalChatJID.String(),
 			DisplayName: displayName,
 			Phone:       phone,
+			AliasIDs:    aliases,
 			UpdatedAt:   event.Timestamp,
 			TitleSource: store.ChatTitleSourceContactDisplay,
 		},

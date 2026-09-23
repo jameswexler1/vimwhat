@@ -2,6 +2,14 @@
 
 ## Current Stage
 
+### Startup sync correction
+
+- [x] Import contact app-state events and resolve saved names regardless of chat/contact event order, including known identity aliases and concurrent imports.
+- [ ] Import initial/recent history with bounded recent-message retention and observable batch completion.
+- [ ] Use incremental app-state sync and reconcile metadata after startup sync.
+- [ ] Restore explicit loading/readiness stages with honest partial/error states and a final snapshot barrier.
+- [ ] Validate Linux tests, vet, race checks, and document the startup behavior.
+
 ### Reliability remediation (September 2026)
 
 The supported product is Linux-only. Each item below is a separate,
