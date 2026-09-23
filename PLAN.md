@@ -20,7 +20,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Default Linux image/video/file openers to auto capability probing; preserve strict explicit command overrides and document the distinction in generated/example config.
 - [x] Bound retained history to eight chats and 400 messages per window, page in both directions, reload around historical focus, and complete pending quote jumps using direct bounded target lookup.
 - [x] Retry initial connection failures with cancellable exponential backoff capped at 30 seconds; keep chats/history/drafts usable during background sync while gating protocol actions until readiness.
-- [ ] Extract composer, outgoing-operation, sync, and history responsibilities.
+- [x] Extract composer persistence/actions, history windows/loading, sync progress/state, live event orchestration, outgoing sends/recovery, and message actions into focused files with regression tests preserved.
 - [ ] Remove Windows support obligations and publish Linux build artifacts.
 
 Schema changes are additive; reverting code must not delete user messages or
