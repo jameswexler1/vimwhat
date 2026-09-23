@@ -2,7 +2,6 @@
 # This file is created on first run and is safe to edit.
 # First-run config is generated automatically at:
 # - Linux: $XDG_CONFIG_HOME/vimwhat/config.toml
-# - Windows: %APPDATA%\vimwhat\config.toml
 # Leave command fields empty to use built-in platform auto defaults.
 # Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.
 # Shift+Enter bindings only work when the terminal reports it distinctly; ctrl+j is the reliable composer newline fallback.

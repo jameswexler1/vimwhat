@@ -17,12 +17,10 @@ import (
 type Backend string
 
 const (
-	BackendAuto              Backend = "auto"
-	BackendNone              Backend = "none"
-	BackendCommand           Backend = "command"
-	BackendLinuxDBus         Backend = "linux-dbus"
-	BackendMacOSAppleScript  Backend = "macos-osascript"
-	BackendWindowsPowerShell Backend = "windows-powershell"
+	BackendAuto      Backend = "auto"
+	BackendNone      Backend = "none"
+	BackendCommand   Backend = "command"
+	BackendLinuxDBus Backend = "linux-dbus"
 )
 
 type Notification struct {
@@ -139,10 +137,6 @@ func (n notifier) Notify(ctx context.Context, note Notification) error {
 		return runCommand(ctx, candidate.name, candidate.args)
 	case BackendLinuxDBus:
 		return sendLinuxDBus(ctx, note)
-	case BackendMacOSAppleScript:
-		return sendMacOSNotification(ctx, note)
-	case BackendWindowsPowerShell:
-		return sendWindowsNotification(ctx, note)
 	case BackendNone, BackendAuto:
 		return fmt.Errorf("notifications are disabled")
 	default:
@@ -160,7 +154,7 @@ func (r Report) Lines() []string {
 		fmt.Sprintf("selected notification backend: %s", valueOrDefault(string(r.Selected), string(BackendNone))),
 		fmt.Sprintf("notification command: %s", valueOrDefault(strings.TrimSpace(r.Command), "none")),
 	}
-	for _, backend := range []Backend{BackendCommand, BackendLinuxDBus, BackendMacOSAppleScript, BackendWindowsPowerShell} {
+	for _, backend := range []Backend{BackendCommand, BackendLinuxDBus} {
 		lines = append(lines, fmt.Sprintf("%s: %s", backend, r.reason(backend)))
 	}
 	lines = append(lines, fmt.Sprintf("notification delivery path: %s", r.deliveryPath()))
@@ -186,10 +180,6 @@ func (r Report) deliveryPath() string {
 		return "configured command override"
 	case BackendLinuxDBus:
 		return "session D-Bus desktop notification"
-	case BackendMacOSAppleScript:
-		return "macOS notification center via osascript"
-	case BackendWindowsPowerShell:
-		return "Windows toast via PowerShell"
 	case BackendNone:
 		return "disabled"
 	default:
@@ -212,12 +202,6 @@ func detect(requested Backend, command string) Report {
 	linuxAvailable, linuxReason := detectLinuxDBus()
 	report.Reasons[BackendLinuxDBus] = linuxReason
 
-	macosAvailable, macosReason := detectMacOS()
-	report.Reasons[BackendMacOSAppleScript] = macosReason
-
-	windowsAvailable, windowsReason := detectWindows()
-	report.Reasons[BackendWindowsPowerShell] = windowsReason
-
 	switch requested {
 	case BackendNone:
 		report.Selected = BackendNone
@@ -229,23 +213,11 @@ func detect(requested Backend, command string) Report {
 		if linuxAvailable {
 			report.Selected = BackendLinuxDBus
 		}
-	case BackendMacOSAppleScript:
-		if macosAvailable {
-			report.Selected = BackendMacOSAppleScript
-		}
-	case BackendWindowsPowerShell:
-		if windowsAvailable {
-			report.Selected = BackendWindowsPowerShell
-		}
 	case BackendAuto:
 		if commandCandidate != nil {
 			report.Selected = BackendCommand
 		} else if linuxAvailable {
 			report.Selected = BackendLinuxDBus
-		} else if macosAvailable {
-			report.Selected = BackendMacOSAppleScript
-		} else if windowsAvailable {
-			report.Selected = BackendWindowsPowerShell
 		}
 	default:
 		report.Selected = BackendNone
@@ -335,10 +307,6 @@ func normalizeBackend(value string) Backend {
 		return BackendCommand
 	case string(BackendLinuxDBus):
 		return BackendLinuxDBus
-	case string(BackendMacOSAppleScript):
-		return BackendMacOSAppleScript
-	case string(BackendWindowsPowerShell):
-		return BackendWindowsPowerShell
 	default:
 		return BackendAuto
 	}

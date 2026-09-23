@@ -24,14 +24,6 @@ func detectLinuxDBus() (bool, string) {
 	return false, "no D-Bus notification helper found in PATH"
 }
 
-func detectMacOS() (bool, string) {
-	return false, fmt.Sprintf("unsupported on %s", runtimeGOOS)
-}
-
-func detectWindows() (bool, string) {
-	return false, fmt.Sprintf("unsupported on %s", runtimeGOOS)
-}
-
 func sendLinuxDBus(ctx context.Context, note Notification) error {
 	if !hasSessionBus() {
 		return fmt.Errorf("session D-Bus not detected")
@@ -100,14 +92,6 @@ func sendLinuxDBus(ctx context.Context, note Notification) error {
 		return fmt.Errorf("notification delivery failed: %s", strings.Join(failures, "; "))
 	}
 	return fmt.Errorf("no D-Bus notification helper found")
-}
-
-func sendMacOSNotification(context.Context, Notification) error {
-	return fmt.Errorf("macOS notifications are unsupported on %s", runtimeGOOS)
-}
-
-func sendWindowsNotification(context.Context, Notification) error {
-	return fmt.Errorf("Windows notifications are unsupported on %s", runtimeGOOS)
 }
 
 func linuxNotificationHelpers() []string {

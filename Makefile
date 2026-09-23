@@ -1,6 +1,6 @@
 GOCACHE ?= /tmp/vimwhat-go-build
 
-.PHONY: run build test test-windows lint
+.PHONY: run build test test-race lint
 
 run:
 	GOCACHE=$(GOCACHE) go run ./cmd/vimwhat
@@ -11,8 +11,8 @@ build:
 test:
 	GOCACHE=$(GOCACHE) go test ./...
 
-test-windows:
-	GOCACHE=$(GOCACHE) GOOS=windows GOARCH=amd64 go test ./... -run '^$$' -exec=true
+test-race:
+	GOCACHE=$(GOCACHE) go test -race ./...
 
 lint:
 	GOCACHE=$(GOCACHE) go vet ./...

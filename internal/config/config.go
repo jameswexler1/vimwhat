@@ -376,12 +376,8 @@ func parseNotificationBackend(value string) (string, error) {
 		return "command", nil
 	case "linux-dbus":
 		return "linux-dbus", nil
-	case "macos-osascript":
-		return "macos-osascript", nil
-	case "windows-powershell":
-		return "windows-powershell", nil
 	default:
-		return "", fmt.Errorf("must be %q, %q, %q, %q, %q, or %q", "auto", "none", "command", "linux-dbus", "macos-osascript", "windows-powershell")
+		return "", fmt.Errorf("must be %q, %q, %q, or %q", "auto", "none", "command", "linux-dbus")
 	}
 }
 

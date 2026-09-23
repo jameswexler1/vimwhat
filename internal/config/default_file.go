@@ -45,7 +45,6 @@ func DefaultFileContent(paths Paths) string {
 	b.WriteString("# This file is created on first run and is safe to edit.\n")
 	b.WriteString("# First-run config is generated automatically at:\n")
 	b.WriteString("# - Linux: $XDG_CONFIG_HOME/vimwhat/config.toml\n")
-	b.WriteString("# - Windows: %APPDATA%\\vimwhat\\config.toml\n")
 	b.WriteString("# Leave command fields empty to use built-in platform auto defaults.\n")
 	b.WriteString("# Key tokens: printable single keys, space, enter, shift+enter, esc, tab, shift+tab, backspace, up, down, ctrl+x, alt+x, alt+enter, and leader sequences.\n")
 	b.WriteString("# Shift+Enter bindings only work when the terminal reports it distinctly; ctrl+j is the reliable composer newline fallback.\n\n")

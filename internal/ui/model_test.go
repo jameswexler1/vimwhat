@@ -2822,7 +2822,7 @@ func TestHelpOverlayRendersModeSpecificKeys(t *testing.T) {
 		"forward focused message",
 		"select, yank, delete, cancel",
 		"forward selected messages",
-		"retry failed media",
+		"retry failed/uncertain message",
 		"retry-message|retry",
 		"delete-message-everybody",
 		"state: mode=normal focus=chats",

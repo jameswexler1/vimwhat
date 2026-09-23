@@ -1,6 +1,6 @@
 # vimwhat
 
-`vimwhat` is a native Linux and Windows vim-centric WhatsApp TUI written in Go. The app is now a DB-first live client: the Bubble Tea interface renders from local SQLite state while a paired `whatsmeow` session connects in the background for live WhatsApp traffic.
+`vimwhat` is a Linux-only vim-centric WhatsApp TUI written in Go. The app is now a DB-first live client: the Bubble Tea interface renders from local SQLite state while a paired `whatsmeow` session connects in the background for live WhatsApp traffic.
 
 The project is still pre-release, but it is no longer just a local shell. Current builds include QR login, live ingestion, lazy history fetch, remote media download, outbound text, single-attachment media send, recent-sticker send, message interactions, desktop notifications, avatar/sticker rendering, and data export helpers.
 
@@ -16,23 +16,31 @@ Implemented:
 - Live WhatsApp bootstrap from a paired session, connection status in the TUI, protocol event ingestion, receipt/status updates, metadata refresh, and DB-first UI refreshes.
 - On-demand remote history fetch for the focused chat, triggered by `:history fetch` or by scrolling above the loaded message window.
 - Remote media download for received images, videos, audio, documents, and stickers, using persisted WhatsApp download descriptors and temp-backed managed caches.
-- Outbound plain text plus one local attachment per message, including quote context, image/video/document captions, generic audio send, audio-caption rejection, `sending`/`sent`/`failed` status updates, and failed-media retry via `R` or `:retry-message`.
+- Outbound plain text plus one local attachment per message, including quote context, image/video/document captions, generic audio send, audio-caption rejection, `sending`/`sent`/`failed`/`uncertain` status updates, and text/media retry via `R` or `:retry-message`.
 - Recent WhatsApp stickers are cached in temporary storage when seen in history/app-state sync, selectable with the configured sticker picker, and sent through WhatsApp as sticker messages rather than image attachments.
 - Message interactions: auto/manual mark-read, reactions send/clear and rendering, own-message edit, own-message delete-for-everyone, inbound edit/revoke ingestion, replies, quote-jump, right-edge reply gesture, and typing presence.
-- Media UI with backend detection for Sixel, Unix `ueberzug++`, `chafa`, native external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through platform defaults or configured commands.
-- Desktop notifications for new incoming messages with native Linux/macOS/Windows backends or an argv-safe command override, with suppression for muted chats, duplicates, outgoing messages, historical imports, reaction-only updates, and the active chat while the app is known to be focused.
+- Media UI with backend detection for `ueberzug++`, `chafa`, and Linux external openers, in-chat image/video/sticker previews, chat avatars, stable overlay pause/resume while scrolling, and focused audio playback through platform defaults or configured commands.
+- Desktop notifications for new incoming messages with Linux desktop backends or an argv-safe command override, with suppression for muted chats, duplicates, outgoing messages, historical imports, reaction-only updates, and the active chat while the app is known to be focused.
 - Demo data commands for local TUI development without a live WhatsApp session.
 - CLI helpers for `media open` and `export chat`.
 
 Known gaps:
 
 - Live validation and polish are still ongoing for notification delivery, media send/download, stickers, avatar refresh, audio fallback behavior, and failed-media retry against real daily WhatsApp usage.
-- Attachment draft persistence across restart or failed async send is not implemented yet.
-- Retry/resend UX for failed text-only messages is not implemented yet.
 - Voice-note/PTT-specific audio send semantics are not implemented beyond the current generic audio/document attachment flow.
 - Calls, channels/newsletters, statuses, community management, and business-only features are outside the current v1 surface.
 
 For more detailed stage notes and upcoming validation work, see `PLAN.md`.
+
+## Reliability and recovery
+
+Draft text, attachments, reply context, and mentions are saved per chat with ordered, debounced writes and a final shutdown flush. Clipboard attachments used in drafts/outgoing sends are retained privately under the data directory. These retained files are not automatically garbage-collected yet.
+
+Interrupted sends are marked `uncertain` (`?`) on startup; no message is silently resent. `R` or `:retry-message` retries failed/uncertain text or media using the original delivery ID. A timeout is not proof of non-delivery—check the conversation before retrying. The legacy configurable binding name `key_normal_retry_failed_media` now covers text too.
+
+Local chats and drafts stay usable during reconnect/sync. Sending remains disabled until catch-up is ready. History retention is bounded to eight chats and 400 messages per window; quote jumps load around their target. Scroll down at a historical window's end to load newer messages, or use the configured go-bottom binding (`G` by default) to return to the newest window.
+
+Image/video/file opener defaults are `auto`: installed candidates are tried in order. Existing explicit command settings remain strict; change old `nsxiv`/`mpv` defaults to `auto` to opt into fallback. Without the optional `yazi` picker, use `:attach <path>`.
 
 ## Requirements
 
@@ -40,12 +48,12 @@ For more detailed stage notes and upcoming validation work, see `PLAN.md`.
 - A WhatsApp account for live mode, paired with `vimwhat login`.
 - Optional external tools improve the experience:
   - Linux: `yazi` for the default attachment picker.
-  - Linux/Windows terminals with support: `chafa` or `img2sixel` for inline media and avatar previews.
+  - `chafa` for text-based inline media and avatar previews.
   - Linux graphical terminals: `ueberzug++` for overlay previews.
-  - Linux/Windows: `ffmpeg` for generated video thumbnails.
+  - Linux: `ffmpeg` for generated video thumbnails.
   - Linux: `mpv`, `nsxiv`, and `xdg-open` for audio/video/image/open fallback commands and the default sticker thumbnail picker.
-  - Linux: `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste. Windows uses native PowerShell/clipboard commands by default.
-  - `notify-send`, `gdbus`, `dbus-send`, `osascript`, or `powershell.exe` for native notifications, depending on OS.
+  - Linux: `wl-copy`/`wl-paste`, `xclip`, or configured equivalents for clipboard image copy/paste.
+  - `notify-send`, `gdbus`, or `dbus-send` for desktop notifications.
 
 ## Quick start
 
@@ -94,7 +102,7 @@ go run ./cmd/vimwhat export chat <jid>
 make run
 make build
 make test
-make test-windows
+make test-race
 make lint
 ```
 
@@ -104,31 +112,18 @@ Equivalent direct Go commands:
 go run ./cmd/vimwhat
 go build ./cmd/vimwhat
 go test ./...
-GOOS=windows GOARCH=amd64 go test ./... -run '^$' -exec=true
+go test -race ./...
 go vet ./...
 go fmt ./...
 ```
 
 The `Makefile` defaults `GOCACHE` to `/tmp/vimwhat-go-build`, which keeps builds working in constrained environments where the normal Go cache path is read-only.
 
-GitHub Actions is configured in `.github/workflows/ci.yml` to run tests, vet, the Windows build-graph check, and to upload `vimwhat-windows-amd64.exe` and `vimwhat-windows-arm64.exe` artifacts from every run. Branch pushes and manual workflow dispatches also update the stable `windows-latest` GitHub release assets.
-
-For a Windows tester who already uses `C:\Users\Otavio\Zap\vimwhat\vimwhat.exe`, this PowerShell snippet updates the binary in place:
-
-```powershell
-$ErrorActionPreference = "Stop"
-$dir = "$env:USERPROFILE\Zap\vimwhat"
-$tmp = Join-Path $env:TEMP "vimwhat.exe"
-New-Item -ItemType Directory -Force $dir | Out-Null
-Invoke-WebRequest "https://github.com/jameswexler1/vimwhat/releases/download/windows-latest/vimwhat-windows-amd64.exe" -OutFile $tmp
-Move-Item -Force $tmp (Join-Path $dir "vimwhat.exe")
-Unblock-File (Join-Path $dir "vimwhat.exe") -ErrorAction SilentlyContinue
-& (Join-Path $dir "vimwhat.exe") doctor
-```
+GitHub Actions runs Linux tests, vet, and race checks, then builds Linux amd64 and arm64 artifacts. Pushing a version tag (`v*`) publishes those binaries and SHA-256 checksums; ordinary branches and pull requests do not publish releases.
 
 ## Runtime state
 
-Runtime state is kept out of the repository. Durable local state is private by default. On Unix-like systems, vimwhat creates and repairs the config/data directories as `0700` and sensitive files such as `config.toml`, `state.sqlite3`, and `whatsapp-session.sqlite3` as `0600`. Transient media, sticker, and preview caches are compatibility-managed because they are passed to external preview, opener, picker, and download helpers. On Windows, vimwhat stores state under the normal per-user AppData locations and relies on inherited per-user ACLs. Run `vimwhat doctor` to see durable-state permission diagnostics.
+Runtime state is kept out of the repository. Durable local state is private by default. On Unix-like systems, vimwhat creates and repairs the config/data directories as `0700` and sensitive files such as `config.toml`, `state.sqlite3`, and `whatsapp-session.sqlite3` as `0600`. Transient media, sticker, and preview caches are compatibility-managed because they are passed to external preview, opener, picker, and download helpers. Run `vimwhat doctor` to see durable-state permission diagnostics.
 
 Linux:
 
@@ -139,18 +134,9 @@ Linux:
 - Non-exported chat media cache: `$TMPDIR/vimwhat-*/media`
 - Generated preview cache: `$TMPDIR/vimwhat-*/preview`
 
-Windows:
-
-- Config: `%APPDATA%\vimwhat\config.toml`
-- App database: `%LOCALAPPDATA%\vimwhat\data\state.sqlite3`
-- WhatsApp session database: `%LOCALAPPDATA%\vimwhat\data\whatsapp-session.sqlite3`
-- Logs/cache root: `%LOCALAPPDATA%\vimwhat\cache\`
-- Non-exported chat media cache: `%TEMP%\vimwhat-*\media`
-- Generated preview cache: `%TEMP%\vimwhat-*\preview`
-
 Do not commit session files, SQLite databases, logs, media caches, or generated preview assets. Existing Unix durable-state files are repaired in place on startup where vimwhat owns the path. Files saved explicitly with the configured save-media key go to the configured downloads directory and are not part of the transient cache.
 
-On first run, `vimwhat` creates the native config file with the full default configuration so it can be edited in place. Linux defaults keep the existing Unix tools; Windows defaults use native PowerShell, clipboard, and shell opener commands. A Linux-oriented baseline is checked in as `config.example.toml`.
+On first run, `vimwhat` creates the native config file with the full default configuration so it can be edited in place. Linux defaults detect installed image/video/file openers. A baseline is checked in as `config.example.toml`.
 
 ## TUI workflow
 
@@ -234,7 +220,7 @@ Useful command-mode actions:
 :filter messages clear
 :sort pinned
 :sort recent
-:preview-backend <auto|sixel|ueberzug++|chafa|external|none>
+:preview-backend <auto|ueberzug++|chafa|external|none>
 :clear-preview-cache
 :quit
 ```
@@ -251,15 +237,15 @@ All TUI action keys are configurable in `config.toml` using flat `key_<mode>_<ac
 
 ## Media and previews
 
-`preview_backend = "auto"` chooses the best available renderer. On Linux the order is Sixel, `ueberzug++`, `chafa`, external opener, none. On Windows the order is Sixel, native external opener, `chafa`, none, so Windows does not default to low-resolution symbol previews when the native opener is available. If Sixel is unavailable but Chafa is installed on Windows, the TUI asks before enabling Chafa as a lower-resolution inline fallback for previews and chat avatars. Images, videos, stickers, and avatars can render inline when a capable backend is selected. Videos use generated thumbnails when `ffmpeg` is available. Audio messages render as compact playback rows and use `audio_player_command`, which defaults to `mpv --no-video --no-terminal --really-quiet {path}` on Linux and the native Windows opener on Windows.
+`preview_backend = "auto"` tries `ueberzug++`, then `chafa`, then an external opener. Images, videos, stickers, and avatars can render inline. Videos use generated thumbnails when `ffmpeg` is available. Audio messages use compact playback rows and the configured `audio_player_command` (default: `mpv --no-video --no-terminal --really-quiet {path}`).
 
 Remote media starts as metadata in SQLite. Opening, previewing, saving, or running `vimwhat media open <message-id>` can download it through the paired WhatsApp session when a download descriptor exists.
 
 ## Emoji and theming
 
-Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` and Windows Terminal/classic Windows console hosts that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
+Emoji rendering defaults to `emoji_mode = "auto"` in `config.toml`. Auto mode preserves full emoji sequences on most UTF-8 terminals, but uses the stable compatibility path for terminals such as `st` that can display emoji glyphs while still misreporting complex emoji cell widths. Set `emoji_mode = "compat"` to force stable degraded rendering, or `emoji_mode = "full"` to force skin tones, ZWJ professions/families, and flags.
 
-On Windows, run `vimwhat doctor` if the TUI looks wrong. It reports the terminal environment variables used for media, emoji, and focus-reporting decisions. Older console hosts may not support all optional terminal features; Windows focus reporting is enabled only for known modern hosts or with `VIMWHAT_FORCE_REPORT_FOCUS=1`.
+
 
 Mode indicator colors default to pywal-derived theme colors:
 
@@ -282,4 +268,4 @@ notification_backend = "auto"
 notification_command = ""
 ```
 
-Supported built-in backend values are `auto`, `none`, `command`, `linux-dbus`, `macos-osascript`, and `windows-powershell`. If `notification_command` is set while `notification_backend = "auto"`, the configured command wins. `notification_command` is treated as an argv template, not as a shell snippet, and supports `{title}`, `{body}`, `{chat}`, `{sender}`, and `{icon}` placeholders. `vimwhat doctor` reports the selected notification path and backend availability.
+Supported built-in backend values are `auto`, `none`, `command`, and `linux-dbus`. If `notification_command` is set while `notification_backend = "auto"`, the configured command wins. `notification_command` is treated as an argv template, not as a shell snippet, and supports `{title}`, `{body}`, `{chat}`, `{sender}`, and `{icon}` placeholders. `vimwhat doctor` reports the selected notification path and backend availability.

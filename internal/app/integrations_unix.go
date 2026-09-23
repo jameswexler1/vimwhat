@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux
 
 package app
 
@@ -20,7 +20,7 @@ func platformClipboardCommands() [][]string {
 		commands = append(commands, []string{"xclip", "-selection", "clipboard"})
 		commands = append(commands, []string{"xsel", "--clipboard", "--input"})
 	}
-	return append(commands, []string{"pbcopy"}, []string{"termux-clipboard-set"})
+	return commands
 }
 
 func platformClipboardPasteCommands() [][]string {
@@ -32,7 +32,7 @@ func platformClipboardPasteCommands() [][]string {
 		commands = append(commands, []string{"xclip", "-selection", "clipboard", "-o"})
 		commands = append(commands, []string{"xsel", "--clipboard", "--output"})
 	}
-	return append(commands, []string{"pbpaste"}, []string{"termux-clipboard-get"})
+	return commands
 }
 
 func platformImagePasteCommands(mediaDir string) []imageClipboardCommand {
@@ -42,10 +42,6 @@ func platformImagePasteCommands(mediaDir string) []imageClipboardCommand {
 	}
 	if os.Getenv("DISPLAY") != "" {
 		commands = append(commands, imageClipboardCommand{argv: []string{"xclip", "-selection", "clipboard", "-t", "image/png", "-o"}})
-	}
-	if _, err := exec.LookPath("pngpaste"); err == nil {
-		target := clipboardImagePath(mediaDir, ".png")
-		commands = append(commands, imageClipboardCommand{argv: []string{"pngpaste", target}, pathMode: true, path: target})
 	}
 	return commands
 }

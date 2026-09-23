@@ -2979,7 +2979,7 @@ func (m Model) renderHelp(width int) string {
 			{Key: key(keys.NormalUnloadPreviews), Action: "hide previews"},
 			{Key: keysFor(keys.NormalReply, keys.NormalFocusRightOrReply), Action: "reply / right-edge reply"},
 			{Key: key(keys.NormalReact), Action: "quick reaction"},
-			{Key: key(keys.NormalRetryFailedMedia), Action: "retry failed media"},
+			{Key: key(keys.NormalRetryFailedMedia), Action: "retry failed/uncertain message"},
 			{Key: key(keys.NormalDeleteForEverybody), Action: "delete for everyone"},
 		},
 	}
