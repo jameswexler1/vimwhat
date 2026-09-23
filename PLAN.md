@@ -26,6 +26,36 @@ Schema changes are additive; reverting code must not delete user messages or
 drafts. Delivery with an uncertain ACK must remain visibly uncertain until
 reconciled or explicitly retried, never silently resent on startup.
 
+### Verification and rollback index
+
+Verified on Linux on 2026-09-23:
+
+- `make test`, `make lint`, and `git diff --check` passed on the final code.
+- `make test-race` passed across all packages; targeted app/UI race tests passed again after the final draft and retry follow-ups.
+- Static Linux amd64 and arm64 builds passed (`CGO_ENABLED=0`, `-trimpath`). The amd64 `version` and fresh-XDG `doctor` smoke checks passed; arm64 was cross-built, not executed.
+- No real-account sending, receipt delivery, notification delivery, or pairing was performed during this remediation. CI/release configuration is committed locally, not remotely run or published.
+
+The starting revision was `706dd85`. Each change can be inspected with `git show <commit>` and reversed with `git revert <commit>`; dependent later edits may require resolving conflicts. Prefer newest-first when rolling back the whole series. The additive unread migration remains in the database when code is reverted.
+
+| Commit | Change |
+| --- | --- |
+| `823d94b` | Remediation plan |
+| `8a19ad9` | Search connection starvation |
+| `9af35d1` | Replay/edit/receipt ordering |
+| `1d95898` | Missing media cache invalidation |
+| `944c3e8` | Late send/composer isolation |
+| `9618cc5` | Full durable drafts and ordered shutdown flush |
+| `3371a63` | Interrupted-send recovery and stable-ID retries |
+| `0e10b3f` | Forwarding payload consistency |
+| `c61426b` | Targeted unread acknowledgements |
+| `5b76da7` | Automatic Linux opener defaults |
+| `30b5775` | Bounded history and quote jumps |
+| `f5e9773` | Startup reconnect and nonblocking sync |
+| `dd59ce4` | Subsystem extraction |
+| `00f0828` | Linux-only support, documentation, and release CI |
+| `a6d5744` | Nonblocking draft writes and attachment lifecycle |
+| `437d367` | Consistent media/sticker retry helpers |
+
 ### Implemented now
 
 - DB-first Linux client with XDG/private state, first-run configuration, SQLite migrations, chat/message/media/contact storage, FTS search, and demo/export/doctor CLI helpers.
