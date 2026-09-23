@@ -113,6 +113,7 @@ func runLogin(env Environment, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintln(stdout, "vimwhat: login complete")
+	fmt.Fprintln(stdout, "vimwhat: paired successfully; start vimwhat to load contacts and recent conversations")
 	return 0
 }
 

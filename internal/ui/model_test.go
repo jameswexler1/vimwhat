@@ -1839,7 +1839,7 @@ func TestSyncFinalizationWaitsForSnapshotApplication(t *testing.T) {
 	}
 }
 
-func TestSyncFinalizationUnblocksAfterRefreshRetriesAreExhausted(t *testing.T) {
+func TestSyncFinalizationRemainsFailedAfterRefreshRetriesAreExhausted(t *testing.T) {
 	reloads := 0
 	model := NewModel(Options{
 		ConnectionState:      ConnectionOnline,
@@ -1875,16 +1875,19 @@ func TestSyncFinalizationUnblocksAfterRefreshRetriesAreExhausted(t *testing.T) {
 	if reloads != 3 {
 		t.Fatalf("reload attempts = %d, want 3", reloads)
 	}
-	if current.syncFinalizePending || !current.protocolReady || !current.syncOverlay.Visible || !current.syncOverlay.Completed {
+	if current.syncFinalizePending || current.protocolReady || !current.startupProgress.Failed || !current.syncBlocksUI() {
 		t.Fatalf("exhausted state = pending:%v ready:%v visible:%v completed:%v", current.syncFinalizePending, current.protocolReady, current.syncOverlay.Visible, current.syncOverlay.Completed)
 	}
-	if view := stripANSI(current.View()); !strings.Contains(view, "Sync completed with a refresh error") {
+	if view := stripANSI(current.View()); !strings.Contains(view, "Final chat refresh failed") {
 		t.Fatalf("refresh failure completion frame missing\n%s", view)
 	}
 
 	cleared, _ := current.Update(syncOverlayDoneMsg{Generation: current.syncOverlay.Generation})
 	if cleared.(Model).syncOverlay.Visible {
 		t.Fatal("refresh failure completion frame remained visible")
+	}
+	if !cleared.(Model).syncBlocksUI() || cleared.(Model).whatsAppReady() {
+		t.Fatal("failed final refresh must not silently unblock the app")
 	}
 }
 

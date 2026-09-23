@@ -160,6 +160,10 @@ func (m Model) renderSyncOverlay(width, height int) string {
 		title = firstNonEmpty(m.syncOverlay.Title, "Still syncing WhatsApp updates")
 		subtitle = firstNonEmpty(m.syncOverlay.Subtitle, "No recent progress; still waiting for WhatsApp to finish.")
 	}
+	if m.startupProgress.Active || m.startupProgress.Failed {
+		title = m.startupProgress.Stage
+		subtitle = m.startupProgress.Detail
+	}
 
 	lines := []string{
 		lipgloss.NewStyle().Foreground(accentFG).Bold(true).Render(truncateDisplay(title, contentWidth)),
@@ -174,6 +178,8 @@ func (m Model) renderSyncOverlay(width, height int) string {
 	if m.syncOverlay.Active || m.syncOverlay.Finalizing {
 		lines = append(lines, "", lipgloss.NewStyle().Foreground(warnFG).Render(truncateDisplay("Input is paused while sync finishes.", contentWidth)))
 	}
+	lines = append(lines, "", wrapPlainText(fmt.Sprintf("%s: browse cached chats (sending disabled)   %s: quit",
+		m.config.Keymap.SyncBrowse, m.config.Keymap.GlobalQuit), contentWidth))
 
 	panel := style.Render(strings.Join(lines, "\n"))
 	return lipgloss.Place(
@@ -2339,6 +2345,14 @@ func (m Model) renderStatus() string {
 		messageFilter = " filter:" + truncateDisplay(m.sanitizeDisplayLine(m.messageFilter), 16)
 	}
 	centerStatus := m.sanitizeDisplayLine(m.status)
+	if m.startupProgress.Active || m.startupProgress.Failed {
+		centerStatus = m.sanitizeDisplayLine(m.startupProgress.Stage)
+	} else if m.syncOverlay.Active {
+		centerStatus = syncProgressStatus(SyncProgressUpdate{
+			Active: true, Title: m.syncOverlay.Title, Total: m.syncOverlay.Total,
+			Processed: m.syncOverlay.Processed, PendingRecovery: m.syncOverlay.PendingRecovery,
+		}, "syncing WhatsApp updates")
+	}
 	center := " " + truncateDisplay(centerStatus, max(8, width/3)) + " "
 	rightText := fmt.Sprintf(" %s/%s%s%s ", chatFilter, sortMode, search, messageFilter)
 	rightCount := " no chats "
@@ -2514,7 +2528,9 @@ func (m Model) connectionStatusText() string {
 	}
 	label := strings.ToUpper(strings.ReplaceAll(string(m.connectionState), "_", " "))
 	if m.connectionState == ConnectionOnline && m.requireOnlineForSend {
-		if m.whatsAppReadyForStatus() {
+		if m.startupProgress.Failed {
+			label = "SYNC FAILED"
+		} else if m.whatsAppReadyForStatus() {
 			label = "READY"
 		} else {
 			label = "SYNCING"
@@ -2524,7 +2540,8 @@ func (m Model) connectionStatusText() string {
 }
 
 func (m Model) whatsAppReadyForStatus() bool {
-	return m.protocolReady && !m.syncOverlay.Active && !m.syncFinalizePending
+	return m.protocolReady && !m.syncOverlay.Active && !m.syncFinalizePending &&
+		!m.startupProgress.Active && !m.startupProgress.Failed
 }
 
 func (m Model) renderNotificationMuteStatus() string {

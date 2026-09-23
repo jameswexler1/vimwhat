@@ -87,6 +87,7 @@ func DefaultFileContent(paths Paths) string {
 		{Name: "key_help_close_alt", Value: cfg.Keymap.HelpCloseAlt},
 	})
 	bindings := KeymapBindings(cfg.Keymap)
+	writeKeyGroup(&b, "Sync screen (cached browsing does not enable sending)", keyBindingsForMode(bindings, KeyModeSync))
 	writeKeyGroup(&b, "Normal mode", keyBindingsForMode(bindings, KeyModeNormal))
 	writeKeyGroup(&b, "Insert mode", keyBindingsForMode(bindings, KeyModeInsert))
 	writeKeyGroup(&b, "Visual mode", keyBindingsForMode(bindings, KeyModeVisual))

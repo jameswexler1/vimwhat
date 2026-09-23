@@ -1,5 +1,6 @@
 package ui
 
 func (m Model) syncBlocksUI() bool {
-	return m.syncOverlay.Visible && !m.backgroundSync
+	return !m.backgroundSync && !m.browseDuringSync &&
+		(m.syncOverlay.Visible || m.startupProgress.Active || m.startupProgress.Failed)
 }

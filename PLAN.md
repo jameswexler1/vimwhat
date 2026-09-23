@@ -7,8 +7,20 @@
 - [x] Import contact app-state events and resolve saved names regardless of chat/contact event order, including known identity aliases and concurrent imports.
 - [x] Import initial/recent chat names and up to 50 newest messages per conversation per batch; retain existing history, keep full-archive message bodies out of the automatic import, and emit ordered batch completion.
 - [x] Use saved app-state versions for incremental sync, enable full-sync events before connection without runtime flag races, and reconcile metadata after app-state sync.
-- [ ] Restore explicit loading/readiness stages with honest partial/error states and a final snapshot barrier.
-- [ ] Validate Linux tests, vet, race checks, and document the startup behavior.
+- [x] Restore blocking loading/readiness stages across contact/app-state, metadata, announced history chunks and catch-up, followed by an atomic final snapshot barrier; errors remain explicit and configurable cached browsing never enables sending.
+- [x] Validate Linux tests, vet, race checks, and document the startup behavior.
+
+Verified on Linux on 2026-09-24: `make test`, `make lint`, full
+`make test-race`, ten repeated startup/order/error test runs, and
+`git diff --check`. Tests use synthetic accounts; real pairing/reconnect
+validation is still required. No private sessions were read or modified.
+The 50-message policy is per automatic conversation batch and affects local
+import, not the protocol library's history download size.
+
+Separate correction commits so far: `2083726` (contact ordering/aliases),
+`2e56273` (initial/recent history), `5e744ba` (incremental app-state),
+and `7c44f34` (cached names/settings reconciliation). The staged-readiness
+change is committed separately as `gate startup on required sync stages and final refresh`.
 
 ### Reliability remediation (September 2026)
 
@@ -26,7 +38,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Persist explicit invalidation of missing media cache paths, with compare-and-clear protection for concurrent downloads.
 - [x] Default Linux image/video/file openers to auto capability probing; preserve strict explicit command overrides and document the distinction in generated/example config.
 - [x] Bound retained history to eight chats and 400 messages per window, page in both directions, reload around historical focus, and complete pending quote jumps using direct bounded target lookup.
-- [x] Retry initial connection failures with cancellable exponential backoff capped at 30 seconds; keep chats/history/drafts usable during background sync while gating protocol actions until readiness.
+- [x] Retry initial connection failures with cancellable exponential backoff capped at 30 seconds; explicit cached browsing during staged sync keeps local chats/drafts usable without enabling protocol actions.
 - [x] Extract composer persistence/actions, history windows/loading, sync progress/state, live event orchestration, outgoing sends/recovery, and message actions into focused files with regression tests preserved.
 - [x] Remove Windows support code/tests/obligations and configure Linux amd64/arm64 CI artifacts plus version-tagged releases.
 
@@ -72,7 +84,7 @@ The starting revision was `706dd85`. Each change can be inspected with `git show
 - Real paired WhatsApp sessions, QR login/logout, live ingestion, canonical PN/LID identity repair, on-demand remote history, metadata sync, remote media/sticker/avatar downloads, and native Linux notifications.
 - Text and single-attachment/sticker sends with durable status, interrupted-send recovery, and explicit same-ID text/media retries. Uncertain delivery is never silently retried.
 - Replay-safe edits/receipts/payloads, transactional forwarded-message queueing, targeted read acknowledgements, and persisted missing-cache invalidation.
-- Bounded history windows and chat retention with direct target lookup; initial reconnect backoff and nonblocking local UI during sync.
+- Bounded history windows and chat retention with direct target lookup; reconnect backoff, blocking staged sync, explicit cached browsing, and persistent readiness/failure indicators.
 - Linux media previews (`ueberzug++` → `chafa` → external), automatic image/video/file opener defaults, argv-safe configurable integrations, clipboard and audio playback.
 - Linux amd64/arm64 CI artifacts; tests, vet, race checks, and version-tag-only release publication with checksums.
 
@@ -279,7 +291,7 @@ The large-chat and title-correctness hardening milestone is implemented:
 - Canonicalize direct chats onto the mapped WhatsApp LID identity when PN/LID aliases are known, and merge split alias threads so one person cannot appear as multiple chats after history sync or mixed-device traffic.
 - Refresh joined group/contact metadata after the live WhatsApp connection comes online, without blocking TUI startup.
 - Display neutral group placeholders when old rows contain phone-like/JID-derived group titles.
-- Debounce live DB snapshot refreshes, consolidate reconnect catch-up as nonblocking background progress and a final snapshot barrier, require WhatsApp's ordered offline-complete marker before readiness, treat pre-marker inactivity only as a stall warning, wait for known post-marker message recoveries with a bounded fallback, summarize catch-up notifications once, and bound message render windows for chats with hundreds of loaded messages.
+- Debounce live DB snapshot refreshes; gate readiness on app-state/contact reconciliation, metadata, announced initial/recent history batches, reconnect catch-up and the final snapshot. Offer cached browsing explicitly, keep progress persistent, report missing markers/recoveries/import failures honestly, summarize catch-up notifications once, and bound message render windows.
 
 The TUI stability and modal polish milestone is implemented:
 

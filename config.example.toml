@@ -45,6 +45,8 @@ key_help_close_alt = "?"
 
 # Normal mode
 key_normal_cancel = "esc"
+# Sync screen only: browse cached chats while loading; sending stays disabled.
+key_sync_browse = "b"
 key_normal_quit = "q"
 key_normal_help = "?"
 key_normal_insert = "i"

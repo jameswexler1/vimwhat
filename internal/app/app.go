@@ -196,7 +196,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 		ConnectionState:      initialConnection,
 		LiveUpdates:          liveUpdateSource,
 		RequireOnlineForSend: liveEnabled,
-		BackgroundSync:       true,
+		BlockLiveStartup:     liveEnabled,
 		PersistMessage: func(outgoing ui.OutgoingMessage) (store.Message, error) {
 			for i, attachment := range outgoing.Attachments {
 				if env.Paths.IsManagedCachePath(attachment.LocalPath) {
@@ -608,6 +608,7 @@ var (
 	databaseImportInactivity   = 750 * time.Millisecond
 	databaseImportMaxDuration  = 60 * time.Second
 	liveStartupSyncSettle      = 1 * time.Second
+	startupSyncTimeout         = 2 * time.Minute
 )
 
 type textSendRequest struct {

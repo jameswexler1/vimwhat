@@ -8,6 +8,7 @@ import (
 
 const (
 	KeyModeGlobal   = "global"
+	KeyModeSync     = "sync"
 	KeyModeHelp     = "help"
 	KeyModeNormal   = "normal"
 	KeyModeInsert   = "insert"
@@ -21,6 +22,7 @@ const (
 
 type Keymap struct {
 	GlobalQuit string
+	SyncBrowse string
 
 	HelpClose    string
 	HelpCloseAlt string
@@ -129,6 +131,7 @@ type KeyBinding struct {
 func DefaultKeymap() Keymap {
 	return Keymap{
 		GlobalQuit: "ctrl+c",
+		SyncBrowse: "b",
 
 		HelpClose:    "esc",
 		HelpCloseAlt: "?",
@@ -231,6 +234,9 @@ func DefaultKeymap() Keymap {
 
 func NormalizeKeymap(input Keymap) Keymap {
 	defaults := DefaultKeymap()
+	if input.SyncBrowse == "" {
+		input.SyncBrowse = defaults.SyncBrowse
+	}
 
 	if input.GlobalQuit == "" {
 		input.GlobalQuit = defaults.GlobalQuit
@@ -508,6 +514,7 @@ func NormalizeKeymap(input Keymap) Keymap {
 
 func KeymapBindings(k Keymap) []KeyBinding {
 	return []KeyBinding{
+		{Name: "key_sync_browse", Mode: KeyModeSync, Value: k.SyncBrowse},
 		{Name: "key_global_quit", Mode: KeyModeGlobal, Value: k.GlobalQuit},
 		{Name: "key_help_close", Mode: KeyModeHelp, Value: k.HelpClose},
 		{Name: "key_help_close_alt", Mode: KeyModeHelp, Value: k.HelpCloseAlt},
@@ -607,6 +614,8 @@ func SetKeyBinding(k *Keymap, name, value string) error {
 	}
 
 	switch name {
+	case "key_sync_browse":
+		k.SyncBrowse = normalized
 	case "key_global_quit":
 		k.GlobalQuit = normalized
 	case "key_help_close":
@@ -884,6 +893,9 @@ func ValidateKeymap(cfg Config) error {
 		if len(tokens) == 0 {
 			return fmt.Errorf("%s: must not be empty", binding.Name)
 		}
+		if binding.Mode == KeyModeSync && len(tokens) != 1 {
+			return fmt.Errorf("%s: sync-screen bindings must be one key", binding.Name)
+		}
 		if tokens[0] == "leader" && !modeSupportsLeader(binding.Mode) {
 			return fmt.Errorf("%s: leader sequences are only supported in normal and visual mode", binding.Name)
 		}
@@ -897,7 +909,7 @@ func ValidateKeymap(cfg Config) error {
 			}
 		}
 		if binding.Mode == KeyModeGlobal {
-			for _, mode := range []string{KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeForward, KeyModeReaction, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
+			for _, mode := range []string{KeyModeSync, KeyModeHelp, KeyModeNormal, KeyModeInsert, KeyModeVisual, KeyModeForward, KeyModeReaction, KeyModeCommand, KeyModeSearch, KeyModeConfirm} {
 				modeBindings[mode] = append(modeBindings[mode], binding)
 			}
 			continue

@@ -33,6 +33,7 @@ func (c *Client) normalizeWhatsmeowEvent(ctx context.Context, evt any) []Event {
 				return []Event{{Kind: EventHistoryProgress, HistoryProgress: HistoryProgressEvent{
 					SyncType: notice.GetSyncType().String(), Chunk: int(notice.GetChunkOrder()),
 					Progress: int(notice.GetProgress()), Pending: true,
+					ProgressKnown: notice.Progress != nil,
 				}}}
 			}
 		}
@@ -309,7 +310,8 @@ func (c *Client) normalizeHistorySyncEvent(ctx context.Context, event *events.Hi
 	}
 	return append(out, Event{Kind: EventHistoryProgress, HistoryProgress: HistoryProgressEvent{
 		SyncType: history.GetSyncType().String(), Chunk: int(history.GetChunkOrder()),
-		Progress: int(history.GetProgress()),
+		Progress:      int(history.GetProgress()),
+		ProgressKnown: history.Progress != nil,
 	}})
 }
 

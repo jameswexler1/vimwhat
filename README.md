@@ -38,7 +38,13 @@ Draft text, attachments, reply context, and mentions are saved per chat with ord
 
 Interrupted sends are marked `uncertain` (`?`) on startup; no message is silently resent. `R` or `:retry-message` retries failed/uncertain text or media using the original delivery ID. A timeout is not proof of non-delivery—check the conversation before retrying. The legacy configurable binding name `key_normal_retry_failed_media` now covers text too.
 
-Local chats and drafts stay usable during reconnect/sync. Sending remains disabled until catch-up is ready. History retention is bounded to eight chats and 400 messages per window; quote jumps load around their target. Scroll down at a historical window's end to load newer messages, or use the configured go-bottom binding (`G` by default) to return to the newest window.
+Startup and reconnect show a loading screen for contacts/settings, name resolution, recent history, catch-up, and the final chat refresh. `login complete` means paired, not fully synchronized. `WA:READY` appears only after required imports and the final refresh succeed. Missing history, metadata failures, and stalled startup are shown explicitly; they do not silently become ready.
+
+Press `b` on the loading screen (`key_sync_browse`) to browse cached chats and edit drafts while syncing. This does not enable sending. Progress remains in the status bar; `WA:SYNC FAILED` means restart the app to retry. `Ctrl+C` quits normally and flushes drafts. Optional avatars and sticker/media downloads do not hold up core readiness.
+
+Automatic initial/recent history imports chat names and up to 50 newest messages per conversation per received batch. Full-archive batches contribute chat metadata, not their message bodies. This is a local import policy: the protocol library may still download larger history payloads. Existing local messages are never pruned by this policy; older remote history is fetched on demand.
+
+The UI keeps at most eight chats and 400 messages per window in memory; quote jumps load around their target. Scroll down at a historical window's end to load newer messages, or use the configured go-bottom binding (`G` by default) to return to the newest window.
 
 Image/video/file opener defaults are `auto`: installed candidates are tried in order. Existing explicit command settings remain strict; change old `nsxiv`/`mpv` defaults to `auto` to opt into fallback. Without the optional `yazi` picker, use `:attach <path>`.
 

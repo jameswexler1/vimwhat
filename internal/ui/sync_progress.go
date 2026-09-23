@@ -74,8 +74,10 @@ func (m Model) handleSyncFinalizeReloadFailure(err error) (Model, tea.Cmd) {
 	m.syncFinalizePending = false
 	m.syncFinalizeNeedsReload = false
 	m.syncFinalizeRetries = 0
-	m.protocolReady = true
+	m.protocolReady = false
 	m.status = fmt.Sprintf("sync applied; final refresh failed: %v", err)
+	m.startupProgress = StartupProgressUpdate{Active: true, Failed: true,
+		Stage: "Final chat refresh failed", Detail: "Updates were stored but could not be displayed. Restart vimwhat to retry."}
 	doneCmd := m.completeSyncOverlay(
 		"Sync completed with a refresh error",
 		"WhatsApp updates were stored, but the final chat view could not be refreshed.",

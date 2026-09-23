@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -32,7 +33,16 @@ func runLiveWhatsApp(
 	appFocusUpdates <-chan bool,
 	visibleChatUpdates <-chan []string,
 ) {
-	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting})
+	sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionConnecting,
+		Startup: &ui.StartupProgressUpdate{Active: true, Stage: "Connecting to WhatsApp", Detail: "Opening the saved session."}})
+	defer func() {
+		if ctx.Err() == nil {
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Startup: &ui.StartupProgressUpdate{
+				Active: true, Failed: true, Stage: "WhatsApp connection stopped",
+				Detail: "Check the connection or login again, then restart vimwhat. Cached chats remain available.",
+			}})
+		}
+	}()
 
 	session, err := openWhatsAppSession(ctx, env)
 	if err != nil {
@@ -68,7 +78,9 @@ func runLiveWhatsApp(
 	}
 
 	if err := retryConnection(liveCtx, live.Connect, func(err error, delay time.Duration) {
-		sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionReconnecting, Status: fmt.Sprintf("connection failed; retry in %s: %s", delay, shortStatusError(err))})
+		detail := fmt.Sprintf("Connection failed; retry in %s: %s", delay, shortStatusError(err))
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{ConnectionState: ui.ConnectionReconnecting, Status: detail,
+			Startup: &ui.StartupProgressUpdate{Active: true, Stage: "Reconnecting to WhatsApp", Detail: detail}})
 	}, waitReconnect); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -154,6 +166,19 @@ func runLiveWhatsApp(
 	historyInflight := map[string]time.Time{}
 	avatarInflight := map[string]bool{}
 	var metadataResults <-chan metadataRefreshResult
+	startup := startupSyncState{}
+	chats, startupErr := env.Store.ListChats(ctx)
+	startup.err = startupErr
+	startup.needInitialHistory = len(chats) == 0
+	if completed, err := env.Store.SyncCursor(ctx, "initial_history_received"); err != nil {
+		startup.err = errors.Join(startup.err, err)
+	} else if completed == "true" {
+		startup.needInitialHistory = false
+	}
+	startupDeadline := time.NewTimer(startupSyncTimeout)
+	defer startupDeadline.Stop()
+	startupDeadlineC := startupDeadline.C
+	var lastStartup ui.StartupProgressUpdate
 	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
@@ -206,7 +231,10 @@ func runLiveWhatsApp(
 	}
 	startStartupSyncTimer()
 	offlineSync := offlineSyncState{}
-	startupAppStateUpdates := startStartupAppStateSync(ctx, env.Store, live, env.Paths, &protocolWG, online)
+	work := startupWork{}
+	work.reset(ctx)
+	defer work.stop()
+	startupAppStateUpdates := startStartupAppStateSync(work.Context, env.Store, live, env.Paths, &protocolWG, online)
 	notifications := notificationGate{Pending: startupAppStateUpdates != nil}
 	var pendingCatchUpSummary map[string]int
 	var offlineSyncIdleTimer *time.Timer
@@ -346,6 +374,9 @@ func runLiveWhatsApp(
 		explicitCatchUp := !offlineSync.implicit
 		summary := maps.Clone(offlineSync.summaryChats)
 		syncUpdate, dirty := offlineSync.finish(event)
+		if syncUpdate.Degraded {
+			startup.err = errors.Join(startup.err, fmt.Errorf("%s", status))
+		}
 		syncUpdate.Finalizing = dirty
 		clearOfflineSyncTimers()
 		protocolReady = true
@@ -377,6 +408,26 @@ func runLiveWhatsApp(
 	defer stopLateReplayTimer()
 	defer stopStartupSyncTimer()
 	for {
+		progress := startup.progress(online && protocolReady && !offlineSync.active)
+		if !progress.Active && !startup.finalized {
+			if startup.sawInitialHistory {
+				if err := env.Store.SetSyncCursor(ctx, "initial_history_received", "true"); err != nil {
+					startup.err = err
+					continue
+				}
+			}
+			startup.finalized = true
+			startupDeadline.Stop()
+			startupDeadlineC = nil
+			// Reload after all required streams, even if catch-up already
+			// refreshed an earlier, incomplete snapshot.
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true, Startup: &progress,
+				Sync: &ui.SyncProgressUpdate{Finalizing: true, Title: "Finalizing account", Subtitle: "Refreshing chats after contacts and recent history."}})
+			lastStartup = progress
+		} else if progress != lastStartup {
+			sendLiveUpdate(ctx, updates, ui.LiveUpdate{Startup: &progress})
+			lastStartup = progress
+		}
 		select {
 		case result := <-stickerCacheResults:
 			if result.Err != nil {
@@ -410,12 +461,34 @@ func runLiveWhatsApp(
 				return
 			}
 			viewState = drainPendingLiveViewState(ctx, avatarJobs, avatarInflight, activeChatUpdates, appFocusUpdates, visibleChatUpdates, viewState)
+			if event.Kind == whatsapp.EventHistoryProgress {
+				startup.history(event.HistoryProgress)
+				if !startup.ready() && startupDeadlineC == nil {
+					startupDeadline.Reset(startupSyncTimeout)
+					startupDeadlineC = startupDeadline.C
+				}
+				continue
+			}
 			if event.Kind == whatsapp.EventConnectionState {
 				wasOnline := online
 				online = event.Connection.State == whatsapp.ConnectionOnline
 				if online {
 					if !wasOnline {
 						connectionCatchUpStartedAt = time.Now()
+						startup.finalized = false
+						startup.pending = nil
+						startup.completed = nil
+						startup.partialTypes = nil
+						startup.progressByType = nil
+						startup.appStateDone = false
+						startup.metadataDone = false
+						startup.err = nil
+						work.reset(ctx)
+						metadataResults = nil
+						startupAppStateUpdates = startStartupAppStateSync(work.Context, env.Store, live, env.Paths, &protocolWG, true)
+						notifications.Pending = true
+						startupDeadline.Reset(startupSyncTimeout)
+						startupDeadlineC = startupDeadline.C
 					}
 					connectionReplayGuard = false
 					protocolReady = false
@@ -589,6 +662,7 @@ func runLiveWhatsApp(
 				sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 					Status: fmt.Sprintf("whatsapp ingest failed: %s", shortStatusError(err)),
 				})
+				startup.err = fmt.Errorf("message import failed: %w", err)
 				continue
 			}
 			offlineSync.addSummary(result)
@@ -660,57 +734,59 @@ func runLiveWhatsApp(
 			if !ok {
 				return
 			}
-			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online && protocolReady, chatID)
+			handleHistoryRequest(ctx, env.Store, live, updates, historyInflight, online && protocolReady && startup.ready(), chatID)
 		case request, ok := <-textSendRequests:
 			if !ok {
 				return
 			}
-			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleTextSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-mediaSendRequests:
 			if !ok {
 				return
 			}
-			handleMediaSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleMediaSendRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-readReceiptRequests:
 			if !ok {
 				return
 			}
-			handleReadReceiptRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleReadReceiptRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-reactionRequests:
 			if !ok {
 				return
 			}
-			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleReactionRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-deleteEveryoneRequests:
 			if !ok {
 				return
 			}
-			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleDeleteEveryoneRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-editMessageRequests:
 			if !ok {
 				return
 			}
-			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleEditMessageRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-forwardRequests:
 			if !ok {
 				return
 			}
-			handleForwardMessagesRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady, request)
+			handleForwardMessagesRequest(ctx, env.Store, live, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case request, ok := <-presenceRequests:
 			if !ok {
 				return
 			}
-			handlePresenceRequest(ctx, live, online && protocolReady, request)
+			handlePresenceRequest(ctx, live, online && protocolReady && startup.ready(), request)
 		case request, ok := <-presenceSubscribeRequests:
 			if !ok {
 				return
 			}
-			handlePresenceSubscribeRequest(ctx, live, online && protocolReady, request)
+			handlePresenceSubscribeRequest(ctx, live, online && protocolReady && startup.ready(), request)
 		case result, ok := <-metadataResults:
 			if ok {
+				startup.err = errors.Join(startup.err, result.Err)
 				ingested := 0
 				for _, event := range result.Events {
 					if _, err := ingestor.Apply(ctx, event); err != nil {
+						startup.err = errors.Join(startup.err, err)
 						sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 							Status: fmt.Sprintf("metadata ingest failed: %s", shortStatusError(err)),
 						})
@@ -731,6 +807,7 @@ func runLiveWhatsApp(
 				}
 			}
 			metadataResults = nil
+			startup.metadataDone = true
 		case startupUpdate, ok := <-startupAppStateUpdates:
 			if !ok {
 				startupAppStateUpdates = nil
@@ -744,8 +821,11 @@ func runLiveWhatsApp(
 				continue
 			}
 			if startupUpdate.Done {
+				startup.appStateDone = true
+				startup.err = errors.Join(startup.err, startupUpdate.Err)
 				// Reconcile after the protocol contact cache is populated.
-				metadataResults = refreshChatMetadata(ctx, live)
+				metadataResults = refreshChatMetadata(work.Context, live)
+				startup.metadataDone = metadataResults == nil
 				notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
 				if len(pendingCatchUpSummary) > 0 {
 					queueCatchUpSummary(context.Background(), env.Store, notificationJobs, viewState, pendingCatchUpSummary)
@@ -764,12 +844,12 @@ func runLiveWhatsApp(
 			if !ok {
 				return
 			}
-			enqueueMediaDownload(ctx, downloadJobs, online && protocolReady, request)
+			enqueueMediaDownload(ctx, downloadJobs, online && protocolReady && startup.ready(), request)
 		case request, ok := <-stickerSyncRequests:
 			if !ok {
 				return
 			}
-			handleStickerSyncRequest(ctx, env.Store, live, env.Paths, updates, &protocolWG, online && protocolReady, request)
+			handleStickerSyncRequest(ctx, env.Store, live, env.Paths, updates, &protocolWG, online && protocolReady && startup.ready(), request)
 		case chatID, ok := <-activeChatUpdates:
 			if !ok {
 				activeChatUpdates = nil
@@ -878,6 +958,12 @@ func runLiveWhatsApp(
 				ProtocolReady: readyValue(true),
 				Sync:          &ui.SyncProgressUpdate{},
 			})
+		case <-startupDeadlineC:
+			startupDeadlineC = nil
+			if !startup.ready() || !protocolReady || offlineSync.active {
+				stage := startup.progress(protocolReady && !offlineSync.active)
+				startup.err = fmt.Errorf("timed out: %s", stage.Stage)
+			}
 		case <-ctx.Done():
 			return
 		}

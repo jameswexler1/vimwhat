@@ -50,6 +50,7 @@ const (
 )
 
 type LiveUpdate struct {
+	Startup         *StartupProgressUpdate
 	ConnectionState ConnectionState
 	ProtocolReady   *bool
 	Status          string
@@ -76,6 +77,13 @@ type SyncProgressUpdate struct {
 	Notifications   int
 	Receipts        int
 	PendingRecovery int
+}
+
+type StartupProgressUpdate struct {
+	Active bool
+	Failed bool
+	Stage  string
+	Detail string
 }
 
 type PresenceUpdate struct {
@@ -585,6 +593,8 @@ type Model struct {
 	historyRequestedByChat           map[string]bool
 	syncOverlay                      syncOverlayState
 	backgroundSync                   bool
+	startupProgress                  StartupProgressUpdate
+	browseDuringSync                 bool
 	syncFinalizePending              bool
 	syncFinalizeNeedsReload          bool
 	syncFinalizeRetries              int
@@ -860,6 +870,9 @@ func (m Model) waitForLiveUpdateCmd() tea.Cmd {
 
 func (m Model) handleLiveUpdate(update LiveUpdate) (Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if update.Startup != nil {
+		m.startupProgress = *update.Startup
+	}
 	if update.ConnectionState != "" {
 		previous := m.connectionState
 		m.connectionState = update.ConnectionState
@@ -1727,6 +1740,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleInlineFallbackPrompt(msg)
 	}
 	if m.syncBlocksUI() {
+		if m.keyMatches(msg, m.config.Keymap.SyncBrowse) {
+			m.browseDuringSync = true
+			m.status = "browsing cached chats; messaging waits for sync"
+		}
 		return m, nil
 	}
 	if m.leaderPending {

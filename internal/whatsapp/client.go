@@ -1565,10 +1565,11 @@ type Event struct {
 // A downloaded batch is complete only after all its normalized events have
 // passed through the ordered ingestion queue.
 type HistoryProgressEvent struct {
-	SyncType string
-	Chunk    int
-	Progress int
-	Pending  bool
+	SyncType      string
+	Chunk         int
+	Progress      int
+	Pending       bool
+	ProgressKnown bool
 }
 
 type ApplyResult struct {
