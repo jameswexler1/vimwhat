@@ -4,6 +4,7 @@ import (
 	"errors"
 	tea "github.com/charmbracelet/bubbletea"
 	"testing"
+	"time"
 	"vimwhat/internal/store"
 )
 
@@ -48,6 +49,35 @@ func TestComposerCoordinatorDiscardsStaleSaves(t *testing.T) {
 	}
 	if saved != "new" {
 		t.Fatalf("saved %q", saved)
+	}
+}
+
+func TestComposerReservationDoesNotWaitForDiskWrite(t *testing.T) {
+	d := &draftCoordinator{latest: map[string]draftTicket{}}
+	first := d.reserve("a", store.ComposerDraft{Body: "old"})
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = d.save(first, func(string, store.ComposerDraft) error { close(started); <-release; return nil })
+	}()
+	<-started
+	reserved := make(chan struct{})
+	go func() { d.reserve("a", store.ComposerDraft{Body: "new"}); close(reserved) }()
+	select {
+	case <-reserved:
+	case <-time.After(time.Second):
+		close(release)
+		<-done
+		t.Fatal("typing blocked behind draft IO")
+	}
+	close(release)
+	<-done
+	var saved string
+	if err := d.flush(func(_ string, draft store.ComposerDraft) error { saved = draft.Body; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if saved != "new" {
+		t.Fatalf("final save=%q", saved)
 	}
 }
 

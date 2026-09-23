@@ -21,9 +21,10 @@ type draftDebouncedMsg struct{ Ticket draftTicket }
 // Commands may execute in any order. The coordinator gives each requested save
 // a revision and serializes callbacks, including the final shutdown flush.
 type draftCoordinator struct {
-	mu     sync.Mutex
-	next   uint64
-	latest map[string]draftTicket
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	next    uint64
+	latest  map[string]draftTicket
 }
 
 func (d *draftCoordinator) reserve(chatID string, draft store.ComposerDraft) draftTicket {
@@ -36,9 +37,12 @@ func (d *draftCoordinator) reserve(chatID string, draft store.ComposerDraft) dra
 }
 
 func (d *draftCoordinator) save(ticket draftTicket, save func(string, store.ComposerDraft) error) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.latest[ticket.ChatID].Revision != ticket.Revision {
+	current := d.latest[ticket.ChatID].Revision == ticket.Revision
+	d.mu.Unlock()
+	if !current {
 		return nil
 	}
 	return save(ticket.ChatID, cloneComposerDraft(ticket.Draft))
@@ -46,10 +50,14 @@ func (d *draftCoordinator) save(ticket draftTicket, save func(string, store.Comp
 
 func (d *draftCoordinator) flush(save func(string, store.ComposerDraft) error) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	var errs []error
+	tickets := make([]draftTicket, 0, len(d.latest))
 	for _, ticket := range d.latest {
-		errs = append(errs, save(ticket.ChatID, cloneComposerDraft(ticket.Draft)))
+		tickets = append(tickets, ticket)
+	}
+	d.mu.Unlock()
+	var errs []error
+	for _, ticket := range tickets {
+		errs = append(errs, d.save(ticket, save))
 	}
 	return errors.Join(errs...)
 }

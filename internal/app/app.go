@@ -396,9 +396,7 @@ func runTUI(env Environment, stderr io.Writer) int {
 			defer cancelStore()
 			return env.Store.SaveDraft(storeCtx, chatID, body)
 		},
-		SaveComposerDraft: func(chatID string, draft store.ComposerDraft) error {
-			return persistComposerDraft(env, chatID, draft)
-		},
+		SaveComposerDraft: newComposerDraftSaver(env),
 		SearchChats: func(query string) ([]store.Chat, error) {
 			storeCtx, cancelStore := uiStoreReadContext()
 			defer cancelStore()

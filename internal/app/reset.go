@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"vimwhat/internal/config"
@@ -25,6 +26,7 @@ func clearLocalState(env Environment) error {
 	}
 
 	for _, path := range uniqueNonEmptyPaths(
+		retainedAttachmentsDir(env.Paths),
 		env.Paths.AvatarCacheDir,
 		env.Paths.MediaDir,
 		env.Paths.PreviewCacheDir,
@@ -41,6 +43,13 @@ func clearLocalState(env Environment) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func retainedAttachmentsDir(paths config.Paths) string {
+	if strings.TrimSpace(paths.DataDir) == "" {
+		return ""
+	}
+	return filepath.Join(paths.DataDir, "attachments")
 }
 
 func removeSQLiteArtifacts(path string) error {

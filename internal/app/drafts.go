@@ -6,21 +6,54 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
 	"vimwhat/internal/securefs"
 	"vimwhat/internal/store"
 )
 
-func persistComposerDraft(env Environment, chatID string, draft store.ComposerDraft) error {
+type retainedDraftFile struct {
+	path     string
+	size     int64
+	modified time.Time
+}
+
+func newComposerDraftSaver(env Environment) func(string, store.ComposerDraft) error {
+	var mu sync.Mutex
+	retained := map[string]retainedDraftFile{}
+	return func(chatID string, draft store.ComposerDraft) error {
+		mu.Lock()
+		defer mu.Unlock()
+		return persistComposerDraft(env, chatID, draft, retained)
+	}
+}
+
+func persistComposerDraft(env Environment, chatID string, draft store.ComposerDraft, retained map[string]retainedDraftFile) error {
+	draft.Media = slices.Clone(draft.Media)
 	// Clipboard attachments in the transient cache must survive a reboot too.
 	for i, item := range draft.Media {
 		if item.LocalPath == "" || !env.Paths.IsManagedCachePath(item.LocalPath) {
 			continue
+		}
+		info, err := os.Stat(item.LocalPath)
+		if err != nil {
+			return err
+		}
+		if previous, ok := retained[item.LocalPath]; ok && previous.size == info.Size() && previous.modified.Equal(info.ModTime()) {
+			if _, err := os.Stat(previous.path); err == nil {
+				draft.Media[i].LocalPath = previous.path
+				continue
+			}
 		}
 		path, err := retainDraftAttachment(env.Paths.DataDir, item.LocalPath)
 		if err != nil {
 			return err
 		}
 		draft.Media[i].LocalPath = path
+		retained[item.LocalPath] = retainedDraftFile{path: path, size: info.Size(), modified: info.ModTime()}
 	}
 	ctx, cancel := uiStoreWriteContext()
 	defer cancel()
@@ -28,6 +61,9 @@ func persistComposerDraft(env Environment, chatID string, draft store.ComposerDr
 }
 
 func retainDraftAttachment(dataDir, source string) (string, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return "", fmt.Errorf("durable attachment directory is required")
+	}
 	dir := filepath.Join(dataDir, "attachments")
 	if err := securefs.EnsurePrivateDir(dir); err != nil {
 		return "", err

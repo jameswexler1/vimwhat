@@ -34,7 +34,7 @@ For more detailed stage notes and upcoming validation work, see `PLAN.md`.
 
 ## Reliability and recovery
 
-Draft text, attachments, reply context, and mentions are saved per chat with ordered, debounced writes and a final shutdown flush. Clipboard attachments used in drafts/outgoing sends are retained privately under the data directory. These retained files are not automatically garbage-collected yet.
+Draft text, attachments, reply context, and mentions are saved per chat with ordered, debounced writes and a final shutdown flush. Clipboard attachments used in drafts/outgoing sends are retained privately under the data directory. These retained files are cleared on explicit logout but are not automatically garbage-collected yet.
 
 Interrupted sends are marked `uncertain` (`?`) on startup; no message is silently resent. `R` or `:retry-message` retries failed/uncertain text or media using the original delivery ID. A timeout is not proof of non-delivery—check the conversation before retrying. The legacy configurable binding name `key_normal_retry_failed_media` now covers text too.
 

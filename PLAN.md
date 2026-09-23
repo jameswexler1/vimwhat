@@ -11,7 +11,7 @@ validation. No live account traffic is required for automated validation.
 - [x] Isolate failed-send recovery by chat and composer version; late protocol failures retain content on failed messages without overwriting drafts.
 - [x] Release search cursors before loading message details (boundary tests cover fewer, exactly, and more than the result limit).
 - [x] Preserve newer edits and monotonic receipts during replay, alias merges, and send ACKs; serialize receipt comparisons with writes.
-- [x] Persist complete composer drafts, serialize revisioned saves, retain transient attachments in private durable storage, and flush on shutdown.
+- [x] Persist complete composer drafts, serialize revisioned saves without blocking UI reservations on disk I/O, reuse private retained attachment copies, clear them on explicit logout, and flush on shutdown.
 - [x] Recover interrupted outgoing rows as uncertain (never auto-resend); settle cancellation with an independent bounded context and retry text/media using the original delivery ID with atomic duplicate-retry protection.
 - [x] Persist local text/media/sticker forwarding payloads, queue forwarded payloads atomically, and rewrite edited text/captions transactionally without allowing late ACKs to replace newer content.
 - [x] Track local unread messages with an additive migration; acknowledgements idempotently clear only their targets and preserve concurrent/delayed arrivals and unacknowledged counts.
