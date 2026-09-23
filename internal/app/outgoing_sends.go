@@ -467,6 +467,7 @@ func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.M
 			return mediaSendRequest{}, err
 		}
 		request := mediaSendRequest{
+			RetryID: message.ID,
 			Context: ctx,
 			ChatID:  retryChatID(message),
 			Sticker: &sticker,
@@ -484,6 +485,7 @@ func retryMediaSendRequest(ctx context.Context, db *store.Store, message store.M
 		return mediaSendRequest{}, err
 	}
 	request := mediaSendRequest{
+		RetryID:     message.ID,
 		Context:     ctx,
 		ChatID:      retryChatID(message),
 		Body:        strings.TrimSpace(message.Body),

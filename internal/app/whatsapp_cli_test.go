@@ -3062,11 +3062,11 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 	if queued.Err != nil {
 		t.Fatalf("queued retry error = %v", queued.Err)
 	}
-	if queued.Message.ID == failed.ID {
-		t.Fatal("queued retry reused the failed message id")
+	if queued.Message.ID != failed.ID {
+		t.Fatal("queued retry did not reuse the failed message id")
 	}
 	sent := <-session.mediaSends
-	if sent.ChatJID != chatJID || sent.Caption != "@222 retry caption" || sent.LocalPath != attachmentPath {
+	if sent.ChatJID != chatJID || sent.Caption != "@222 retry caption" || sent.LocalPath != attachmentPath || sent.RemoteID != failed.RemoteID {
 		t.Fatalf("media request = %+v, want chat/caption/path preserved", sent)
 	}
 	if sent.QuotedRemoteID != quoted.RemoteID || sent.QuotedSenderJID != quoted.SenderJID || sent.QuotedMessageBody != quoted.Body {
@@ -3076,18 +3076,15 @@ func TestRetryMediaSendRequestBuildsQueuedRetryFromFailedMessage(t *testing.T) {
 		t.Fatalf("retry mentions = %+v, want preserved mention", sent.MentionedJIDs)
 	}
 
-	messages := waitForStoredMessages(t, db, chatJID, 3)
-	if len(messages) != 3 {
-		t.Fatalf("messages = %+v, want quoted source plus original failed row plus retry row", messages)
+	messages := waitForStoredMessages(t, db, chatJID, 2)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %+v, want quoted source plus original retried row", messages)
 	}
-	if messages[1].ID != failed.ID || messages[1].Status != "failed" {
-		t.Fatalf("original message = %+v, want unchanged failed row", messages[1])
+	if messages[1].ID != failed.ID || messages[1].Status != "sent" {
+		t.Fatalf("retry message = %+v, want original row marked sent", messages[1])
 	}
-	if messages[2].ID != queued.Message.ID || messages[2].Status != "sent" {
-		t.Fatalf("retry message = %+v, want new sent row", messages[2])
-	}
-	if len(messages[2].Mentions) != 1 || messages[2].Mentions[0].JID != "222@s.whatsapp.net" {
-		t.Fatalf("retry message mentions = %+v, want preserved mention", messages[2].Mentions)
+	if len(messages[1].Mentions) != 1 || messages[1].Mentions[0].JID != "222@s.whatsapp.net" {
+		t.Fatalf("retry message mentions = %+v, want preserved mention", messages[1].Mentions)
 	}
 }
 
@@ -3153,11 +3150,11 @@ func TestRetryMediaSendRequestUsesStickerSendForFailedSticker(t *testing.T) {
 		t.Fatalf("queued sticker retry error = %v", queued.Err)
 	}
 	sent := <-session.stickerSends
-	if sent.ChatJID != chatJID || sent.LocalPath != stickerPath || sent.RemoteID != "retry-sticker-1" {
+	if sent.ChatJID != chatJID || sent.LocalPath != stickerPath || sent.RemoteID != failed.RemoteID {
 		t.Fatalf("sticker retry request = %+v", sent)
 	}
-	messages := waitForStoredMessages(t, db, chatJID, 2)
-	if messages[0].ID != failed.ID || messages[0].Status != "failed" || messages[1].ID != queued.Message.ID || messages[1].Status != "sent" {
+	messages := waitForStoredMessages(t, db, chatJID, 1)
+	if len(messages) != 1 || messages[0].ID != failed.ID || messages[0].Status != "sent" {
 		t.Fatalf("messages after sticker retry = %+v", messages)
 	}
 }
