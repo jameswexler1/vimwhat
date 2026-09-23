@@ -893,6 +893,7 @@ type stickerSyncCompletion struct {
 
 type startupAppStateUpdate struct {
 	Done   bool
+	Err    error
 	Update ui.LiveUpdate
 }
 
@@ -1164,6 +1165,7 @@ func startStartupAppStateSync(ctx context.Context, db *store.Store, live WhatsAp
 		completion := runStickerSync(ctx, db, live, paths, request, false)
 		sendStartupAppStateUpdate(ctx, out, startupAppStateUpdate{
 			Done:   true,
+			Err:    completion.Result.Err,
 			Update: completion.Update,
 		})
 		if len(completion.StickerEvents) == 0 {

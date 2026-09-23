@@ -259,6 +259,9 @@ func TestOpenSessionCreatesUnpairedStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSession() error = %v", err)
 	}
+	if !client.client.EmitAppStateEventsOnFullSync {
+		t.Fatal("initial contact events must be enabled before connecting")
+	}
 	if client.IsLoggedIn() {
 		t.Fatalf("new session reports logged in")
 	}

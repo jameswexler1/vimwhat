@@ -2,6 +2,7 @@ package whatsapp
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -15,7 +16,8 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 		return nil, ErrClientNotOpen
 	}
 
-	var out []Event
+	// Read cached contacts before a potentially slow remote group request.
+	out, contactErr := c.cachedContacts(ctx)
 	groups, groupErr := c.client.GetJoinedGroups(ctx)
 	for _, group := range groups {
 		if group == nil || group.JID.IsEmpty() {
@@ -24,6 +26,11 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 		out = append(out, c.normalizeFullGroupInfoEvent(ctx, group, true)...)
 	}
 
+	return out, errors.Join(contactErr, groupErr)
+}
+
+func (c *Client) cachedContacts(ctx context.Context) ([]Event, error) {
+	var out []Event
 	if c.client.Store != nil && c.client.Store.Contacts != nil {
 		contacts, err := c.client.Store.Contacts.GetAllContacts(ctx)
 		if err == nil {
@@ -32,12 +39,12 @@ func (c *Client) RefreshChatMetadata(ctx context.Context) ([]Event, error) {
 					out = append(out, event)
 				}
 			}
-		} else if groupErr == nil {
-			groupErr = err
+		} else {
+			return out, err
 		}
 	}
 
-	return out, groupErr
+	return out, nil
 }
 
 func (c *Client) cachedContactEvent(ctx context.Context, jid types.JID, info types.ContactInfo) (Event, bool) {

@@ -153,7 +153,7 @@ func runLiveWhatsApp(
 	ingestor := whatsapp.Ingestor{Store: env.Store}
 	historyInflight := map[string]time.Time{}
 	avatarInflight := map[string]bool{}
-	metadataResults := refreshChatMetadata(ctx, live)
+	var metadataResults <-chan metadataRefreshResult
 	viewState := notificationContext{}
 	online := true
 	pendingPreferredChatID := ""
@@ -744,6 +744,8 @@ func runLiveWhatsApp(
 				continue
 			}
 			if startupUpdate.Done {
+				// Reconcile after the protocol contact cache is populated.
+				metadataResults = refreshChatMetadata(ctx, live)
 				notifications.Flush(context.Background(), env.Store, notificationJobs, updates, avatarJobs, avatarInflight)
 				if len(pendingCatchUpSummary) > 0 {
 					queueCatchUpSummary(context.Background(), env.Store, notificationJobs, viewState, pendingCatchUpSummary)

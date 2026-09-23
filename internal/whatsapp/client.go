@@ -141,8 +141,11 @@ func OpenSession(ctx context.Context, sessionPath string) (*Client, error) {
 		return nil, fmt.Errorf("open whatsapp device store: %w", err)
 	}
 
+	protocol := whatsmeow.NewClient(deviceStore, nil)
+	// Set once before connection, never concurrently with protocol workers.
+	protocol.EmitAppStateEventsOnFullSync = true
 	return &Client{
-		client:    whatsmeow.NewClient(deviceStore, nil),
+		client:    protocol,
 		container: container,
 	}, nil
 }
@@ -1142,16 +1145,11 @@ func (c *Client) SyncAppState(ctx context.Context) ([]Event, error) {
 		return nil, ErrClientNotOpen
 	}
 
-	previousEmitFullSync := c.client.EmitAppStateEventsOnFullSync
-	c.client.EmitAppStateEventsOnFullSync = true
-	defer func() {
-		c.client.EmitAppStateEventsOnFullSync = previousEmitFullSync
-	}()
-
 	var out []Event
 	var syncErr error
 	for _, name := range stickerAppStatePatchNames {
-		rawEvents, err := c.client.DangerousInternals().FetchAppState(ctx, name, true, false)
+		// Version zero bootstraps automatically; otherwise fetch only deltas.
+		rawEvents, err := c.client.DangerousInternals().FetchAppState(ctx, name, false, false)
 		if err != nil {
 			if ctx.Err() != nil {
 				return out, ctx.Err()
