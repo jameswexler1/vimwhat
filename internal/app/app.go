@@ -2145,7 +2145,6 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
 		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
-		_ = db.SaveDraft(storeCtx, message.ChatID, body)
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,
@@ -2364,7 +2363,6 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
 		_ = db.UpdateMessageStatus(storeCtx, message.ID, "failed")
-		_ = db.SaveDraft(storeCtx, message.ChatID, message.Body)
 		cancelStore()
 		sendLiveUpdate(ctx, updates, ui.LiveUpdate{
 			Refresh: true,

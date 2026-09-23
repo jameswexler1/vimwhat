@@ -9,7 +9,7 @@ will be reconciled in the platform cleanup. Each item below is a separate,
 revertible commit, with focused regression tests and final Linux tests/vet/race
 validation. No live account traffic is required for automated validation.
 
-- [ ] Isolate failed-send recovery by chat and preserve newer drafts.
+- [x] Isolate failed-send recovery by chat and composer version; late protocol failures retain content on failed messages without overwriting drafts.
 - [x] Release search cursors before loading message details (boundary tests cover fewer, exactly, and more than the result limit).
 - [x] Preserve newer edits and monotonic receipts during replay, alias merges, and send ACKs; serialize receipt comparisons with writes.
 - [ ] Persist complete composer drafts, order saves, and flush on shutdown.

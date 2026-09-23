@@ -170,12 +170,13 @@ type StickerPickedMsg struct {
 }
 
 type outgoingMessagePersistedMsg struct {
-	TempID      string
-	ChatID      string
-	Message     store.Message
-	DraftBody   string
-	Attachments []Attachment
-	Err         error
+	ComposerVersion uint64
+	TempID          string
+	ChatID          string
+	Message         store.Message
+	DraftBody       string
+	Attachments     []Attachment
+	Err             error
 }
 
 type draftSavedMsg struct {
@@ -415,6 +416,7 @@ type Options struct {
 }
 
 type Model struct {
+	composerVersion                  uint64
 	width                            int
 	height                           int
 	reserveLastColumn                bool
@@ -1190,12 +1192,13 @@ func (m Model) persistOutgoingMessageCmd(tempID, chatID, draftBody string, attac
 	return func() tea.Msg {
 		message, err := persist(request)
 		return outgoingMessagePersistedMsg{
-			TempID:      tempID,
-			ChatID:      chatID,
-			Message:     message,
-			DraftBody:   draftBody,
-			Attachments: attachments,
-			Err:         err,
+			ComposerVersion: m.composerVersion,
+			TempID:          tempID,
+			ChatID:          chatID,
+			Message:         message,
+			DraftBody:       draftBody,
+			Attachments:     attachments,
+			Err:             err,
 		}
 	}
 }
@@ -1334,14 +1337,24 @@ func (m Model) mentionCandidatesCmd(generation int, chatID, query string) tea.Cm
 func (m Model) handleOutgoingMessagePersisted(msg outgoingMessagePersistedMsg) (Model, tea.Cmd) {
 	delete(m.outgoingMessageInflight, msg.TempID)
 	if msg.Err != nil {
-		m.removeMessageByID(msg.ChatID, msg.TempID)
-		m.mode = ModeInsert
-		m.focus = FocusMessages
-		m.composer = msg.DraftBody
-		m.attachments = slices.Clone(msg.Attachments)
 		m.status = fmt.Sprintf("send failed: %v", msg.Err)
-		m.localSetDraft(msg.ChatID, msg.DraftBody)
-		return m, m.saveDraftCmd(msg.ChatID, msg.DraftBody)
+		if msg.ChatID == m.currentChat().ID && msg.ComposerVersion == m.composerVersion && m.composer == "" && len(m.attachments) == 0 {
+			m.removeMessageByID(msg.ChatID, msg.TempID)
+			m.mode = ModeInsert
+			m.focus = FocusMessages
+			m.composer = msg.DraftBody
+			m.attachments = slices.Clone(msg.Attachments)
+			m.localSetDraft(msg.ChatID, msg.DraftBody)
+			return m, m.saveDraftCmd(msg.ChatID, msg.DraftBody)
+		}
+		// Keep failed content in its original conversation; never replace another
+		// composer or a draft created since this request started.
+		for i := range m.messagesByChat[msg.ChatID] {
+			if m.messagesByChat[msg.ChatID][i].ID == msg.TempID {
+				m.messagesByChat[msg.ChatID][i].Status = "failed"
+			}
+		}
+		return m, nil
 	}
 	message := msg.Message
 	if message.ID == "" {
@@ -1362,7 +1375,11 @@ func (m Model) handleOutgoingMessagePersisted(msg outgoingMessagePersistedMsg) (
 	}
 	m.rebuildSearchMatches()
 	m.status = "message queued"
-	return m, m.saveDraftCmd(msg.ChatID, "")
+	body := m.draftsByChat[msg.ChatID]
+	if msg.ChatID == m.currentChat().ID && m.mode == ModeInsert {
+		body = m.composer
+	}
+	return m, m.saveDraftCmd(msg.ChatID, body)
 }
 
 func (m Model) handleDraftSaved(msg draftSavedMsg) Model {
@@ -1878,6 +1895,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.composerVersion++
 	if m.keyMatches(msg, m.config.Keymap.GlobalQuit) {
 		m.quitting = true
 		return m, tea.Quit
@@ -2565,6 +2583,7 @@ func (m Model) runLeaderAction(mode Mode, action string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.composerVersion++
 	keys := m.config.Keymap
 	if updated, cmd, handled := m.handleMentionKey(msg); handled {
 		return updated, cmd
@@ -5890,6 +5909,7 @@ func (m Model) handleClipboardAttachmentPasted(msg ClipboardAttachmentPastedMsg)
 }
 
 func (m Model) handleClipboardTextPasted(msg ClipboardTextPastedMsg) (tea.Model, tea.Cmd) {
+	m.composerVersion++
 	chatID := strings.TrimSpace(msg.ChatID)
 	if chatID == "" && len(m.chats) > 0 {
 		chatID = m.currentChat().ID
@@ -6031,6 +6051,7 @@ func (m *Model) stageAttachmentPath(path string) error {
 }
 
 func (m *Model) stageAttachment(attachment Attachment) {
+	m.composerVersion++
 	if attachment.FileName == "" {
 		attachment.FileName = attachment.LocalPath
 	}

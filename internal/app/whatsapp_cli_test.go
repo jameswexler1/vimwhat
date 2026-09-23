@@ -2482,7 +2482,7 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	})
 }
 
-func TestHandleTextSendRequestFailureMarksFailedAndRestoresDraft(t *testing.T) {
+func TestHandleTextSendRequestFailurePreservesNewerDraft(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "state.sqlite3"))
 	if err != nil {
@@ -2500,6 +2500,9 @@ func TestHandleTextSendRequestFailureMarksFailedAndRestoresDraft(t *testing.T) {
 	session := &fakeLiveWhatsAppSession{
 		generatedID: "remote-1",
 		sendErr:     errors.New("boom"),
+	}
+	if err := db.SaveDraft(ctx, chatJID, "newer draft"); err != nil {
+		t.Fatal(err)
 	}
 	result := make(chan textSendQueuedResult, 1)
 	updates := make(chan ui.LiveUpdate, 4)
@@ -2521,8 +2524,8 @@ func TestHandleTextSendRequestFailureMarksFailedAndRestoresDraft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Draft() error = %v", err)
 	}
-	if draft != "retry me" {
-		t.Fatalf("draft = %q, want failed body restored", draft)
+	if draft != "newer draft" {
+		t.Fatalf("draft = %q, want newer draft preserved", draft)
 	}
 	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "send failed")
@@ -2674,8 +2677,8 @@ func TestHandleMediaSendRequestFailureMarksFailedAndRestoresCaptionDraft(t *test
 	if err != nil {
 		t.Fatalf("Draft() error = %v", err)
 	}
-	if draft != "retry caption" {
-		t.Fatalf("draft = %q, want failed caption restored", draft)
+	if draft != "" {
+		t.Fatalf("draft = %q, failed caption must remain on its message", draft)
 	}
 	update := waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "send failed")
