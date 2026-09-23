@@ -95,3 +95,28 @@ func TestSendingCanFailBeforeAcknowledgement(t *testing.T) {
 		t.Fatalf("status=%q error=%v", got.Status, err)
 	}
 }
+
+func TestMediaInvalidationClearsOnlyMatchingPaths(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	if err := s.AddMessage(ctx, Message{ID: "m", ChatID: "chat", Sender: "Alice", Body: "photo"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"old.png", "new.png"} {
+		if err := s.UpsertMediaMetadata(ctx, MediaMetadata{MessageID: "m", LocalPath: path, ThumbnailPath: path, DownloadState: "downloaded"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.UpsertMediaMetadata(ctx, MediaMetadata{MessageID: "m", InvalidLocalPath: "old.png", InvalidThumbnailPath: "old.png", DownloadState: "remote"}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.MediaMetadata(ctx, "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if path == "old.png" && (got.LocalPath != "" || got.ThumbnailPath != "" || got.DownloadState != "remote") {
+			t.Fatalf("not invalidated: %+v", got)
+		}
+		if path == "new.png" && (got.LocalPath != path || got.DownloadState != "downloaded") {
+			t.Fatalf("new download invalidated: %+v", got)
+		}
+	}
+}

@@ -12,10 +12,12 @@ import (
 func normalizeManagedMediaMetadata(paths config.Paths, item store.MediaMetadata) (store.MediaMetadata, bool) {
 	changed := false
 	if paths.IsManagedCachePath(item.LocalPath) && !localMediaPathAvailable(item.LocalPath) {
+		item.InvalidLocalPath = item.LocalPath
 		item.LocalPath = ""
 		changed = true
 	}
 	if paths.IsManagedCachePath(item.ThumbnailPath) && !localMediaPathAvailable(item.ThumbnailPath) {
+		item.InvalidThumbnailPath = item.ThumbnailPath
 		item.ThumbnailPath = ""
 		changed = true
 	}
@@ -34,13 +36,15 @@ func (m *Model) repairManagedMediaCache(message store.Message, item store.MediaM
 		repaired.MessageID = message.ID
 	}
 	repaired.UpdatedAt = time.Now()
-	if updated, _, updatedMessage := m.updateLoadedMedia(message.ID, repaired); updated {
-		message = updatedMessage
-	}
 	if m.saveMedia != nil {
 		if err := m.saveMedia(repaired); err != nil {
 			return message, repaired, err
 		}
+	}
+	repaired.InvalidLocalPath = ""
+	repaired.InvalidThumbnailPath = ""
+	if updated, _, updatedMessage := m.updateLoadedMedia(message.ID, repaired); updated {
+		message = updatedMessage
 	}
 	return message, repaired, nil
 }

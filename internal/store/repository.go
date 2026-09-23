@@ -1954,6 +1954,16 @@ func upsertMediaMetadata(ctx context.Context, execer mediaMetadataExecer, media 
 	if media.UpdatedAt.IsZero() {
 		media.UpdatedAt = time.Now()
 	}
+	if media.InvalidLocalPath != "" || media.InvalidThumbnailPath != "" {
+		_, err := execer.ExecContext(ctx, `UPDATE media_metadata SET
+			local_path = CASE WHEN local_path = ? THEN '' ELSE local_path END,
+			thumbnail_path = CASE WHEN thumbnail_path = ? THEN '' ELSE thumbnail_path END,
+			download_state = CASE WHEN local_path = ? AND ? <> '' THEN ? ELSE download_state END,
+			updated_at = ? WHERE message_id = ?`,
+			media.InvalidLocalPath, media.InvalidThumbnailPath, media.InvalidLocalPath,
+			media.InvalidLocalPath, media.DownloadState, media.UpdatedAt.Unix(), media.MessageID)
+		return err
+	}
 
 	_, err := execer.ExecContext(ctx, `
 		INSERT INTO media_metadata (

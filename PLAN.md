@@ -16,7 +16,7 @@ validation. No live account traffic is required for automated validation.
 - [ ] Recover interrupted outgoing operations and support text/media retries.
 - [ ] Keep forwarding payloads consistent for local sends and edits.
 - [ ] Preserve unread arrivals outside acknowledged read-receipt targets.
-- [ ] Persist explicit invalidation of missing media cache paths.
+- [x] Persist explicit invalidation of missing media cache paths, with compare-and-clear protection for concurrent downloads.
 - [ ] Make Linux opener defaults use automatic capability fallback.
 - [ ] Bound history retention and finish quote jumps after asynchronous loads.
 - [ ] Retry initial connections and keep local history usable during recovery.

@@ -98,18 +98,22 @@ type MessageMention struct {
 }
 
 type MediaMetadata struct {
-	MessageID          string
-	Kind               string
-	MIMEType           string
-	FileName           string
-	SizeBytes          int64
-	LocalPath          string
-	ThumbnailPath      string
-	DownloadState      string
-	IsAnimated         bool
-	IsLottie           bool
-	AccessibilityLabel string
-	UpdatedAt          time.Time
+	// Invalid paths are compare-and-clear requests, never persisted as metadata.
+	// Matching the old path prevents a stale repair from erasing a new download.
+	InvalidLocalPath     string
+	InvalidThumbnailPath string
+	MessageID            string
+	Kind                 string
+	MIMEType             string
+	FileName             string
+	SizeBytes            int64
+	LocalPath            string
+	ThumbnailPath        string
+	DownloadState        string
+	IsAnimated           bool
+	IsLottie             bool
+	AccessibilityLabel   string
+	UpdatedAt            time.Time
 }
 
 type MediaDownloadDescriptor struct {

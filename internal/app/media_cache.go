@@ -24,6 +24,12 @@ func repairManagedMediaMetadata(ctx context.Context, db *store.Store, paths conf
 		return item, false, nil
 	}
 
+	if item.LocalPath != pathsOnly.LocalPath {
+		item.InvalidLocalPath = item.LocalPath
+	}
+	if item.ThumbnailPath != pathsOnly.ThumbnailPath {
+		item.InvalidThumbnailPath = item.ThumbnailPath
+	}
 	item.LocalPath = pathsOnly.LocalPath
 	item.ThumbnailPath = pathsOnly.ThumbnailPath
 	if localPathBefore != "" && item.LocalPath == "" && db != nil {
@@ -38,6 +44,8 @@ func repairManagedMediaMetadata(ctx context.Context, db *store.Store, paths conf
 		if err := db.UpsertMediaMetadata(ctx, item); err != nil {
 			return item, false, err
 		}
+		persisted, err := db.MediaMetadata(ctx, item.MessageID)
+		return persisted, true, err
 	}
 	return item, true, nil
 }
