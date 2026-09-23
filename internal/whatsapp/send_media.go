@@ -100,9 +100,13 @@ func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendR
 	}
 
 	message := c.mediaMessageFromUpload(details.TransportKind, details, caption, upload, request)
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		return SendResult{}, err
+	}
 	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
 	if err != nil {
-		return SendResult{}, fmt.Errorf("send whatsapp media: %w", err)
+		return SendResult{Payload: payload}, &DeliveryError{fmt.Errorf("send whatsapp media: %w", err)}
 	}
 	if resp.ID != "" {
 		remoteID = string(resp.ID)
@@ -112,6 +116,7 @@ func (c *Client) SendMedia(ctx context.Context, request MediaSendRequest) (SendR
 		timestamp = time.Now()
 	}
 	return SendResult{
+		Payload:   payload,
 		MessageID: LocalMessageID(normalizedChatJID, remoteID),
 		RemoteID:  remoteID,
 		Status:    "sent",

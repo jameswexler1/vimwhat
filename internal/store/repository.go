@@ -1100,6 +1100,10 @@ func (s *Store) UpdateMessageBody(ctx context.Context, messageID, body string, e
 		_ = tx.Rollback()
 		return true, nil
 	}
+	if err := rewriteEditedPayload(ctx, tx, messageID, body, editedAt); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE messages

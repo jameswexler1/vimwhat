@@ -2117,7 +2117,12 @@ func handleTextSendRequest(
 		sendTextQueuedResult(ctx, request, store.Message{}, fmt.Errorf("message id is required"))
 		return
 	}
-	if err := db.AddMessage(ctx, message); err != nil {
+	payload, err := whatsapp.TextPayload(whatsapp.TextSendRequest{Body: mentionWireBody(body, request.Mentions), MentionedJIDs: mentionedJIDs(request.Mentions)})
+	if err != nil {
+		sendTextQueuedResult(ctx, request, store.Message{}, err)
+		return
+	}
+	if _, err := db.AddHistoricalMessageWithPayload(ctx, message, store.MessagePayload{MessageID: message.ID, Payload: payload}); err != nil {
 		sendTextQueuedResult(ctx, request, store.Message{}, err)
 		return
 	}
@@ -2159,6 +2164,9 @@ func completeQueuedTextSend(ctx context.Context, db *store.Store, live WhatsAppL
 		request.QuotedMessageBody = quote.Body
 	}
 	result, err := live.SendText(sendCtx, request)
+	if !persistSendPayload(ctx, db, updates, message.ID, result.Payload) {
+		return
+	}
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
 		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
@@ -2381,6 +2389,9 @@ func completeQueuedMediaSend(ctx context.Context, db *store.Store, live WhatsApp
 		request.QuotedMessageBody = quote.Body
 	}
 	result, err := live.SendMedia(sendCtx, request)
+	if !persistSendPayload(ctx, db, updates, message.ID, result.Payload) {
+		return
+	}
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
 		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
@@ -2432,6 +2443,9 @@ func completeQueuedStickerSend(ctx context.Context, db *store.Store, live WhatsA
 		request.QuotedMessageBody = quote.Body
 	}
 	result, err := live.SendSticker(sendCtx, request)
+	if !persistSendPayload(ctx, db, updates, message.ID, result.Payload) {
+		return
+	}
 	if err != nil {
 		storeCtx, cancelStore := backgroundStoreWriteContext(ctx)
 		_ = db.UpdateMessageStatus(storeCtx, message.ID, outgoingFailureStatus(sendCtx, err))
@@ -3157,6 +3171,16 @@ func handleForwardMessagesRequest(
 
 	var result forwardMessagesResult
 	for _, source := range request.Messages {
+		current, exists, loadErr := db.MessageByID(ctx, source.ID)
+		if loadErr != nil {
+			result.Failed++
+			continue
+		}
+		if !exists || !current.DeletedAt.IsZero() {
+			result.Skipped++
+			continue
+		}
+		source = current
 		if err := forwardRequestContextErr(request); err != nil {
 			result.Err = err
 			sendForwardMessagesResult(ctx, request, result)
@@ -3166,6 +3190,10 @@ func handleForwardMessagesRequest(
 		if err != nil {
 			result.Failed++
 			continue
+		}
+		if !ok && source.IsOutgoing && len(source.Media) == 0 && source.Body != "" {
+			payload.Payload, err = whatsapp.TextPayload(whatsapp.TextSendRequest{Body: mentionWireBody(source.Body, source.Mentions), MentionedJIDs: mentionedJIDs(source.Mentions)})
+			ok = err == nil
 		}
 		if !ok || len(payload.Payload) == 0 {
 			result.Skipped++
@@ -3237,10 +3265,7 @@ func queueForwardedMessage(ctx context.Context, db *store.Store, live WhatsAppLi
 	if message.ID == "" {
 		return store.Message{}, fmt.Errorf("message id is required")
 	}
-	if err := db.AddMessageWithMedia(ctx, message, message.Media); err != nil {
-		return store.Message{}, err
-	}
-	if err := db.UpsertMessagePayload(ctx, store.MessagePayload{
+	if _, err := db.AddHistoricalMessageWithPayload(ctx, message, store.MessagePayload{
 		MessageID: message.ID,
 		Payload:   payload,
 		UpdatedAt: time.Now(),

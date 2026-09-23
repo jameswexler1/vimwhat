@@ -79,9 +79,13 @@ func (c *Client) SendSticker(ctx context.Context, request StickerSendRequest) (S
 	}
 
 	message := c.stickerMessageFromUpload(details, upload, request, time.Now())
+	payload, err := proto.Marshal(message)
+	if err != nil {
+		return SendResult{}, err
+	}
 	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
 	if err != nil {
-		return SendResult{}, fmt.Errorf("send whatsapp sticker: %w", err)
+		return SendResult{Payload: payload}, &DeliveryError{fmt.Errorf("send whatsapp sticker: %w", err)}
 	}
 	if resp.ID != "" {
 		remoteID = string(resp.ID)
@@ -91,6 +95,7 @@ func (c *Client) SendSticker(ctx context.Context, request StickerSendRequest) (S
 		timestamp = time.Now()
 	}
 	return SendResult{
+		Payload:   payload,
 		MessageID: LocalMessageID(normalizedChatJID, remoteID),
 		RemoteID:  remoteID,
 		Status:    "sent",

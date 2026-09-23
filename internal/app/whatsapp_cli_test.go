@@ -2477,6 +2477,10 @@ func TestHandleTextSendRequestPersistsSendingThenMarksSent(t *testing.T) {
 	if messages[0].Body != "hello live @Ana" {
 		t.Fatalf("stored body = %q, want friendly mention text", messages[0].Body)
 	}
+	payload, ok, err := db.MessagePayload(ctx, queued.Message.ID)
+	if err != nil || !ok || len(payload.Payload) == 0 {
+		t.Fatalf("local send has no forwarding payload: %+v %v", payload, err)
+	}
 	waitForLiveUpdate(t, updates, func(update ui.LiveUpdate) bool {
 		return update.Refresh && strings.Contains(update.Status, "sent")
 	})

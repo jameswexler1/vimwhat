@@ -557,9 +557,14 @@ func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendRes
 		return SendResult{}, fmt.Errorf("generate message id failed")
 	}
 
-	resp, err := c.client.SendMessage(ctx, to, c.textMessage(body, request), whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
+	message := c.textMessage(body, request)
+	payload, err := proto.Marshal(message)
 	if err != nil {
-		return SendResult{}, fmt.Errorf("send whatsapp text: %w", err)
+		return SendResult{}, err
+	}
+	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
+	if err != nil {
+		return SendResult{Payload: payload}, &DeliveryError{fmt.Errorf("send whatsapp text: %w", err)}
 	}
 	if resp.ID != "" {
 		remoteID = string(resp.ID)
@@ -571,6 +576,7 @@ func (c *Client) SendText(ctx context.Context, request TextSendRequest) (SendRes
 
 	return SendResult{
 		MessageID: LocalMessageID(normalizedChatJID, remoteID),
+		Payload:   payload,
 		RemoteID:  remoteID,
 		Status:    "sent",
 		Timestamp: timestamp,
@@ -676,7 +682,7 @@ func (c *Client) ForwardMessage(ctx context.Context, request ForwardMessageReque
 	}
 	resp, err := c.client.SendMessage(ctx, to, message, whatsmeow.SendRequestExtra{ID: types.MessageID(remoteID)})
 	if err != nil {
-		return SendResult{}, fmt.Errorf("send whatsapp forward: %w", err)
+		return SendResult{}, &DeliveryError{fmt.Errorf("send whatsapp forward: %w", err)}
 	}
 	if resp.ID != "" {
 		remoteID = string(resp.ID)
@@ -1491,6 +1497,7 @@ func historyAnchorMessageInfo(anchor HistoryAnchor) (types.MessageInfo, error) {
 }
 
 type SendResult struct {
+	Payload   []byte
 	MessageID string
 	RemoteID  string
 	Status    string

@@ -8,13 +8,26 @@ import (
 
 	"vimwhat/internal/store"
 	"vimwhat/internal/ui"
+	"vimwhat/internal/whatsapp"
 )
 
 func outgoingFailureStatus(ctx context.Context, err error) string {
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	var deliveryErr *whatsapp.DeliveryError
+	if errors.As(err, &deliveryErr) || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "uncertain"
 	}
 	return "failed"
+}
+
+func persistSendPayload(ctx context.Context, db *store.Store, updates chan<- ui.LiveUpdate, id string, data []byte) bool {
+	writeCtx, cancel := backgroundStoreWriteContext(ctx)
+	defer cancel()
+	if err := db.SaveOutgoingPayload(writeCtx, id, data); err != nil {
+		_ = db.UpdateMessageStatus(writeCtx, id, "uncertain")
+		sendLiveUpdate(ctx, updates, ui.LiveUpdate{Refresh: true, Status: fmt.Sprintf("save outgoing payload failed: %s", shortStatusError(err))})
+		return false
+	}
+	return true
 }
 
 func handleOutgoingRetry(ctx context.Context, db *store.Store, live WhatsAppLiveSession, updates chan<- ui.LiveUpdate, wg *sync.WaitGroup, request mediaSendRequest) {
