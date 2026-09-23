@@ -347,7 +347,6 @@ func mergeDraftRows(ctx context.Context, tx *sql.Tx, canonicalID, aliasID string
 		SELECT ?, body, updated_at
 		FROM drafts
 		WHERE chat_id = ?
-			AND body <> ''
 		ON CONFLICT(chat_id) DO UPDATE SET
 			body = CASE
 				WHEN excluded.updated_at >= drafts.updated_at THEN excluded.body

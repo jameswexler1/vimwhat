@@ -5986,7 +5986,7 @@ func TestNormalPasteTextFailurePreservesDraft(t *testing.T) {
 
 	updated, cmd := model.updateNormal(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
 	got := runImmediateCmd(t, updated.(Model), cmd)
-	if got.mode != ModeNormal || got.draftsByChat["chat-1"] != "old draft" || got.composer != "" || !strings.Contains(got.status, "paste failed") {
+	if got.mode != ModeNormal || got.draftsByChat["chat-1"] != "old draft" || got.composer != "old draft" || !strings.Contains(got.status, "paste failed") {
 		t.Fatalf("failure state = mode %s draft %q composer %q status %q", got.mode, got.draftsByChat["chat-1"], got.composer, got.status)
 	}
 }

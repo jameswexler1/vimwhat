@@ -364,6 +364,7 @@ type newMessageState struct {
 }
 
 type Options struct {
+	SaveComposerDraft            func(string, store.ComposerDraft) error
 	Paths                        config.Paths
 	Config                       config.Config
 	PreviewReport                media.Report
@@ -416,6 +417,9 @@ type Options struct {
 }
 
 type Model struct {
+	saveComposerDraft                func(string, store.ComposerDraft) error
+	composerDrafts                   map[string]store.ComposerDraft
+	draftCoordinator                 *draftCoordinator
 	composerVersion                  uint64
 	width                            int
 	height                           int
@@ -655,6 +659,9 @@ func NewModel(opts Options) Model {
 	}
 
 	model := Model{
+		saveComposerDraft:            opts.SaveComposerDraft,
+		composerDrafts:               map[string]store.ComposerDraft{},
+		draftCoordinator:             &draftCoordinator{latest: map[string]draftTicket{}},
 		reserveLastColumn:            opts.ReserveLastColumn,
 		mode:                         ModeNormal,
 		focus:                        FocusChats,
@@ -734,6 +741,10 @@ func NewModel(opts Options) Model {
 	if model.pasteAttachmentFromClipboard == nil {
 		model.pasteAttachmentFromClipboard = opts.PasteImageFromClipboard
 	}
+	for id, draft := range opts.Snapshot.ComposerDrafts {
+		model.composerDrafts[id] = cloneComposerDraft(draft)
+	}
+	model.restoreComposerDraft(model.currentChat().ID)
 	model.ensureSixelManager()
 	model.reportActiveChatChanged()
 	model.reportVisibleChatsChanged()
@@ -779,9 +790,12 @@ func normalizeConfig(cfg config.Config) config.Config {
 }
 
 func (m Model) Close() error {
-	var err error
+	m.captureComposerDraft()
+	err := m.draftCoordinator.flush(m.draftSaver())
 	if m.audioProcess != nil {
-		err = m.audioProcess.Stop()
+		if stopErr := m.audioProcess.Stop(); err == nil {
+			err = stopErr
+		}
 	}
 	if m.overlay != nil {
 		if closeErr := m.overlay.Close(); err == nil {
@@ -1200,16 +1214,6 @@ func (m Model) persistOutgoingMessageCmd(tempID, chatID, draftBody string, attac
 			Attachments:     attachments,
 			Err:             err,
 		}
-	}
-}
-
-func (m Model) saveDraftCmd(chatID, body string) tea.Cmd {
-	save := m.saveDraft
-	if save == nil || strings.TrimSpace(chatID) == "" {
-		return nil
-	}
-	return func() tea.Msg {
-		return draftSavedMsg{ChatID: chatID, Body: body, Err: save(chatID, body)}
 	}
 }
 
@@ -1658,7 +1662,7 @@ func withPreviewResult(updated tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	return next.withPreviewCmd(cmd)
 }
 
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if token, ok := shiftedEnterTokenFromMsg(msg); ok {
 		updated, cmd := m.handleSpecialKeyToken(token)
 		return withPreviewResult(updated, cmd)
@@ -2402,15 +2406,15 @@ func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
 	}
 	m.mode = ModeInsert
 	m.focus = FocusMessages
-	m.composer = m.draftsByChat[m.currentChat().ID]
-	m.composerMentions = slices.Clone(m.composerMentionsByChat[m.currentChat().ID])
+	m.restoreComposerDraft(m.currentChat().ID)
+	if len(m.composerMentions) == 0 {
+		m.composerMentions = slices.Clone(m.composerMentionsByChat[m.currentChat().ID])
+	}
 	m.clearMentionState()
 	if quote != nil {
 		quoted := *quote
 		m.replyTo = &quoted
 		m.status = "replying"
-	} else {
-		m.replyTo = nil
 	}
 	m.editTarget = nil
 	activateCmd := m.handleCurrentChatActivated()
@@ -2640,7 +2644,6 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.sendOwnPresence(m.currentChat().ID, false)
 		m.clearMentionState()
-		m.replyTo = nil
 		m.mode = ModeNormal
 		return m, m.persistCurrentDraft()
 	case m.keyMatches(msg, keys.InsertSend):
@@ -3920,6 +3923,7 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 
 	m.allChats = slices.Clone(snapshot.Chats)
 	m.draftsByChat = cloneDrafts(snapshot.DraftsByChat)
+	m.overlayPendingDrafts()
 	m.notificationsMuted = snapshot.NotificationsMuted
 	if m.messagesByChat == nil {
 		m.messagesByChat = map[string][]store.Message{}

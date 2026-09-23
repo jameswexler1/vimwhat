@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	tea "github.com/charmbracelet/bubbletea"
 	"testing"
 	"vimwhat/internal/store"
 )
@@ -11,6 +12,43 @@ func composerTestModel() Model {
 		Chats: []store.Chat{{ID: "a", Title: "Alice"}, {ID: "b", Title: "Bob"}}, ActiveChatID: "a",
 		MessagesByChat: map[string][]store.Message{}, DraftsByChat: map[string]string{},
 	}})
+}
+
+func TestComposerFlushIncludesUnescapedTextAndAttachments(t *testing.T) {
+	m := composerTestModel()
+	m.mode = ModeInsert
+	m.attachments = []Attachment{{LocalPath: "/tmp/image.png", FileName: "image.png"}}
+	m.replyTo = &store.Message{ID: "quoted", Body: "reply"}
+	var saved store.ComposerDraft
+	m.saveComposerDraft = func(_ string, draft store.ComposerDraft) error { saved = draft; return nil }
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("unfinished")})
+	m = next.(Model)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Body != "unfinished" || len(saved.Media) != 1 || saved.Reply.ID != "quoted" {
+		t.Fatalf("saved %+v", saved)
+	}
+	if cmd := m.captureComposerDraft(); cmd != nil {
+		t.Fatal("unchanged draft repeatedly scheduled")
+	}
+}
+
+func TestComposerCoordinatorDiscardsStaleSaves(t *testing.T) {
+	d := &draftCoordinator{latest: map[string]draftTicket{}}
+	old := d.reserve("a", store.ComposerDraft{Body: "old"})
+	newer := d.reserve("a", store.ComposerDraft{Body: "new"})
+	var saved string
+	save := func(_ string, draft store.ComposerDraft) error { saved = draft.Body; return nil }
+	if err := d.save(newer, save); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.save(old, save); err != nil {
+		t.Fatal(err)
+	}
+	if saved != "new" {
+		t.Fatalf("saved %q", saved)
+	}
 }
 
 func TestLateSendFailureCannotReplaceCurrentComposer(t *testing.T) {

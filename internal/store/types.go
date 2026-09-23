@@ -160,6 +160,7 @@ type UISnapshot struct {
 }
 
 type Snapshot struct {
+	ComposerDrafts     map[string]ComposerDraft
 	Chats              []Chat
 	MessagesByChat     map[string][]Message
 	DraftsByChat       map[string]string

@@ -376,6 +376,9 @@ func runTUI(env Environment, stderr io.Writer) int {
 			defer cancelStore()
 			return env.Store.SaveDraft(storeCtx, chatID, body)
 		},
+		SaveComposerDraft: func(chatID string, draft store.ComposerDraft) error {
+			return persistComposerDraft(env, chatID, draft)
+		},
 		SearchChats: func(query string) ([]store.Chat, error) {
 			storeCtx, cancelStore := uiStoreReadContext()
 			defer cancelStore()
@@ -4804,6 +4807,10 @@ func loadSnapshotForChat(ctx context.Context, db *store.Store, activeChatID stri
 		return store.Snapshot{}, err
 	}
 	snapshot.NotificationsMuted = notificationsMuted
+	snapshot.ComposerDrafts, err = db.ListComposerDrafts(ctx)
+	if err != nil {
+		return store.Snapshot{}, err
+	}
 	if len(chats) == 0 {
 		return snapshot, nil
 	}

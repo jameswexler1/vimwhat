@@ -79,6 +79,10 @@ func (s *Store) LoadSnapshot(ctx context.Context, messageLimit int) (Snapshot, e
 		return Snapshot{}, err
 	}
 	snapshot.DraftsByChat = drafts
+	snapshot.ComposerDrafts, err = s.ListComposerDrafts(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	notificationsMuted, err := s.GlobalNotificationsMuted(ctx)
 	if err != nil {
@@ -118,7 +122,7 @@ func (s *Store) ListChats(ctx context.Context) ([]Chat, error) {
 			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
-			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
+			CASE WHEN d.chat_id IS NOT NULL THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
 		ORDER BY c.pinned DESC, c.last_message_at DESC, c.title ASC
@@ -167,7 +171,7 @@ func (s *Store) ChatByJID(ctx context.Context, jid string) (Chat, bool, error) {
 			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
-			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
+			CASE WHEN d.chat_id IS NOT NULL THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
 		WHERE c.jid = ?
@@ -206,7 +210,7 @@ func (s *Store) ChatByID(ctx context.Context, id string) (Chat, bool, error) {
 			c.muted_until,
 			c.last_message_at,
 			`+chatLastPreviewSQL+`,
-			CASE WHEN d.body IS NOT NULL AND d.body <> '' THEN 1 ELSE 0 END AS has_draft
+			CASE WHEN d.chat_id IS NOT NULL THEN 1 ELSE 0 END AS has_draft
 		FROM chats c
 		LEFT JOIN drafts d ON d.chat_id = c.id
 		WHERE c.id = ?
@@ -1339,34 +1343,11 @@ func (s *Store) markMessageDeleted(ctx context.Context, messageID, reason string
 }
 
 func (s *Store) SaveDraft(ctx context.Context, chatID, body string) error {
-	if strings.TrimSpace(chatID) == "" {
-		return fmt.Errorf("chat id is required")
-	}
-
-	trimmed := strings.TrimSpace(body)
-	if trimmed == "" {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM drafts WHERE chat_id = ?`, chatID); err != nil {
-			return fmt.Errorf("delete draft for %s: %w", chatID, err)
-		}
-		return nil
-	}
-
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO drafts (chat_id, body, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(chat_id) DO UPDATE SET
-			body = excluded.body,
-			updated_at = excluded.updated_at
-	`, chatID, body, time.Now().Unix())
-	if err != nil {
-		return fmt.Errorf("save draft for %s: %w", chatID, err)
-	}
-
-	return nil
+	return s.SaveComposerDraft(ctx, chatID, ComposerDraft{Body: body})
 }
 
 func (s *Store) ListDrafts(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT chat_id, body FROM drafts WHERE body <> ''`)
+	rows, err := s.db.QueryContext(ctx, `SELECT chat_id, body FROM drafts`)
 	if err != nil {
 		return nil, fmt.Errorf("list drafts: %w", err)
 	}

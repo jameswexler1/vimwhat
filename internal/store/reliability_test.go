@@ -22,6 +22,36 @@ func reliabilityStore(t *testing.T) (*Store, context.Context) {
 	return s, ctx
 }
 
+func TestFullDraftRoundTripAndLegacyReplacement(t *testing.T) {
+	s, ctx := reliabilityStore(t)
+	draft := ComposerDraft{Media: []MediaMetadata{{LocalPath: "/private/photo.png"}}, Reply: &Message{ID: "quoted"}, Mentions: []MessageMention{{JID: "person"}}}
+	if err := s.SaveComposerDraft(ctx, "chat", draft); err != nil {
+		t.Fatal(err)
+	}
+	drafts, err := s.ListComposerDrafts(ctx)
+	if err != nil || len(drafts["chat"].Media) != 1 || drafts["chat"].Reply.ID != "quoted" {
+		t.Fatalf("drafts=%+v err=%v", drafts, err)
+	}
+	chats, err := s.ListChats(ctx)
+	if err != nil || !chats[0].HasDraft {
+		t.Fatalf("attachment-only draft not flagged: %+v %v", chats, err)
+	}
+	if err := s.SaveDraft(ctx, "chat", "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	drafts, err = s.ListComposerDrafts(ctx)
+	if err != nil || len(drafts["chat"].Media) != 0 || drafts["chat"].Reply != nil {
+		t.Fatalf("stale full draft survived replacement: %+v %v", drafts, err)
+	}
+	if err := s.SaveDraft(ctx, "chat", ""); err != nil {
+		t.Fatal(err)
+	}
+	drafts, err = s.ListComposerDrafts(ctx)
+	if err != nil || len(drafts) != 0 {
+		t.Fatalf("draft not cleared: %+v %v", drafts, err)
+	}
+}
+
 func TestSearchReleasesConnectionAtLimit(t *testing.T) {
 	for _, count := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
