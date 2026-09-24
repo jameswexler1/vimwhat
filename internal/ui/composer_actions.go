@@ -40,6 +40,7 @@ func (m Model) startComposeEditor() (tea.Model, tea.Cmd) {
 	m.mode = ModeInsert
 	m.focus = FocusMessages
 	m.composer = initial
+	m.composerSelectAll = false
 	m.composerMentions = slices.Clone(m.composerMentionsByChat[chatID])
 	m.clearMentionState()
 	cmd := m.composeInEditor(chatID, initial)
@@ -68,6 +69,7 @@ func (m Model) beginEditFocusedMessage() (tea.Model, tea.Cmd) {
 	m.mode = ModeInsert
 	m.focus = FocusMessages
 	m.composer = message.Body
+	m.composerSelectAll = false
 	m.attachments = nil
 	m.replyTo = nil
 	target := message
@@ -100,6 +102,7 @@ func (m Model) handleComposerEdited(msg ComposerEditedMsg) (Model, tea.Cmd) {
 		m.mode = ModeInsert
 		m.focus = FocusMessages
 		m.composer = msg.Body
+		m.composerSelectAll = false
 		m.composerMentions = nil
 	}
 	m.localSetDraft(chatID, msg.Body)
@@ -137,6 +140,21 @@ func (m Model) beginInsert(quote *store.Message) (tea.Model, tea.Cmd) {
 func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.composerVersion++
 	keys := m.config.Keymap
+	if m.keyMatches(msg, keys.InsertSelectAll) {
+		m.clearMentionState()
+		m.composerSelectAll = m.composer != ""
+		return m, nil
+	}
+	if m.keyMatches(msg, keys.InsertDelete) {
+		// The inline composer currently keeps its caret at the end, so Delete
+		// only has work to do when text is selected.
+		m.deleteComposerSelection()
+		return m, nil
+	}
+	if m.composerSelectAll && m.keyMatches(msg, keys.InsertCancel) {
+		m.composerSelectAll = false
+		return m, nil
+	}
 	if updated, cmd, handled := m.handleMentionKey(msg); handled {
 		return updated, cmd
 	}
@@ -170,7 +188,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.keyMatches(msg, keys.InsertNewline) || m.keyMatches(msg, keys.InsertNewlineAlt) {
 		m.clearMentionState()
-		m.composer += "\n"
+		m.appendComposerText("\n")
 		m.sendOwnPresence(m.currentChat().ID, true)
 		return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 	}
@@ -180,6 +198,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.editTarget != nil {
 			chatID := m.currentChat().ID
 			m.composer = ""
+			m.composerSelectAll = false
 			m.composerMentions = nil
 			m.clearMentionState()
 			m.attachments = nil
@@ -202,6 +221,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if body == "" && len(m.attachments) == 0 {
 			m.status = "empty message"
 			m.composer = ""
+			m.composerSelectAll = false
 			return m, nil
 		}
 		chatID := m.currentChat().ID
@@ -268,6 +288,7 @@ func (m Model) updateInsert(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.messageCursor = len(m.messagesByChat[chatID]) - 1
 		m.messageScrollTop = m.messageCursor
 		m.composer = ""
+		m.composerSelectAll = false
 		m.composerMentions = nil
 		delete(m.composerMentionsByChat, chatID)
 		m.clearMentionState()
@@ -342,6 +363,7 @@ func (m *Model) appendComposerText(text string) tea.Cmd {
 	if text == "" {
 		return nil
 	}
+	m.deleteComposerSelection()
 	start := len(m.composer)
 	m.composer += text
 	if text == "@" && m.canStartMention() {
@@ -363,8 +385,23 @@ func keyText(msg tea.KeyMsg) string {
 }
 
 func (m *Model) backspaceComposer() {
+	if m.deleteComposerSelection() {
+		return
+	}
 	m.composer = trimLastCluster(m.composer)
 	m.pruneComposerMentions()
+}
+
+// Selection is transient and applies only to text, never attachments or replies.
+func (m *Model) deleteComposerSelection() bool {
+	if !m.composerSelectAll {
+		return false
+	}
+	m.composerSelectAll = false
+	m.composer = ""
+	m.composerMentions = nil
+	m.clearMentionState()
+	return true
 }
 
 func (m Model) canStartMention() bool {

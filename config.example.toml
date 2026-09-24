@@ -83,7 +83,7 @@ key_normal_save_media = "leader s"
 key_normal_unload_previews = "leader h f"
 key_normal_delete_for_everybody = "leader d e"
 
-# Insert mode
+# Insert mode (selected text: typing replaces, Backspace/Delete clears, cancel deselects)
 key_insert_attach = "ctrl+f"
 key_insert_paste_image = "ctrl+v"
 key_insert_remove_attachment = "ctrl+x"
@@ -91,6 +91,8 @@ key_insert_newline = "ctrl+j"
 key_insert_newline_alt = "shift+enter"
 key_insert_cancel = "esc"
 key_insert_send = "enter"
+key_insert_select_all = "ctrl+a"
+key_insert_delete = "delete"
 key_insert_backspace = "backspace"
 key_insert_backspace_alt = "ctrl+h"
 key_insert_mention_select_alt = "tab"

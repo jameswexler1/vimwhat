@@ -89,7 +89,7 @@ func DefaultFileContent(paths Paths) string {
 	bindings := KeymapBindings(cfg.Keymap)
 	writeKeyGroup(&b, "Sync screen (cached browsing does not enable sending)", keyBindingsForMode(bindings, KeyModeSync))
 	writeKeyGroup(&b, "Normal mode", keyBindingsForMode(bindings, KeyModeNormal))
-	writeKeyGroup(&b, "Insert mode", keyBindingsForMode(bindings, KeyModeInsert))
+	writeKeyGroup(&b, "Insert mode (selected text: typing replaces, Backspace/Delete clears, cancel deselects)", keyBindingsForMode(bindings, KeyModeInsert))
 	writeKeyGroup(&b, "Visual mode", keyBindingsForMode(bindings, KeyModeVisual))
 	writeKeyGroup(&b, "Forward picker", keyBindingsForMode(bindings, KeyModeForward))
 	writeKeyGroup(&b, "Reaction picker", keyBindingsForMode(bindings, KeyModeReaction))

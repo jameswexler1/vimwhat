@@ -489,6 +489,7 @@ type Model struct {
 	reactionTarget                   *store.Message
 	confirmLine                      string
 	composer                         string
+	composerSelectAll                bool
 	composerMentions                 []store.MessageMention
 	composerMentionsByChat           map[string][]store.MessageMention
 	mentionActive                    bool
@@ -1252,6 +1253,7 @@ func (m Model) handleOutgoingMessagePersisted(msg outgoingMessagePersistedMsg) (
 			m.mode = ModeInsert
 			m.focus = FocusMessages
 			m.composer = msg.DraftBody
+			m.composerSelectAll = false
 			m.attachments = slices.Clone(msg.Attachments)
 			m.localSetDraft(msg.ChatID, msg.DraftBody)
 			return m, m.saveDraftCmd(msg.ChatID, msg.DraftBody)
@@ -1774,8 +1776,9 @@ func (m Model) handleSpecialKeyToken(token string) (tea.Model, tea.Cmd) {
 	if token == "shift+enter" && m.mode == ModeInsert {
 		keys := m.config.Keymap
 		if m.keyTokenMatches(token, keys.InsertNewline) || m.keyTokenMatches(token, keys.InsertNewlineAlt) {
+			m.composerVersion++
 			m.clearMentionState()
-			m.composer += "\n"
+			m.appendComposerText("\n")
 			m.sendOwnPresence(m.currentChat().ID, true)
 			return m, ownPresenceIdleCmd(m.currentChat().ID, m.ownPresenceGeneration)
 		}
@@ -3160,6 +3163,7 @@ func (m *Model) applySnapshot(snapshot store.Snapshot, preferredChatID, messageF
 	if m.mode == ModeInsert && m.editTarget == nil && m.composer == "" {
 		if draft := m.draftsByChat[m.currentChat().ID]; strings.TrimSpace(draft) != "" {
 			m.composer = draft
+			m.composerSelectAll = false
 		}
 	}
 	return nil
@@ -5102,15 +5106,19 @@ func (m Model) handleClipboardTextPasted(msg ClipboardTextPastedMsg) (tea.Model,
 
 	currentChatID := m.currentChat().ID
 	body := m.draftsByChat[chatID]
+	mentions := slices.Clone(m.composerMentionsByChat[chatID])
 	if chatID == currentChatID && m.mode == ModeInsert {
+		m.deleteComposerSelection()
 		body = m.composer
+		mentions = slices.Clone(m.composerMentions)
 	}
 	body += msg.Text
 	if chatID == currentChatID {
 		m.mode = ModeInsert
 		m.focus = FocusMessages
 		m.composer = body
-		m.composerMentions = slices.Clone(m.composerMentionsByChat[chatID])
+		m.composerSelectAll = false
+		m.composerMentions = mentions
 		m.clearMentionState()
 		m.pruneComposerMentions()
 		m.sendOwnPresence(chatID, true)
@@ -5551,6 +5559,7 @@ func (m Model) submitEditedMessage() (tea.Model, tea.Cmd) {
 	}
 	chatID := m.currentChat().ID
 	m.composer = ""
+	m.composerSelectAll = false
 	m.attachments = nil
 	m.replyTo = nil
 	m.editTarget = nil

@@ -97,6 +97,7 @@ func (m *Model) restoreComposerDraft(chatID string) {
 	draft := m.composerDrafts[chatID]
 	draft.Body = m.draftsByChat[chatID]
 	m.composer = draft.Body
+	m.composerSelectAll = false
 	m.composerMentions = slices.Clone(draft.Mentions)
 	m.replyTo = draft.Reply
 	m.attachments = nil

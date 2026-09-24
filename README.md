@@ -176,6 +176,8 @@ key_normal_unload_previews = "leader h f"
 key_normal_delete_for_everybody = "leader d e"
 
 key_insert_send = "enter"
+key_insert_select_all = "ctrl+a"
+key_insert_delete = "delete"
 key_insert_newline = "ctrl+j"
 key_insert_newline_alt = "shift+enter"
 key_insert_attach = "ctrl+f"
@@ -231,7 +233,9 @@ Useful command-mode actions:
 :quit
 ```
 
-Text clipboard paste uses `key_normal_paste_text` or `:paste`. It appends clipboard text to the active chat draft, switches to insert mode, persists the draft, and does not send until the normal composer send key is pressed. Set `clipboard_paste_command` to override text clipboard reads.
+In insert mode, `Ctrl+A` selects the entire composer text, including wrapped and off-screen lines. Typing or terminal text paste replaces the selection; Backspace or Delete clears it. Escape deselects first; a second Escape leaves insert mode as usual. Attachments and reply context are not selected. Enter still sends the text. Configure these actions with `key_insert_select_all` and `key_insert_delete`; Delete without a selection does nothing because the inline caret is at the end. The help overlay shows your configured keys.
+
+Text clipboard paste uses `key_normal_paste_text` or `:paste`. It appends clipboard text to the active chat draft (or replaces an active text selection), switches to insert mode, persists the draft, and does not send until the normal composer send key is pressed. Set `clipboard_paste_command` to override text clipboard reads.
 
 Image clipboard paste/copy is image-only. `key_insert_paste_image` stages the current clipboard image as the composer attachment, preserving composer text as the caption. `key_normal_copy_image` copies the focused image message to the clipboard and auto-downloads remote image media first when possible. The default image clipboard commands auto-detect Wayland/X11 tools; set `clipboard_image_paste_command` or `clipboard_image_copy_command` to override them. Paste commands may write to `{path}` or stdout, and copy commands may use `{path}` and `{mime}` or receive image bytes on stdin.
 

@@ -2835,6 +2835,9 @@ func (m Model) renderMessageFooterWithNotice(width int, notice string) string {
 }
 
 func (m Model) renderComposerWithNotice(width int, notice string) string {
+	if m.composerSelectAll {
+		notice = "all text selected · " + displayBinding(m.config.Keymap.InsertCancel, m.config.LeaderKey) + " deselects"
+	}
 	lines := []string{m.renderFooterHelpLineWithNotice(width, notice)}
 
 	if edit := m.editPreviewLine(width); edit != "" {
@@ -2856,6 +2859,12 @@ func (m Model) renderComposerWithNotice(width int, notice string) string {
 		cursor := ""
 		if i == len(bodyLines)-1 {
 			cursor = "▌"
+		}
+		if m.composerSelectAll {
+			if line == "" {
+				line = " " // Make selected blank lines visible too.
+			}
+			line = visualSelectionContentStyle(lipgloss.NewStyle(), true, m.visualSelectionPalette()).Render(line)
 		}
 		lines = append(lines, truncateDisplay("> "+line+cursor, width))
 	}
@@ -2971,7 +2980,7 @@ func (m Model) renderHelp(width int) string {
 	}
 
 	navigation := helpSection{
-		Title: "Navigation",
+		Title: "Navigation and Composer",
 		Rows: []helpRow{
 			{Key: keysFor(keys.NormalMoveDown, keys.NormalMoveUp), Action: "move selection; count like 5" + key(keys.NormalMoveDown)},
 			{Key: keysFor(keys.NormalGoTop, keys.NormalGoBottom), Action: "jump top / bottom"},
@@ -2980,6 +2989,8 @@ func (m Model) renderHelp(width int) string {
 			{Key: keysFor(keys.NormalSearchNext, keys.NormalSearchPrevious), Action: "next / previous search match"},
 			{Key: keysFor(keys.NormalToggleUnread, keys.NormalTogglePinned), Action: "unread filter / pinned sort"},
 			{Key: key(keys.NormalToggleNotifications), Action: "mute notifications"},
+			{Key: key(keys.InsertSelectAll), Action: "select all composer text"},
+			{Key: keysFor(keys.InsertDelete, keys.InsertCancel), Action: "clear selection / deselect"},
 		},
 	}
 	mediaActions := helpSection{

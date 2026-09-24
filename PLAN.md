@@ -2,6 +2,16 @@
 
 ## Current Stage
 
+### Composer quality of life
+
+- [x] Configurable `Ctrl+A` selects all inline composer text, including wrapped/off-screen lines, with theme-aware highlighting and a selection notice.
+- [x] Typing, text paste, and newlines replace selection; Backspace/Delete clear it; Escape deselects before leaving insert mode. Replies/attachments are unaffected, mention metadata is discarded only on replacement, and Enter retains normal send behavior.
+- [x] Selection remains transient across chat/draft restores, sends, and external editor results. Regression tests cover Unicode, draft capture, editing isolation, remapped keys, mention autocomplete, blocked sends, and narrow rendering.
+
+Verified on Linux on 2026-09-24: `make test`, `make lint`, and full
+`make test-race`. `TestComposerSelectionHighlightAndWrapping` also provides
+a synthetic terminal capture with `go test ./internal/ui -run '^TestComposerSelectionHighlightAndWrapping$' -v`.
+
 ### Startup sync correction
 
 - [x] Import contact app-state events and resolve saved names regardless of chat/contact event order, including known identity aliases and concurrent imports.

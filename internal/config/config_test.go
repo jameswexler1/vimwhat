@@ -62,6 +62,9 @@ func TestLoadDefaultsWhenConfigMissing(t *testing.T) {
 	if cfg.Keymap.NormalReact != "leader r" || cfg.Keymap.ReactionCustom != "enter" || cfg.Keymap.ReactionClear != "0" || cfg.Keymap.ReactionSelect1 != "1" || cfg.Keymap.ReactionSelect9 != "9" {
 		t.Fatalf("reaction keymap defaults = normal %q custom %q clear %q select1 %q select9 %q", cfg.Keymap.NormalReact, cfg.Keymap.ReactionCustom, cfg.Keymap.ReactionClear, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionSelect9)
 	}
+	if cfg.Keymap.InsertSelectAll != "ctrl+a" || cfg.Keymap.InsertDelete != "delete" {
+		t.Fatalf("composer selection defaults = %q/%q", cfg.Keymap.InsertSelectAll, cfg.Keymap.InsertDelete)
+	}
 	if cfg.PreviewMaxWidth != 67 || cfg.PreviewMaxHeight != 18 {
 		t.Fatalf("preview defaults = %dx%d, want 67x18", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight)
 	}
@@ -114,6 +117,8 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 		`key_insert_mention_move_down = "j"`,
 		`key_insert_mention_move_up = "k"`,
 		`key_insert_send = "ctrl+s"`,
+		`key_insert_select_all = "ctrl+e"`,
+		`key_insert_delete = "ctrl+d"`,
 		`key_visual_forward = "F"`,
 		`key_visual_delete_for_everybody = "leader d e"`,
 		`key_forward_search = "s"`,
@@ -190,6 +195,9 @@ func TestLoadParsesSupportedKeys(t *testing.T) {
 	}
 	if cfg.Keymap.NormalQuit != "x" || cfg.Keymap.NormalOpenMediaDetached != "alt+enter" || cfg.Keymap.NormalYankMessage != "Y" || cfg.Keymap.NormalPasteText != "P" || cfg.Keymap.NormalEditMessage != "leader e" || cfg.Keymap.NormalComposeEditor != "leader z" || cfg.Keymap.NormalReact != "leader x" || cfg.Keymap.NormalForward != "leader f" || cfg.Keymap.NormalPickSticker != "leader t" || cfg.Keymap.NormalTogglePinned != "leader p" || cfg.Keymap.NormalToggleNotifications != "leader m" || cfg.Keymap.NormalCopyImage != "leader c" || cfg.Keymap.NormalSaveMedia != "leader y" || cfg.Keymap.InsertPasteImage != "ctrl+p" || cfg.Keymap.InsertMentionSelectAlt != "alt+enter" || cfg.Keymap.InsertMentionMoveDown != "j" || cfg.Keymap.InsertMentionMoveUp != "k" || cfg.Keymap.InsertSend != "ctrl+s" || cfg.Keymap.VisualForward != "F" || cfg.Keymap.VisualDeleteForEverybody != "leader d e" || cfg.Keymap.ForwardSearch != "s" || cfg.Keymap.ReactionSelect1 != "a" || cfg.Keymap.ReactionClear != "c" {
 		t.Fatalf("keymap = quit %q detached-open %q yank %q paste-text %q edit %q compose-editor %q react %q normal-forward %q sticker %q pinned %q notifications %q copy-image %q save %q paste-image %q mention-select %q mention-down %q mention-up %q send %q visual-forward %q visual-delete %q forward-search %q reaction1 %q reaction-clear %q", cfg.Keymap.NormalQuit, cfg.Keymap.NormalOpenMediaDetached, cfg.Keymap.NormalYankMessage, cfg.Keymap.NormalPasteText, cfg.Keymap.NormalEditMessage, cfg.Keymap.NormalComposeEditor, cfg.Keymap.NormalReact, cfg.Keymap.NormalForward, cfg.Keymap.NormalPickSticker, cfg.Keymap.NormalTogglePinned, cfg.Keymap.NormalToggleNotifications, cfg.Keymap.NormalCopyImage, cfg.Keymap.NormalSaveMedia, cfg.Keymap.InsertPasteImage, cfg.Keymap.InsertMentionSelectAlt, cfg.Keymap.InsertMentionMoveDown, cfg.Keymap.InsertMentionMoveUp, cfg.Keymap.InsertSend, cfg.Keymap.VisualForward, cfg.Keymap.VisualDeleteForEverybody, cfg.Keymap.ForwardSearch, cfg.Keymap.ReactionSelect1, cfg.Keymap.ReactionClear)
+	}
+	if cfg.Keymap.InsertSelectAll != "ctrl+e" || cfg.Keymap.InsertDelete != "ctrl+d" {
+		t.Fatalf("composer selection overrides = %q/%q", cfg.Keymap.InsertSelectAll, cfg.Keymap.InsertDelete)
 	}
 	if cfg.PreviewMaxWidth != 44 || cfg.PreviewMaxHeight != 10 || cfg.PreviewDelayMS != 0 {
 		t.Fatalf("preview sizing = %dx%d delay=%d", cfg.PreviewMaxWidth, cfg.PreviewMaxHeight, cfg.PreviewDelayMS)
@@ -523,6 +531,8 @@ func TestEnsureDefaultFileCreatesStandardConfig(t *testing.T) {
 		`key_normal_unload_previews = "leader h f"`,
 		`key_normal_delete_for_everybody = "leader d e"`,
 		`key_insert_attach = "ctrl+f"`,
+		`key_insert_select_all = "ctrl+a"`,
+		`key_insert_delete = "delete"`,
 		`key_insert_paste_image = "ctrl+v"`,
 		`key_insert_newline_alt = "shift+enter"`,
 		`key_insert_mention_select_alt = "tab"`,
@@ -630,6 +640,9 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if cfg.Keymap.InsertPasteImage != "ctrl+v" {
 		t.Fatalf("InsertPasteImage = %q, want ctrl+v", cfg.Keymap.InsertPasteImage)
+	}
+	if cfg.Keymap.InsertSelectAll != "ctrl+a" || cfg.Keymap.InsertDelete != "delete" {
+		t.Fatalf("example composer selection keys = %q/%q", cfg.Keymap.InsertSelectAll, cfg.Keymap.InsertDelete)
 	}
 	if cfg.Keymap.InsertNewlineAlt != "shift+enter" {
 		t.Fatalf("InsertNewlineAlt = %q, want shift+enter", cfg.Keymap.InsertNewlineAlt)
